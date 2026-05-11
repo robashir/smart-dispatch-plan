@@ -1,0 +1,49 @@
+{
+  "city": "Albany, NY",
+  "events": [
+    {
+      "name": "MVP Arena Concert",
+      "venue": "MVP Arena",
+      "address": "51 South Pearl St, Albany, NY",
+      "lat": 42.6488,
+      "lng": -73.7536,
+      "startTime": "7:30 PM",
+      "endTime": "10:30 PM",
+      "expectedAttendance": 8000,
+      "type": "concert"
+    },
+    {
+      "name": "Palace Theatre Comedy Show",
+      "venue": "Palace Theatre",
+      "address": "19 Clinton Ave, Albany, NY",
+      "lat": 42.6534,
+      "lng": -73.7531,
+      "startTime": "7:00 PM",
+      "endTime": "9:00 PM",
+      "expectedAttendance": 2800,
+      "type": "theatre"
+    },
+    {
+      "name": "Siena vs. Marist Basketball",
+      "venue": "MVP Arena",
+      "address": "51 South Pearl St, Albany, NY",
+      "lat": 42.6488,
+      "lng": -73.7536,
+      "startTime": "6:00 PM",
+      "endTime": "8:30 PM",
+      "expectedAttendance": 4500,
+      "type": "sports"
+    },
+    {
+      "name": "Lark Street Bar District Peak",
+      "venue": "Lark Street",
+      "address": "Lark Street, Albany, NY",
+      "lat": 42.6549,
+      "lng": -73.7676,
+      "startTime": "10:00 PM",
+      "endTime": "1:30 AM",
+      "expectedAttendance": 1500,
+      "type": "nightlife"
+    }
+  ]
+}

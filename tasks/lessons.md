@@ -1,0 +1,21 @@
+# Lessons — Project-Specific Pitfalls
+
+## L1 — Never assume an external API returns an array.
+**Rule:** When integrating a community/free API, do NOT write `return data?.SOMEKEY || []` and feed it to `for...of`. Inspect the real shape first with a `console.log("RAW X DATA:", data)`, then write defensive extraction that handles: top-level array, nested array under a key, nested object under a key (use `Object.values()`), and total garbage.
+**Why:** Sprint 4.5 Amtraker call crashed with `TypeError: trains is not iterable` because `data.ALB` came back as an object keyed by trainId, not an array. The fetcher returned the object straight to a `for...of` loop and 500'd the whole dispatch.
+**How to apply:** Every external fetcher must (1) inspector-log the raw response on first build, (2) extract via Array.isArray → key-as-array → key-as-object via Object.values → top-level Object.values, (3) wrap the extraction in try/catch with a `return []` fallback, (4) guarantee the return type is always an array. Add an `Array.isArray` guard at the top of any consumer that loops over the result.
+
+## L3 — Next.js App Router caches `fetch()` by default.
+**Rule:** Every `fetch()` to a live external API inside an App Router route handler (`app/api/**/route.js`) MUST pass `{ cache: "no-store" }`. Default behavior is `force-cache`, which silently serves stale data forever.
+**Why:** Sprint V2 follow-up: AviationStack arrivals + Ticketmaster events + weather + trains were all being served from Next.js's fetch cache, so the LLM kept getting hours-old (or days-old) data even though the API itself returns live results. The dispatch payload looked fine; the data inside was just frozen.
+**How to apply:** When adding any new external fetcher in a route handler, set `cache: "no-store"` in the fetch options object from the start. If the fetcher already has options like `{ signal }`, add `cache: "no-store"` alongside — don't replace the object. Static/build-time data is the only exception, and dispatch has none.
+
+## L4 — Never use unescaped backticks inside a backtick template literal.
+**Rule:** Inside `buildSystemPrompt`'s template-literal return (or any other ``` ` ` ```-delimited string), do NOT use backticks for inline-code formatting (e.g., `` `localDensity` ``). The inner backtick silently closes the outer template literal, turning the next identifier into a parse error like `Unexpected identifier 'localDensity'`. Use double quotes, single quotes, or escape with `` \` `` instead.
+**Why:** Sprint 12 introduced `` `localDensity` `` as inline-code emphasis inside the system prompt's template literal. Next.js reported "Failed to Compile" because the prompt's outer template ended at the first inner backtick, then JS tried to evaluate `localDensity` as an identifier in expression position. `node --check` did not catch it (it only validates top-level syntax, not deep nested parsing of the parsed template segments in this case) but `node -e "import(...)"` surfaced it as `Unexpected identifier 'localDensity'`.
+**How to apply:** When adding emphasis around a field/variable name inside the system-prompt template, write `"localDensity"` or `'localDensity'`, never `` `localDensity` ``. If a real backtick is needed in the prompt text, escape it: `` \` ``. After any non-trivial edit to `buildSystemPrompt`, run `node -e "import('file:///.../route.js')"` (not just `node --check`) to confirm the module fully parses.
+
+## L2 — Mirror the working pattern exactly when adding a new data stream.
+**Rule:** When adding a fourth/fifth/Nth live data source, copy the structure of the existing one (fetcher → aggregator → summarizer → Promise.all slot → mergedPayload key → SYSTEM_PROMPT block → userMessage line in BOTH STATE A and STATE B). Don't invent a new shape.
+**Why:** Sprint 4.5 trains slot-in worked first try because it mirrored Sprint 4 flights line-for-line. Deviating would have created two divergent patterns and forced the LLM to learn two prompt formats.
+**How to apply:** When the user says "add another live feed like the flight one," literally diff the flight code and replicate it with the new domain's specifics.
