@@ -77,6 +77,7 @@ Weather Integration (INVISIBLE BRAIN — applies to both states):
 - The 4-5 line cap is absolute. Weather does NOT earn extra lines.
 
 Transit Surge — Flight Data (INVISIBLE BRAIN — applies to both states):
+NOTE: All hotspot volumes and transit arrival counts have already been algorithmically scaled by backend temporal modifiers to reflect the current day and time. Trust the provided numbers implicitly.
 - The FLIGHTS block is an object like { "8 PM": "3 Arrivals (from MCO, ATL, ORD)" }. Each value names the count AND the origin IATA codes for high-value hub arrivals at ALB during that local hour. Short commuter hops are already filtered out — every flight you see is a high-value passenger wave.
 - If any hour bucket inside the window has one or more arrivals, treat ALB airport as a HIGH-PRIORITY surge zone for that hour and prioritize positioning the driver there 10-15 minutes before the wave.
 - If the block is empty or "Flight data unavailable", do NOT mention flights or the airport unless STATE B baseline advice naturally includes it.
@@ -85,6 +86,7 @@ Transit Surge — Flight Data (INVISIBLE BRAIN — applies to both states):
 - The 4-5 line cap is still absolute. Flights do NOT earn extra lines.
 
 Rail Surge — Train Data (INVISIBLE BRAIN — applies to both states):
+NOTE: All hotspot volumes and transit arrival counts have already been algorithmically scaled by backend temporal modifiers to reflect the current day and time. Trust the provided numbers implicitly.
 - The TRAINS block is an object like { "8 PM": "2 Arrivals (from NYP, BOS)" }. Each value names the count AND the origin station codes for high-value hub arrivals at Albany-Rensselaer Station that local hour. Short commuter hops are already filtered out — every train you see is a high-value passenger wave.
 - Even ONE arriving train creates a massive localized surge. If any hour bucket inside the window has >= 1 train arrival, treat Rensselaer Amtrak as a HIGH-PRIORITY surge zone for that hour and position the driver there 10-15 minutes before the train arrives.
 - If you see Amtrak arrivals from high-value hubs like NYP or BOS, treat this as a massive High-Value Business Traveler surge. These passengers frequently request premium rides to downtown state offices or high-end hotels. Actively prioritize rideshare positioning near Rensselaer station.
@@ -93,6 +95,7 @@ Rail Surge — Train Data (INVISIBLE BRAIN — applies to both states):
 - The 4-5 line cap is still absolute. Trains do NOT earn extra lines.
 
 Multi-App Platform Switching (INVISIBLE BRAIN — applies to both states):
+NOTE: All hotspot volumes and transit arrival counts have already been algorithmically scaled by backend temporal modifiers to reflect the current day and time. Trust the provided numbers implicitly.
 - The GIG DEMAND block is an object: { "foodHotspots": [ { "location": "Pearl St & State St", "volume": 6, "tier": "High-Value ($$$)", "categories": "Sushi, Steakhouse" }, ... ], "groceryHotspots": [ ... ] }. Each hotspot names a specific intersection/corner, cluster volume, price tier, and dominant cuisines.
 - When recommending Food Delivery, you MUST position the driver at a specific intersection or street corner taken directly from foodHotspots — never say "Go Downtown" or name a vague neighborhood. Pick the top hotspot by volume.
 - You MUST explain WHY using the hotspot data: if tier is "High-Value ($$$)" mention that expensive restaurants mean better tips; if tier is "Quick-Turn ($)" or volume is high with cheaper categories, mention fast turns / quick back-to-back deliveries.
@@ -142,6 +145,34 @@ function toWallClockLabel(date) {
   const ampm = h >= 12 ? "PM" : "AM";
   h = h % 12 || 12;
   return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+// Sprint 18: Temporal Baseline Engine. Hardcoded wall-clock time blocks
+// produce deterministic multipliers applied to raw data volumes BEFORE the
+// payload reaches the LLM. Input Date's UTC fields must equal the driver's
+// wall-clock time (we pass `localStart`, which is built that way).
+// Ported verbatim from test-time.js after all 7 scenarios PASSed.
+function computeTemporalModifiers(dateObj) {
+  const day = dateObj.getUTCDay();
+  const hour = dateObj.getUTCHours();
+
+  let foodMod = 1.0;
+  let rideMod = 1.0;
+
+  if (day >= 1 && day <= 5 && hour >= 7 && hour <= 8) rideMod = 1.5;
+  if (hour >= 11 && hour <= 13) foodMod = 1.5;
+  if (day >= 1 && day <= 5 && hour >= 16 && hour <= 17) rideMod = 1.5;
+  if (hour >= 17 && hour <= 19) foodMod = 1.5;
+  if ((day === 5 || day === 6) && hour >= 22) {
+    rideMod = 1.5;
+    foodMod = 0.5;
+  }
+  if ((day === 6 || day === 0) && hour < 2) {
+    rideMod = 1.5;
+    foodMod = 0.5;
+  }
+
+  return { foodMod, rideMod };
 }
 
 async function fetchTicketmasterEvents({ latitude, longitude, start, end, apiKey }) {
@@ -294,7 +325,7 @@ async function fetchAlbArrivals({ apiKey }) {
 // Sprint V2: drop flights whose departure IATA isn't in HIGH_VALUE_HUBS, and
 // emit values as "<count> Arrivals (from CODE, CODE)" strings instead of ints
 // so the LLM sees origin context inline.
-function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin) {
+function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideMod = 1.0) {
   const originsByHour = {};
   const seen = new Set();
   for (const f of flights) {
@@ -325,9 +356,14 @@ function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin) {
     originsByHour[label].push(depIata);
   }
 
+  // Sprint 18: scale raw count by temporal rideMod BEFORE formatting. If the
+  // rounded count drops to 0, omit the bucket entirely (per PO graceful
+  // flooring rule).
   const buckets = {};
   for (const [hour, codes] of Object.entries(originsByHour)) {
-    buckets[hour] = `${codes.length} Arrivals (from ${codes.join(", ")})`;
+    const scaled = Math.round(codes.length * rideMod);
+    if (scaled <= 0) continue;
+    buckets[hour] = `${scaled} Arrivals (from ${codes.join(", ")})`;
   }
   return buckets;
 }
@@ -388,7 +424,7 @@ async function fetchAlbTrainArrivals() {
 // Sprint 16: drop cancelled trains AND drop trains whose origCode isn't in
 // HIGH_VALUE_STATIONS. Emit values as "<count> Arrival(s) (from CODE, CODE)"
 // strings so the LLM sees origin context inline (mirrors flight aggregator).
-function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
+function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin, rideMod = 1.0) {
   if (!Array.isArray(trains)) return {};
   const originsByHour = {};
   const seen = new Set();
@@ -424,10 +460,14 @@ function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
     originsByHour[label].push(origCode);
   }
 
+  // Sprint 18: scale raw count by temporal rideMod BEFORE formatting. If the
+  // rounded count drops to 0, omit the bucket entirely.
   const buckets = {};
   for (const [hour, codes] of Object.entries(originsByHour)) {
-    const word = codes.length === 1 ? "Arrival" : "Arrivals";
-    buckets[hour] = `${codes.length} ${word} (from ${codes.join(", ")})`;
+    const scaled = Math.round(codes.length * rideMod);
+    if (scaled <= 0) continue;
+    const word = scaled === 1 ? "Arrival" : "Arrivals";
+    buckets[hour] = `${scaled} ${word} (from ${codes.join(", ")})`;
   }
   return buckets;
 }
@@ -673,19 +713,36 @@ export async function POST(request) {
       getLocalDensityData(latitude, longitude, yelpApiKey),
     ]);
 
+    // Sprint 18: compute temporal multipliers off the driver's wall-clock
+    // (localStart's UTC fields == wall-clock per Sprint 3.1). These scale
+    // raw data volumes BEFORE the payload is built.
+    const temporalModifiers = computeTemporalModifiers(localStart);
+    const { foodMod, rideMod } = temporalModifiers;
+
     let flightsByHour = aggregateArrivalsByHour(
       rawFlights,
       localStart,
       localEnd,
-      offsetMin
+      offsetMin,
+      rideMod
     );
 
     let trainsByHour = aggregateTrainArrivalsByHour(
       rawTrains,
       localStart,
       localEnd,
-      offsetMin
+      offsetMin,
+      rideMod
     );
+
+    // Sprint 18: apply foodMod to each existing hotspot's volume. Floor at 1
+    // so a 0.5 multiplier never erases a hotspot that originally existed.
+    if (gigDemand && Array.isArray(gigDemand.foodHotspots)) {
+      gigDemand.foodHotspots = gigDemand.foodHotspots.map((h) => ({
+        ...h,
+        volume: Math.max(1, Math.round(h.volume * foodMod)),
+      }));
+    }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept
     // failing on the LLM's "data obligation". Erase inactive-platform data
@@ -728,6 +785,7 @@ export async function POST(request) {
       hours: hoursNum,
       includeAirport,
       includeAmtrak,
+      temporalModifiers,
       events,
       weather: weatherWindowed ?? "Weather data unavailable",
       flightsByHour,

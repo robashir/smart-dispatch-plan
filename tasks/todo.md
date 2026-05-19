@@ -640,3 +640,44 @@ Outcome: belt-and-suspenders worked — by the time the system prompt is built, 
 
 ### Out of Scope
 - Ticketmaster event toggles, persisting selection across sessions, all-locations-off guard, mobile-only Capacitor changes.
+
+## Sprint 18 — The Temporal Baseline Engine
+
+**Goal:** Hardcode wall-clock time blocks (commute, meal rushes, weekend bar rush) into deterministic multipliers (`rideMod`, `foodMod`) that scale the raw data volumes (food hotspots, flight counts, train counts) BEFORE the payload reaches the LLM. This becomes the algorithmic baseline that future anomaly modifiers (weather, events) will compound onto.
+
+### Decisions (locked before coding)
+- **TDD-first:** Build the modifier function in a standalone `test-time.js` at repo root. Validate all 6 scenarios (5 time blocks + baseline) via fake `Date` objects. Only after 100% PASS, port into `route.js`.
+- **Input contract:** `computeTemporalModifiers(dateObj)` accepts a Date whose UTC fields equal the driver's wall-clock time. Read `getUTCDay()` + `getUTCHours()` — mirrors the existing `toWallClockLabel` pattern (Sprint 3.1 timezone trick). In route.js we'll pass `localStart` directly since its UTC fields already = wall-clock.
+- **Output contract:** `{ foodMod: number, rideMod: number }`. Default `1.0` for both.
+- **Time matrix (locked, from PO):**
+  - Morning Commute, Mon-Fri 7:00-8:59 AM → `rideMod = 1.5`
+  - Lunch Rush, every day 11:00 AM-1:59 PM → `foodMod = 1.5`
+  - Evening Commute, Mon-Fri 4:00-5:59 PM → `rideMod = 1.5`
+  - Dinner Rush, every day 5:00-7:59 PM → `foodMod = 1.5`
+  - Weekend Bar Rush, Fri & Sat 10:00 PM-1:59 AM next day → `rideMod = 1.5`, `foodMod = 0.5`
+- **Logic style:** inline `if` blocks (per anti-goal "no JSON matrix DB"). Overlapping windows just both fire — e.g., Fri 5 PM is both Evening Commute and Dinner Rush, so both modifiers stick.
+- **Food flooring:** `Math.max(1, Math.round(volume * foodMod))` so a 0.5 multiplier never erases an existing hotspot.
+- **Transit flooring:** `Math.round(count * rideMod)` and if 0 → drop the hour bucket entirely. (rideMod is only ever 1.0 or 1.5 today; this is forward-looking per the brief.)
+- **Aggregator signature change:** `aggregateArrivalsByHour` and `aggregateTrainArrivalsByHour` get a new `rideMod` parameter (last positional arg). Multiplication happens BEFORE the `"X Arrivals (from ...)"` string is constructed.
+- **Payload visibility:** add `temporalModifiers: { foodMod, rideMod }` to `mergedPayload` so the merged log explicitly surfaces the chosen multipliers.
+- **Prompt note (locked, from PO):** "NOTE: All hotspot volumes and transit arrival counts have already been algorithmically scaled by backend temporal modifiers to reflect the current day and time. Trust the provided numbers implicitly." — injected at the TOP of the GIG DEMAND block (Multi-App Platform Switching) AND at the top of BOTH transit blocks (Flight + Rail), since `rideMod` scales both.
+- **Anti-goals (PO):** NO weather modifiers, NO event modifiers, NO JSON matrix.
+
+### Build Steps
+- [x] 0. Write Sprint 18 plan to `tasks/todo.md`.
+- [x] 1. Create standalone `test-time.js` at repo root with `computeTemporalModifiers(dateObj)` + 7 test scenarios (baseline + 5 time blocks + Sat early-AM bar rush wraparound). Run `node test-time.js`; verify 100% PASS.
+- [x] 2. `app/api/dispatch/route.js`: port `computeTemporalModifiers` near the other helpers.
+- [x] 3. `app/api/dispatch/route.js`: extend `aggregateArrivalsByHour` and `aggregateTrainArrivalsByHour` to accept `rideMod`; apply `Math.round(count * rideMod)` before formatting; skip buckets that round to 0.
+- [x] 4. `app/api/dispatch/route.js`: call `computeTemporalModifiers(localStart)` inside POST; pass `rideMod` into both aggregators; apply `foodMod` to `gigDemand.foodHotspots[*].volume` with `Math.max(1, ...)` flooring.
+- [x] 5. `app/api/dispatch/route.js`: inject `temporalModifiers: { foodMod, rideMod }` into `mergedPayload`.
+- [x] 6. `app/api/dispatch/route.js`: prepend the locked NOTE sentence to the Flight Surge, Rail Surge, and Multi-App Platform Switching blocks inside `buildSystemPrompt`.
+- [x] 7. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns PARSE OK.
+
+### Acceptance Criteria
+- Test-Driven Validation: `test-time.js` prints PASS for all 6 PO-specified scenarios (+ the Sat early-AM wraparound).
+- Data Mutation: `flightsByHour`, `trainsByHour`, and `foodHotspots[*].volume` reflect the temporal multipliers in the `=== MERGED DISPATCH PAYLOAD ===` log.
+- Graceful Flooring: transit buckets that round to 0 are absent from the payload; food hotspots that existed never drop below volume 1.
+- Parse Check: route.js imports cleanly (no L4 backtick regressions).
+
+### Out of Scope (Anti-Goals)
+- Weather modifiers, Ticketmaster event modifiers, JSON-matrix configs, frontend changes.
