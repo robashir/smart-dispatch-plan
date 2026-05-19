@@ -12,6 +12,7 @@ export default function Home() {
     food: false,
     grocery: false,
   });
+  const [includeAirport, setIncludeAirport] = useState(true);
 
   async function handleClick() {
     setError("");
@@ -32,7 +33,7 @@ export default function Home() {
         const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
         try {
-          const res = await fetch("/api/dispatch", {
+          const res = await fetch("https://beamish-salamander-98efb1.netlify.app/api/dispatch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -41,6 +42,7 @@ export default function Home() {
               hours,
               timezoneOffsetMinutes,
               platforms,
+              includeAirport,
             }),
           });
 
@@ -122,6 +124,24 @@ export default function Home() {
                 <span>{label}</span>
               </label>
             ))}
+          </div>
+        </fieldset>
+
+        <fieldset className="flex flex-col gap-2">
+          <span className="text-sm uppercase tracking-wide text-neutral-400">
+            Location/Hub Filtering
+          </span>
+          <div className="flex flex-col gap-2 rounded-xl bg-neutral-900 border border-neutral-700 p-4">
+            <label className="flex items-center gap-3 text-lg">
+              <input
+                type="checkbox"
+                checked={includeAirport}
+                onChange={(e) => setIncludeAirport(e.target.checked)}
+                disabled={isBusy}
+                className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
+              />
+              <span>Airport (ALB)</span>
+            </label>
           </div>
         </fieldset>
 

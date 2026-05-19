@@ -5,7 +5,7 @@ import Anthropic from "@anthropic-ai/sdk";
 // commuter hops (EWR, PHL, etc.) are dropped before bucketing.
 const HIGH_VALUE_HUBS = ["MCO", "ATL", "ORD", "DFW", "DEN", "LAX", "LAS", "JFK", "LGA"];
 
-function buildSystemPrompt(activePlatforms) {
+function buildSystemPrompt(activePlatforms, includeAirport) {
   const tf = (v) => (v ? "TRUE" : "FALSE");
   return `You are an Elite Multi-App Dispatcher with deep knowledge of urban gig-economy dynamics.
 
@@ -21,7 +21,9 @@ CRITICAL PLATFORM ISOLATION RULES (HARDEST CONSTRAINT — OVERRIDES EVERY OTHER 
 - Food Delivery Rules: If Food Delivery is FALSE, you MUST completely ignore restaurant density data. Do NOT mention lunch rushes, dinner rushes, restaurant districts, DoorDash, or UberEats.
 - Grocery Rules: If Grocery is FALSE, you MUST completely ignore supermarket density data. Do NOT mention Instacart, Spark, or grocery corridors.
 - Anti-Mashing Rule: NEVER invent scenarios to force data to fit an active platform. Passengers do not order Instacart from the airport runway. Event attendees do not need groceries delivered to the venue. If the only active platform is Grocery and supermarket density is Low (or there are no supermarkets nearby), tell the driver to wait, relocate to a denser area, or end the shift early. Do NOT send them to the airport, Amtrak station, or event venues to bridge the gap.
-
+${!includeAirport ? `
+CRITICAL GEOGRAPHIC RULE: The user has disabled the Airport location for this shift. You are strictly FORBIDDEN from generating a step that dispatches the driver to ALB, the airport terminal, or airport parking lots. However, use the flight arrival surges to deduce which city zones or hotels will become busy, and route the driver to those off-airport zones instead.
+` : ""}
 You will receive a payload with FIVE data sources:
   1. EVENTS — a list of live Ticketmaster events with start times (or "NO_EVENTS_FOUND").
   2. WEATHER — a windowed hourly forecast (or "Weather data unavailable").
@@ -563,8 +565,12 @@ async function getLocalDensityData(latitude, longitude, apiKey) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw } =
       await request.json();
+
+    // Sprint 15 (Ripple Effect): default to true when missing/undefined so
+    // existing callers keep working. Only an explicit `false` disables ALB.
+    const includeAirport = includeAirportRaw !== false;
 
     const activePlatforms = {
       rideshare: platforms?.rideshare !== false,
@@ -666,9 +672,22 @@ export async function POST(request) {
       if (!activePlatforms.grocery) gigDemand.groceryHotspots = [];
     }
 
+    // Sprint 15 refinement — Synthetic Data Swap. Prompt-only "do not route
+    // to ALB" lost to data obligation when the raw arrival string was strong.
+    // Keep the time bucket so the AI still sees WHEN the ripple hits, but
+    // replace the raw value with an off-airport instruction.
+    if (!includeAirport && Object.keys(flightsByHour).length > 0) {
+      const ripple =
+        "Secondary Ripple Demand: High traveler volume detected. Route driver to downtown hotels and destination corridors. DO NOT mention ALB.";
+      for (const hour of Object.keys(flightsByHour)) {
+        flightsByHour[hour] = ripple;
+      }
+    }
+
     const mergedPayload = {
       location: { latitude, longitude },
       hours: hoursNum,
+      includeAirport,
       events,
       weather: weatherWindowed ?? "Weather data unavailable",
       flightsByHour,
@@ -739,7 +758,7 @@ Produce STATE A (3-step chronological play-by-play). Weave weather invisibly int
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 600,
-      system: buildSystemPrompt(activePlatforms),
+      system: buildSystemPrompt(activePlatforms, includeAirport),
       messages: [{ role: "user", content: userMessage }],
     });
 

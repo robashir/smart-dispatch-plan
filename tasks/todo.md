@@ -499,3 +499,46 @@
 
 ### Out of Scope
 - GitHub auto-deploy wiring, custom domain, branch deploys, Capacitor frontend changes (next sprint), removing the four API keys from `.env.local`.
+
+## Sprint 15 — Geographic Filtering (Ripple Effect)
+
+**Problem:** Driver wants to opt out of airport pickups WITHOUT blinding the AI to flight data. The AI must keep seeing flight arrivals (to predict downstream hotel/restaurant ripples) but must never route the driver to ALB itself.
+
+### Decisions (locked before coding)
+- **New state:** `includeAirport` (boolean, defaults `true`). Lives in `app/page.js`, posted in the fetch body alongside `platforms`, `hours`, etc.
+- **Backend default:** `includeAirport = body.includeAirport !== false` — missing/undefined falls back to `true` (back-compat with existing callers).
+- **UI placement:** new "Location/Hub Filtering" panel directly below the "Active Platforms" fieldset, mirroring its rounded-xl/neutral-900 styling. Single checkbox "Airport (ALB)" tied to `includeAirport`.
+- **Prompt rule placement:** conditional injection inside `buildSystemPrompt(activePlatforms, includeAirport)`, immediately after the CRITICAL PLATFORM ISOLATION RULES block. Only emitted when `!includeAirport`.
+- **Exact string (locked, from PO):** "CRITICAL GEOGRAPHIC RULE: The user has disabled the Airport location for this shift. You are strictly FORBIDDEN from generating a step that dispatches the driver to ALB, the airport terminal, or airport parking lots. However, use the flight arrival surges to deduce which city zones or hotels will become busy, and route the driver to those off-airport zones instead."
+- **CRITICAL ANTI-GOAL:** Do NOT wipe `flightsByHour` from the sanitization block when `includeAirport === false`. The AI MUST see the flight data to reason about the ripple effect. (`flightsByHour` still gets wiped when `!activePlatforms.rideshare` — that is a separate concern.)
+- **Logging:** add `includeAirport` to `mergedPayload` so the existing `=== MERGED DISPATCH PAYLOAD ===` log line surfaces it.
+- **No new env vars. No Amtrak/Ticketmaster toggles. No `next.config.mjs` changes.**
+
+### Build Steps
+- [x] 0. Write Sprint 15 (Ripple Effect) plan to `tasks/todo.md`.
+- [x] 1. `app/page.js`: add `includeAirport` state (default `true`).
+- [x] 2. `app/page.js`: render "Location/Hub Filtering" panel below Active Platforms with single "Airport (ALB)" checkbox.
+- [x] 3. `app/page.js`: include `includeAirport` in the fetch JSON body.
+- [x] 4. `app/api/dispatch/route.js`: destructure `includeAirport` from `request.json()` with `!== false` default.
+- [x] 5. `app/api/dispatch/route.js`: add `includeAirport` field to `mergedPayload` so it logs.
+- [x] 6. `app/api/dispatch/route.js`: change `buildSystemPrompt(activePlatforms)` signature to `buildSystemPrompt(activePlatforms, includeAirport)` and update call site.
+- [x] 7. `app/api/dispatch/route.js`: inject the Ripple Effect rule (exact locked string above) immediately after CRITICAL PLATFORM ISOLATION RULES, gated on `!includeAirport`.
+- [x] 8. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns clean.
+- [ ] 9. Manual verification (temporary override): hardcode `flightsByHour = { "2 PM": "15 Arrivals (from MCO, ORD, ATL)" }` AND simulate `includeAirport = false` in route.js, run dispatch, confirm plan routes driver to off-airport zones (downtown hotels) — NEVER instructs them to drive to ALB.
+
+### Acceptance Criteria
+- `=== MERGED DISPATCH PAYLOAD ===` log shows `includeAirport: false` AND still contains the `flightsByHour` data.
+- With `includeAirport: false` during a heavy flight surge, the AI identifies the traveler volume but routes the driver to off-airport zones (e.g., downtown hotels) without saying "ALB" or "airport terminal."
+- UI shows the new Location filtering panel separate from the Active Platforms panel.
+
+### Out of Scope
+- Toggles for Amtrak or Ticketmaster, `next.config.mjs` changes, persisting selection across sessions, an "all locations off" guard, mobile-only Capacitor changes.
+
+### Sprint 15 Refinement — Synthetic Data Swap (Data Obligation Hotfix)
+**Problem:** First-pass prompt-only rule ("CRITICAL GEOGRAPHIC RULE: ... FORBIDDEN from generating a step that dispatches the driver to ALB") was bypassed by the LLM during the manual ripple test. The raw `"15 Arrivals (from MCO, ORD, ATL)"` signal was too strong — model felt obligated to use the data and routed to ALB anyway.
+
+**Fix:** Belt-and-suspenders. Keep the prompt rule, AND add a payload sanitizer that overwrites each `flightsByHour` value with a synthetic ripple instruction when `!includeAirport`. The bucket keys (hours) stay so the LLM still sees WHEN the surge hits.
+
+- [x] 1. `app/api/dispatch/route.js`: in the sanitization block, after the existing wipes, iterate `flightsByHour` keys when `!includeAirport && Object.keys(flightsByHour).length > 0` and overwrite each value with the locked synthetic string: `"Secondary Ripple Demand: High traveler volume detected. Route driver to downtown hotels and destination corridors. DO NOT mention ALB."`.
+- [x] 2. Lesson L5 recorded in `tasks/lessons.md` ("prompt-only rules lose to data obligation").
+- [ ] 3. Manual verification (user): with TEMP override still active + "Airport (ALB)" unchecked, plan routes driver to downtown hotels / destination corridors. Word "ALB" / "airport terminal" never appears.
