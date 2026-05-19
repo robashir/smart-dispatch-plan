@@ -575,3 +575,68 @@
 ### Out of Scope (Anti-Goals)
 - Frontend UI changes / checkboxes (Sprint 17).
 - Flight, Yelp, or Ticketmaster logic.
+
+## Sprint 17 — The Amtrak Geographic Toggle (Ripple Effect)
+
+**Problem:** Sprint 15 gave us an Airport toggle that lets the driver opt out of ALB pickups without blinding the AI to flight surges. Sprint 16 upgraded Amtrak to a Precision Engine. We now need the matching UI toggle for Amtrak so the driver can opt out of Rensselaer station while the AI still uses NYP/BOS arrivals to predict downtown business-traveler ripples.
+
+### Decisions (locked before coding)
+- **New state:** `includeAmtrak` (boolean, defaults `true`), mirrors Sprint 15's `includeAirport`. Lives in `app/page.js`, posted in the fetch body alongside `includeAirport`.
+- **Backend default:** `includeAmtrak = body.includeAmtrak !== false` — missing/undefined falls back to `true` (back-compat).
+- **UI placement:** new checkbox inside the existing "Location/Hub Filtering" panel, directly below the Airport (ALB) row. Same styling.
+- **Prompt rule placement:** conditional injection inside `buildSystemPrompt(activePlatforms, includeAirport, includeAmtrak)`, immediately after the Airport ripple rule. Only emitted when `!includeAmtrak`.
+- **Exact string (locked, from PO):** "CRITICAL GEOGRAPHIC RULE: The user has disabled the Amtrak location for this shift. You are strictly FORBIDDEN from generating a step that dispatches the driver to the Rensselaer train station. However, use the high-value train arrivals (e.g., NYP, BOS) to deduce which downtown state offices or hotels will become busy, and route the driver to those off-station zones instead."
+- **CRITICAL ANTI-GOAL:** Do NOT wipe `trainsByHour` from the sanitization block when `includeAmtrak === false`. The AI MUST see the train data to reason about the ripple effect. `trainsByHour` still gets wiped when `!activePlatforms.rideshare` (separate concern, already in code).
+- **Synthetic Data Swap (anticipated per L5):** Apply belt-and-suspenders from day one — overwrite each `trainsByHour` value with `"Secondary Ripple Demand: High business-traveler volume detected (NYP/BOS). Route driver to downtown state offices and high-end hotels. DO NOT mention Rensselaer."` when `!includeAmtrak && Object.keys(trainsByHour).length > 0`. Mirrors Sprint 15 flight swap.
+- **Logging:** add `includeAmtrak` to `mergedPayload`.
+- **Mock test:** hardcode `trainsByHour = { "5 PM": "2 Arrivals (from NYP, BOS)" }` + `includeAmtrak = false` + `activePlatforms.rideshare = true` in route.js temporarily. Verify via standalone import script. Remove mock when verified.
+- **No new env vars. No Ticketmaster toggles. No `next.config.mjs` changes.**
+
+### Build Steps
+- [x] 0. Write Sprint 17 plan to `tasks/todo.md`.
+- [x] 1. `app/page.js`: add `includeAmtrak` state (default `true`).
+- [x] 2. `app/page.js`: render second checkbox "Amtrak (Rensselaer)" inside Location/Hub Filtering panel, below the Airport row.
+- [x] 3. `app/page.js`: include `includeAmtrak` in the fetch JSON body alongside `includeAirport`.
+- [x] 4. `app/api/dispatch/route.js`: destructure `includeAmtrak` from `request.json()` with `!== false` default.
+- [x] 5. `app/api/dispatch/route.js`: add `includeAmtrak` to `mergedPayload` so the log line surfaces it.
+- [x] 6. `app/api/dispatch/route.js`: change `buildSystemPrompt(activePlatforms, includeAirport)` to `buildSystemPrompt(activePlatforms, includeAirport, includeAmtrak)` and update call site.
+- [x] 7. `app/api/dispatch/route.js`: inject the Amtrak Geographic Rule (exact locked string) immediately after the Airport ripple block, gated on `!includeAmtrak`.
+- [x] 8. `app/api/dispatch/route.js`: in the sanitization block (after the airport flight swap), iterate `trainsByHour` keys when `!includeAmtrak && Object.keys(trainsByHour).length > 0` and overwrite each value with the locked synthetic string above. Do NOT wipe the hour keys themselves.
+- [x] 9. Mock-test simulation: hardcoded `trainsByHour = { "5 PM": "2 Arrivals (from NYP, BOS)" }` + `includeAmtrak = false` + `activePlatforms.rideshare = true` driven through a standalone replay of the sanitization stage. Result: synthetic-swap fired, hour key preserved, raw "Arrivals (from …)" format gone, "DO NOT mention Rensselaer" present.
+- [x] 10. Parse-check per L4: `node sprint17-parsecheck.mjs` returned `PARSE OK`.
+- [x] 11. Verified the merged-payload log and synthetic-swap behavior (all 7 assertions pass — see Test Results below).
+- [x] 12. Temporary mock + parse-check scripts removed; final parse-check returned `FINAL PARSE OK`.
+
+### Test Results (Sprint 17 Mock Run)
+Input: `trainsByHour = { "5 PM": "2 Arrivals (from NYP, BOS)" }`, `includeAmtrak = false`, `activePlatforms.rideshare = true`.
+
+After sanitization, `mergedPayload` snapshot:
+```
+{
+  "includeAirport": true,
+  "includeAmtrak": false,
+  "flightsByHour": {},
+  "trainsByHour": {
+    "5 PM": "Secondary Ripple Demand: High business-traveler volume detected (NYP/BOS). Route driver to downtown state offices and high-end hotels. DO NOT mention Rensselaer."
+  }
+}
+```
+
+Assertions:
+- PASS — mergedPayload still shows `includeAmtrak: false`.
+- PASS — `trainsByHour["5 PM"]` exists (data preserved per critical anti-goal).
+- PASS — raw "N Arrivals (from …)" format gone (swap fired).
+- PASS — synthetic string contains "DO NOT mention Rensselaer".
+- PASS — `buildSystemPrompt` source contains the exact locked Amtrak rule string.
+- PASS — `buildSystemPrompt` signature now reads `(activePlatforms, includeAirport, includeAmtrak)`.
+- PASS — the Amtrak rule is gated behind `${!includeAmtrak ? \`…\` : ""}`.
+
+Outcome: belt-and-suspenders worked — by the time the system prompt is built, the LLM literally cannot see the raw "2 Arrivals (from NYP, BOS)" string, only the synthetic ripple instruction. Data-obligation pressure on Rensselaer is gone, while the hour bucket survives so the LLM still positions the driver in downtown corridors for the 5 PM surge. Explicit Synthetic Data Swap was applied upfront (Sprint 15 precedent + L5).
+
+### Acceptance Criteria
+- Payload Validation: `=== MERGED DISPATCH PAYLOAD ===` log shows `includeAmtrak: false` AND still contains the `trainsByHour` data (synthetic-swapped, but keys preserved).
+- Logic Validation: with `includeAmtrak: false` and NYP/BOS arrivals in the payload, plan routes driver to downtown offices/hotels without saying "Rensselaer."
+- UI Validation: the frontend shows the new "Amtrak (Rensselaer)" checkbox directly below "Airport (ALB)".
+
+### Out of Scope
+- Ticketmaster event toggles, persisting selection across sessions, all-locations-off guard, mobile-only Capacitor changes.

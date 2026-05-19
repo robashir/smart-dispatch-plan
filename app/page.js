@@ -13,6 +13,7 @@ export default function Home() {
     grocery: false,
   });
   const [includeAirport, setIncludeAirport] = useState(true);
+  const [includeAmtrak, setIncludeAmtrak] = useState(true);
 
   async function handleClick() {
     setError("");
@@ -43,6 +44,7 @@ export default function Home() {
               timezoneOffsetMinutes,
               platforms,
               includeAirport,
+              includeAmtrak,
             }),
           });
 
@@ -141,6 +143,16 @@ export default function Home() {
                 className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
               />
               <span>Airport (ALB)</span>
+            </label>
+            <label className="flex items-center gap-3 text-lg">
+              <input
+                type="checkbox"
+                checked={includeAmtrak}
+                onChange={(e) => setIncludeAmtrak(e.target.checked)}
+                disabled={isBusy}
+                className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
+              />
+              <span>Amtrak (Rensselaer)</span>
             </label>
           </div>
         </fieldset>
