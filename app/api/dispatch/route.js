@@ -5,6 +5,11 @@ import Anthropic from "@anthropic-ai/sdk";
 // commuter hops (EWR, PHL, etc.) are dropped before bucketing.
 const HIGH_VALUE_HUBS = ["MCO", "ATL", "ORD", "DFW", "DEN", "LAX", "LAS", "JFK", "LGA"];
 
+// Sprint 16: Amtrak precision filter. Penn Station NYC, Boston, Washington
+// DC, Philadelphia — high-income business + leisure hubs. Locals (Rutland,
+// Schenectady commuter hops, etc.) are dropped before bucketing.
+const HIGH_VALUE_STATIONS = ["NYP", "BOS", "WAS", "PHL"];
+
 function buildSystemPrompt(activePlatforms, includeAirport) {
   const tf = (v) => (v ? "TRUE" : "FALSE");
   return `You are an Elite Multi-App Dispatcher with deep knowledge of urban gig-economy dynamics.
@@ -78,10 +83,11 @@ Transit Surge — Flight Data (INVISIBLE BRAIN — applies to both states):
 - The 4-5 line cap is still absolute. Flights do NOT earn extra lines.
 
 Rail Surge — Train Data (INVISIBLE BRAIN — applies to both states):
-- The TRAINS block is an object like { "6 PM": 1, "8 PM": 2 }. Each value is the number of Amtrak arrivals at Albany-Rensselaer Station that local hour.
+- The TRAINS block is an object like { "8 PM": "2 Arrivals (from NYP, BOS)" }. Each value names the count AND the origin station codes for high-value hub arrivals at Albany-Rensselaer Station that local hour. Short commuter hops are already filtered out — every train you see is a high-value passenger wave.
 - Even ONE arriving train creates a massive localized surge. If any hour bucket inside the window has >= 1 train arrival, treat Rensselaer Amtrak as a HIGH-PRIORITY surge zone for that hour and position the driver there 10-15 minutes before the train arrives.
+- If you see Amtrak arrivals from high-value hubs like NYP or BOS, treat this as a massive High-Value Business Traveler surge. These passengers frequently request premium rides to downtown state offices or high-end hotels. Actively prioritize rideshare positioning near Rensselaer station.
 - If no hour has any train arrivals, do NOT mention trains or Rensselaer.
-- Weave train timing INTO an existing step (e.g., "by 7:50 PM, swing to Rensselaer Amtrak — train arrives at 8 PM"). Do NOT add an extra step or a train summary line.
+- Weave train timing INTO an existing step (e.g., "by 7:50 PM, swing to Rensselaer Amtrak — NYP train arrives at 8 PM, expect business riders to downtown hotels"). Do NOT add an extra step or a train summary line.
 - The 4-5 line cap is still absolute. Trains do NOT earn extra lines.
 
 Multi-App Platform Switching (INVISIBLE BRAIN — applies to both states):
@@ -377,11 +383,20 @@ async function fetchAlbTrainArrivals() {
 
 // Bucket train arrivals at ALB into local-hour labels for the window.
 // Use estimated/actual arrival (`arr`) when present; fall back to scheduled (`schArr`).
+// Sprint 16: drop cancelled trains AND drop trains whose origCode isn't in
+// HIGH_VALUE_STATIONS. Emit values as "<count> Arrival(s) (from CODE, CODE)"
+// strings so the LLM sees origin context inline (mirrors flight aggregator).
 function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
-  const buckets = {};
-  if (!Array.isArray(trains)) return buckets;
+  if (!Array.isArray(trains)) return {};
+  const originsByHour = {};
   const seen = new Set();
   for (const t of trains) {
+    const status = (t.status || t.trainState || "").toLowerCase();
+    if (status === "cancelled") continue;
+
+    const origCode = t.origCode;
+    if (!origCode || !HIGH_VALUE_STATIONS.includes(origCode)) continue;
+
     const stations = Array.isArray(t.stations) ? t.stations : [];
     const albStop = stations.find((s) => s?.code === "ALB");
     if (!albStop) continue;
@@ -403,7 +418,14 @@ function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
     const ampm = h >= 12 ? "PM" : "AM";
     h = h % 12 || 12;
     const label = `${h} ${ampm}`;
-    buckets[label] = (buckets[label] || 0) + 1;
+    if (!originsByHour[label]) originsByHour[label] = [];
+    originsByHour[label].push(origCode);
+  }
+
+  const buckets = {};
+  for (const [hour, codes] of Object.entries(originsByHour)) {
+    const word = codes.length === 1 ? "Arrival" : "Arrivals";
+    buckets[hour] = `${codes.length} ${word} (from ${codes.join(", ")})`;
   }
   return buckets;
 }

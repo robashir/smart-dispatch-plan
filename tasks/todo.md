@@ -542,3 +542,36 @@
 - [x] 1. `app/api/dispatch/route.js`: in the sanitization block, after the existing wipes, iterate `flightsByHour` keys when `!includeAirport && Object.keys(flightsByHour).length > 0` and overwrite each value with the locked synthetic string: `"Secondary Ripple Demand: High traveler volume detected. Route driver to downtown hotels and destination corridors. DO NOT mention ALB."`.
 - [x] 2. Lesson L5 recorded in `tasks/lessons.md` ("prompt-only rules lose to data obligation").
 - [ ] 3. Manual verification (user): with TEMP override still active + "Airport (ALB)" unchecked, plan routes driver to downtown hotels / destination corridors. Word "ALB" / "airport terminal" never appears.
+
+## Sprint 16 — The Amtrak Precision Engine
+
+**Problem:** Amtrak integration (Sprint 4.5) is a "brute force" engine — counts all trains equally regardless of origin, no cancellation filter, raw integer payload gives the LLM no origin context. Upgrade it to mirror Sprint V2 flight precision: strict hub filter, cancellation filter, formatted string payload, business-traveler prompt rule.
+
+### Decisions (locked before coding)
+- **Hub list:** `HIGH_VALUE_STATIONS = ['NYP', 'BOS', 'WAS', 'PHL']` (Penn Station, Boston, Washington DC, Philadelphia). Penn Station = NYC business + leisure; BOS + WAS + PHL = high-income corridor.
+- **Filter scope:** Apply BOTH cancellation + hub filters inside `aggregateTrainArrivalsByHour` (mirror Sprint V2 flight pattern — single chokepoint per L2).
+- **Cancellation field:** Amtraker exposes status on the train via `t.status` OR `t.trainState` in different builds. Check both, lowercased, drop if `=== "cancelled"`.
+- **Origin field:** `t.origCode` per brief.
+- **Output shape:** `{ "5 PM": "1 Arrival (from NYP)" }` for one train; `"2 Arrivals (from NYP, BOS)"` for multiple. Singular "Arrival" / plural "Arrivals" — matches brief verbatim. (Note: flight aggregator always uses "Arrivals" plural; trains use singular for n=1 per brief.)
+- **Prompt rule:** Replace integer-format example with new string-format example; add explicit business-traveler line: "If you see Amtrak arrivals from high-value hubs like NYP or BOS, treat this as a massive High-Value Business Traveler surge. These passengers frequently request premium rides to downtown state offices or high-end hotels. Actively prioritize rideshare positioning near Rensselaer station."
+- **Mock test placement:** Right after the `Promise.all` resolves and before `aggregateTrainArrivalsByHour` runs. Inject two trains: one NYP (Enroute, should pass), one RUT (Enroute, should be dropped by hub filter). Use a `let` binding for `rawTrains` so the mock can override the live fetch. Gate behind a `SPRINT_16_MOCK_ENABLED` constant for clean removal.
+- **Out of scope (brief):** Frontend UI/checkboxes (Sprint 17), flight/Yelp/Ticketmaster logic.
+
+### Build Steps
+- [x] 0. Write Sprint 16 plan to `tasks/todo.md`.
+- [x] 1. `app/api/dispatch/route.js`: add `HIGH_VALUE_STATIONS = ['NYP', 'BOS', 'WAS', 'PHL']` constant near `HIGH_VALUE_HUBS` at top of file.
+- [x] 2. `app/api/dispatch/route.js`: rewrite `aggregateTrainArrivalsByHour` — add cancellation drop, hub drop (`origCode` not in `HIGH_VALUE_STATIONS`), collect origins per hour bucket, return `{ hour: "<n> Arrival(s) (from CODE, CODE)" }` strings.
+- [x] 3. `app/api/dispatch/route.js`: update `buildSystemPrompt` Rail Surge block — new string-shape example + business-traveler rule (locked string above).
+- [x] 4. `app/api/dispatch/route.js`: change `rawTrains` from `const` (destructured) to `let` so mock can override. Inject Sprint 16 temporary mock right after `Promise.all` resolves; log `=== SPRINT 16 MOCK TRAINS INJECTED ===`.
+- [x] 5. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns PARSE OK.
+- [x] 6. Standalone aggregator verification: run isolated test script using the same algorithm on the mock array; confirm NYP makes it through formatted as `"1 Arrival (from NYP)"` and RUT is dropped. **RESULT: All 4 checks PASS — output `{ "1 PM": "1 Arrival (from NYP)" }`; RUT dropped; cancelled NYP dropped.**
+- [x] 7. Remove the temporary mock + revert `rawTrains` binding back to `const`. Final parse-check returns PARSE OK.
+
+### Acceptance Criteria
+- Payload Isolation: `=== MERGED DISPATCH PAYLOAD ===` log shows `trainsByHour` containing the NYP train formatted as a string (e.g., `"1 Arrival (from NYP)"`).
+- Filter Verification: RUT (Rutland) train is completely dropped and does not appear in the merged payload.
+- Cancellation Verification: code explicitly checks for and drops cancelled trains.
+
+### Out of Scope (Anti-Goals)
+- Frontend UI changes / checkboxes (Sprint 17).
+- Flight, Yelp, or Ticketmaster logic.
