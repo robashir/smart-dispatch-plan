@@ -10,6 +10,10 @@ const HIGH_VALUE_HUBS = ["MCO", "ATL", "ORD", "DFW", "DEN", "LAX", "LAS", "JFK",
 // Schenectady commuter hops, etc.) are dropped before bucketing.
 const HIGH_VALUE_STATIONS = ["NYP", "BOS", "WAS", "PHL"];
 
+// Sprint 20: spatial anchor for the airport. Used with haversineMiles +
+// the 20 mph city-speed assumption to compute the driver's leaveBy time.
+const ALB_COORDS = { lat: 42.7483, lng: -73.8017 };
+
 function buildSystemPrompt(activePlatforms, includeAirport, includeAmtrak) {
   const tf = (v) => (v ? "TRUE" : "FALSE");
   return `You are an Elite Multi-App Dispatcher with deep knowledge of urban gig-economy dynamics.
@@ -78,11 +82,12 @@ Weather Integration (INVISIBLE BRAIN — applies to both states):
 
 Transit Surge — Flight Data (INVISIBLE BRAIN — applies to both states):
 NOTE: All hotspot volumes and transit arrival counts have been algorithmically scaled by both temporal and weather modifiers. The math reflects the compounding impact of current city rhythms alongside immediate or impending weather conditions. Trust the provided numbers implicitly.
-- The FLIGHTS block is an object like { "8 PM": "3 Arrivals (from MCO, ATL, ORD)" }. Each value names the count AND the origin IATA codes for high-value hub arrivals at ALB during that local hour. Short commuter hops are already filtered out — every flight you see is a high-value passenger wave.
+- The FLIGHTS block is an object like { "8 PM": "3 Arrivals (from MCO, ATL, ORD). Leave current location by 7:35 PM" }. Each value names the count, the origin IATA codes for high-value hub arrivals at ALB during that local hour, AND a pre-computed "Leave current location by" departure time. Short commuter hops are already filtered out — every flight you see is a high-value passenger wave.
+- The "Leave by" time is mathematically pre-computed by the backend based on live driving distances and passenger egress delays. Instruct the driver to leave at EXACTLY this time. Do not attempt to calculate your own travel times.
 - If any hour bucket inside the window has one or more arrivals, treat ALB airport as a HIGH-PRIORITY surge zone for that hour and prioritize positioning the driver there 10-15 minutes before the wave.
 - If the block is empty or "Flight data unavailable", do NOT mention flights or the airport unless STATE B baseline advice naturally includes it.
 - When you see flight arrivals from major leisure hubs (like MCO or LAS), explicitly advise the driver to turn on UberXL / Lyft XL to accommodate heavy luggage.
-- Weave airport timing INTO an existing step (e.g., "by 6:45 PM, swing to ALB — MCO + LAS land at 7 PM, flip on UberXL for luggage"). Do NOT add an extra step or a flight summary line.
+- Weave airport timing INTO an existing step using the pre-computed leave-by minute verbatim (e.g., "leave for ALB by 7:35 PM — MCO + LAS curb at 8 PM, flip on UberXL for luggage"). Do NOT add an extra step or a flight summary line.
 - The 4-5 line cap is still absolute. Flights do NOT earn extra lines.
 
 Rail Surge — Train Data (INVISIBLE BRAIN — applies to both states):
@@ -359,8 +364,9 @@ async function fetchAlbArrivals({ apiKey }) {
 // Sprint V2: drop flights whose departure IATA isn't in HIGH_VALUE_HUBS, and
 // emit values as "<count> Arrivals (from CODE, CODE)" strings instead of ints
 // so the LLM sees origin context inline.
-function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideMod = 1.0) {
+function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideMod = 1.0, minutesToAirport = 0) {
   const originsByHour = {};
+  const earliestShiftedByHour = {};
   const seen = new Set();
   for (const f of flights) {
     const status = (f.flight_status || "").toLowerCase();
@@ -378,26 +384,42 @@ function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideM
     const arrivalUtc = new Date(scheduled);
     if (Number.isNaN(arrivalUtc.getTime())) continue;
 
-    // Shift into the same "wall-clock-as-UTC" frame the rest of the file uses.
-    const arrivalLocal = new Date(arrivalUtc.getTime() - offsetMin * 60 * 1000);
-    if (arrivalLocal < localStart || arrivalLocal >= localEnd) continue;
+    // Sprint 20: +30 min egress shift BEFORE bucketing. Passengers don't
+    // hit the curb when the plane lands — they deplane, gather bags, and
+    // walk out ~30 min later. The driver should be dispatched to the curb,
+    // not the runway.
+    const shiftedUtc = new Date(arrivalUtc.getTime() + 30 * 60 * 1000);
 
-    let h = arrivalLocal.getUTCHours();
+    // Shift into the same "wall-clock-as-UTC" frame the rest of the file uses.
+    const shiftedLocal = new Date(shiftedUtc.getTime() - offsetMin * 60 * 1000);
+    if (shiftedLocal < localStart || shiftedLocal >= localEnd) continue;
+
+    let h = shiftedLocal.getUTCHours();
     const ampm = h >= 12 ? "PM" : "AM";
     h = h % 12 || 12;
     const label = `${h} ${ampm}`;
     if (!originsByHour[label]) originsByHour[label] = [];
     originsByHour[label].push(depIata);
+
+    if (!earliestShiftedByHour[label] || shiftedLocal < earliestShiftedByHour[label]) {
+      earliestShiftedByHour[label] = shiftedLocal;
+    }
   }
 
   // Sprint 18: scale raw count by temporal rideMod BEFORE formatting. If the
   // rounded count drops to 0, omit the bucket entirely (per PO graceful
   // flooring rule).
+  // Sprint 20: leaveBy = earliest shifted arrival in bucket − minutesToAirport.
+  // Emitted as a Zero-Prompt-Math substring so the LLM never re-derives travel.
   const buckets = {};
   for (const [hour, codes] of Object.entries(originsByHour)) {
     const scaled = Math.round(codes.length * rideMod);
     if (scaled <= 0) continue;
-    buckets[hour] = `${scaled} Arrivals (from ${codes.join(", ")})`;
+    const word = scaled === 1 ? "Arrival" : "Arrivals";
+    const earliest = earliestShiftedByHour[hour];
+    const leaveByDate = new Date(earliest.getTime() - minutesToAirport * 60 * 1000);
+    const leaveByStr = formatLeaveBy(leaveByDate);
+    buckets[hour] = `${scaled} ${word} (from ${codes.join(", ")}). Leave current location by ${leaveByStr}`;
   }
   return buckets;
 }
@@ -523,6 +545,32 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Sprint 20: miles between two lat/lng points via Haversine. Driver →
+// ALB_COORDS feeds the Zero-Prompt-Math leaveBy calculator
+// (minutesToAirport = ceil((miles / 20) * 60)). Ported verbatim from
+// test-airport-math.js after all 8 scenarios PASSed.
+function haversineMiles(lat1, lng1, lat2, lng2) {
+  const R = 3958.8; // Earth radius in miles
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Sprint 20: render a "wall-clock-as-UTC" Date into "h:mm AM/PM" for the
+// leaveBy substring. Mirrors toWallClockLabel but keeps the minutes (not
+// padded to top-of-hour) since the leaveBy is rarely on the hour.
+function formatLeaveBy(date) {
+  let h = date.getUTCHours();
+  const m = date.getUTCMinutes();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 // Sprint V2.5: fetch top 10 open businesses for one category with full
@@ -761,12 +809,20 @@ export async function POST(request) {
     const finalFoodMod = foodMod * weatherFoodMod;
     const finalRideMod = rideMod * weatherRideMod;
 
+    // Sprint 20: Zero-Prompt Math. Compute exact driving time to ALB from the
+    // driver's current coords (Haversine miles ÷ 20 mph city assumption) so
+    // the aggregator can pre-bake the "Leave current location by" minute
+    // directly into each hour bucket. The LLM is forbidden from re-deriving.
+    const milesToAirport = haversineMiles(latitude, longitude, ALB_COORDS.lat, ALB_COORDS.lng);
+    const minutesToAirport = Math.ceil((milesToAirport / 20) * 60);
+
     let flightsByHour = aggregateArrivalsByHour(
       rawFlights,
       localStart,
       localEnd,
       offsetMin,
-      finalRideMod
+      finalRideMod,
+      minutesToAirport
     );
 
     let trainsByHour = aggregateTrainArrivalsByHour(

@@ -728,3 +728,52 @@ Parse-check (per L4): `PARSE OK` — `buildSystemPrompt`'s outer template litera
 
 ### Out of Scope (Anti-Goals)
 - Frontend UI toggle for the weather engine, capping the combined multiplier, iterating past `weatherArray[1]`.
+
+## Sprint 20 — Airport Egress & Routing Precision
+
+**Goal:** Replace fuzzy LLM-side travel-time guessing with backend Zero-Prompt Math. Algorithmically shift every flight arrival +30 min forward (passenger deplane/egress delay) before bucketing, then use Haversine miles ÷ 20 mph to compute the driver's exact "Leave current location by" minute. The aggregator emits one pre-baked string per hour bucket: `"{n} Arrivals (from {hubs}). Leave current location by {h:mm AM/PM}"` — the model is forbidden from re-deriving travel time.
+
+### Decisions (locked before coding)
+- **TDD-first (mirror Sprint 18 + 19):** Build the math in standalone `test-airport-math.js` at repo root. Validate Haversine + 30-min shift + leaveBy subtraction with the PO's fixture (driver at Roessleville, two flights landing at 4:45 / 4:55 PM EDT). Only after PASS, port into `route.js`.
+- **Spatial constants (locked, from PO):** `ALB_COORDS = { lat: 42.7483, lng: -73.8017 }`. Driver coords come from the existing `latitude`/`longitude` in the POST request body.
+- **Speed assumption (locked, from PO):** 20 mph city driving. `minutesToAirport = Math.ceil((haversineMiles / 20) * 60)`. Anti-goal forbids Google/Mapbox traffic APIs.
+- **Egress shift (locked, from PO):** +30 minutes added to each flight's `arrival.scheduled` BEFORE bucketing. Applied to flights only — NOT to Amtrak (train egress is instant; PO anti-goal).
+- **Bucket key off shifted time:** the wall-clock label (`"5 PM"`) is derived from `T_shifted` (post-+30-min), NOT raw scheduled. A 4:45 PM landing → 5:15 PM shifted → "5 PM" bucket.
+- **leaveBy = earliest shifted time in bucket − minutesToAirport.** Per-bucket leaveBy means the driver always sees the time to depart for the FIRST plane of that hour (the conservative early bound). Format with `formatLeaveBy(date)` → `"h:mm AM/PM"`.
+- **Aggregator output string (locked, from PO):** `"${count} Arrivals (from ${origins.join(", ")}). Leave current location by ${formattedLeaveBy}"`. Singular `"Arrival"` for count=1 to keep grammar consistent with Sprint 18's existing pluralization fix.
+- **Aggregator signature change:** `aggregateArrivalsByHour` gets a new last positional arg `minutesToAirport` (defaults to 0 → no leaveBy line, preserves backwards-compat for tests that don't pass it). Computed once in POST off driver coords; passed in. `aggregateTrainArrivalsByHour` is untouched (no egress shift, no leaveBy).
+- **Synthetic-data-swap interplay (L5):** when `includeAirport === false`, the existing Sprint 15 ripple-string overwrite still wins — it replaces the entire bucket value with the off-airport instruction. The leaveBy substring is destroyed alongside the raw arrivals, which is correct (no airport mention allowed).
+- **Prompt update (locked, from PO):** in the Transit Surge — Flight Data block of `buildSystemPrompt`, append a Zero-Prompt-Math sentence: `"The 'Leave by' time is mathematically pre-computed by the backend based on live driving distances and passenger egress delays. Instruct the driver to leave at EXACTLY this time. Do not attempt to calculate your own travel times."`. Update the FLIGHTS object example to show the new string shape.
+- **Anti-goals (PO):** NO Google Maps / Mapbox / live traffic. NO +30-min shift on Amtrak. NO frontend UI changes.
+- **Cleanup:** delete `test-airport-math.js` only after `route.js` integration parse-checks cleanly (per Sprint Initiation rule).
+
+### Build Steps
+- [x] 0. Write Sprint 20 plan to `tasks/todo.md`.
+- [x] 1. Create standalone `test-airport-math.js` at repo root with `haversineMiles`, `minutesToAirport` calc, and a mock-aggregator that mirrors the +30 shift + earliest-bucket + leaveBy subtraction. Run `node test-airport-math.js`; verify PASS. ✅ 8/8 PASS.
+- [x] 2. `app/api/dispatch/route.js`: add `ALB_COORDS` constant near `HIGH_VALUE_HUBS`. Add `haversineMiles` helper (use existing Haversine pattern but return miles, not meters). Add `formatLeaveBy` helper.
+- [x] 3. `app/api/dispatch/route.js`: inside `aggregateArrivalsByHour`, accept `minutesToAirport` arg. Apply `+30 min` to each kept arrival; bucket off the shifted time; track earliest shifted per bucket; subtract `minutesToAirport` to derive leaveBy; emit `"${n} Arrivals (from ...). Leave current location by ${leaveByStr}"`.
+- [x] 4. `app/api/dispatch/route.js`: inside POST, compute `minutesToAirport` from `(latitude, longitude)` ↔ `ALB_COORDS`; pass into `aggregateArrivalsByHour` call.
+- [x] 5. `app/api/dispatch/route.js`: in `buildSystemPrompt`, update the FLIGHTS example object to the new string format and append the locked Zero-Prompt-Math sentence to the Flight Surge block.
+- [x] 6. Parse-check per L4: `node sprint20-parsecheck.mjs` returned `PARSE OK`.
+- [x] 7. Delete `test-airport-math.js` (and the temp `sprint20-parsecheck.mjs` scaffold).
+
+### Test Results (Sprint 20 TDD Run)
+
+`node test-airport-math.js` — 8/8 PASS:
+- Haversine miles (Roessleville → ALB): 4.7350 miles (in the 4–5.5 mi sanity range).
+- `minutesToAirport @ 20 mph`: 15 (matches `ceil((miles/20)*60)`).
+- Bucket key off shifted time: exactly `"5 PM"` (4:45 PM EDT + 30 min = 5:15 PM EDT).
+- Bucket value: `"2 Arrivals (from MCO, ATL). Leave current location by 5:00 PM"`.
+- Singular `"Arrival"` when count=1 (preserves Sprint 18 grammar fix).
+- Without the +30 shift, 4:45 PM EDT buckets into `"4 PM"`; with the shift, into `"5 PM"` (proves the shift is the cause, not a coincidence).
+
+Parse-check (per L4): `PARSE OK` — `buildSystemPrompt`'s outer template literal survives the Flight Surge block edit (new example string + Zero-Prompt-Math sentence) with no inner-backtick regressions.
+
+### Acceptance Criteria
+- Test-Driven Validation: `node test-airport-math.js` PASSES — 4:45 PM flight shifts to 5:15 PM, bucket = "5 PM", leaveBy = 5:15 PM − minutesToAirport.
+- Zero-Prompt Math: `=== MERGED DISPATCH PAYLOAD ===` log shows `flightsByHour` values containing the literal `"Leave current location by ..."` substring.
+- AI Compliance: the CoT's airport step quotes the exact leaveBy minute rather than deriving its own.
+- Parse Check: `route.js` imports cleanly (no L4 regressions).
+
+### Out of Scope (Anti-Goals)
+- Live-traffic APIs (Google Maps, Mapbox); +30-min shift on Amtrak; frontend UI changes.
