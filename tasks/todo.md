@@ -777,3 +777,258 @@ Parse-check (per L4): `PARSE OK` — `buildSystemPrompt`'s outer template litera
 
 ### Out of Scope (Anti-Goals)
 - Live-traffic APIs (Google Maps, Mapbox); +30-min shift on Amtrak; frontend UI changes.
+
+---
+
+## Sprint 21 — Data Structuring Phase 1 (Flights)
+
+**Epic:** Excising the LLM (Phase 1). Transition the backend from emitting prompt-friendly string buckets (`{ "5 PM": "2 Arrivals (from MCO, ATL). Leave current location by 5:00 PM" }`) to emitting strict JSON arrays of objects that a future Next.js/React frontend can `.map()` directly. We are trusting the LLM to natively parse the new array during this transitional phase — `SYSTEM_PROMPT` is intentionally NOT updated.
+
+### Locked Decisions (from PO)
+- **Scope:** Flights only. Amtrak (`trainsByHour`) and Yelp (`gigDemand`) stay as-is this sprint.
+- **New output shape (locked):** `aggregateArrivalsByHour` returns an **array** of objects, each with exactly: `type` (always `"flight"`), `hourBucket` (e.g. `"5 PM"`), `volume` (Number, post-`rideMod` scaling), `origins` (Array of IATA codes in insertion order), `leaveBy` (formatted by existing `formatLeaveBy`), `hub` (always `"ALB"`).
+- **Empty case:** return `[]` (not `{}`, not `null`). All downstream length checks must move from `Object.keys(...).length` to `Array.isArray(...) && ....length`.
+- **Sanitization patch (CRITICAL — L5 belt+suspenders still applies):** the Sprint 15 ripple swap iterated with `Object.keys(flightsByHour)`. That breaks on an array. Replace with `flightsByHour = flightsByHour.map(...)` emitting `{ type: "flight_ripple", message: "..." }` per element. Message text is the same Sprint 15 string verbatim.
+- **Platform-isolation reset:** the `!activePlatforms.rideshare` branch must now reset `flightsByHour = []` (not `{}`). `trainsByHour` is untouched.
+- **`summarizeFlightsByHour` minimal patch:** still `JSON.stringify` the bucket value (now an array), still return `"Flight data unavailable"` when empty. Use `.length === 0` instead of `Object.keys(...).length === 0` for clarity.
+- **Prompt untouched (PO anti-goal):** `buildSystemPrompt` is NOT edited. The LLM gets the raw JSON array string in `userMessage` and is trusted to parse it.
+
+### Assumptions / Risks
+- Pure data-shape sprint — no new APIs, no math changes. Volume, origins ordering, leaveBy minute, and bucket-key derivation are all preserved verbatim from Sprint 20.
+- The LLM may briefly perform worse on the airport step while it adapts to the new shape — accepted by PO as part of the transition.
+- L5 belt+suspenders for the airport-off case is preserved (ripple objects replace raw flight data even though the structural keys changed).
+
+### Build Steps
+- [x] 0. Write Sprint 21 plan to `tasks/todo.md`.
+- [x] 1. Recreate `test-airport-math.js` at repo root (deleted in Sprint 20 cleanup). Embed a self-contained copy of the rewritten `aggregateArrivalsByHour` + `formatLeaveBy` + `HIGH_VALUE_HUBS`. Assert exact array shape per PO spec. Run `node test-airport-math.js`; require PASS before touching `route.js`. ✅ 2/2 PASS.
+- [x] 2. `app/api/dispatch/route.js`: rewrite the tail of `aggregateArrivalsByHour` so it pushes objects into an array instead of keying strings into an object. Preserve every upstream branch (dedupe fingerprint, status filter, hub filter, +30-min egress shift, earliest-shifted tracking, rideMod scaling, sub-1 graceful floor).
+- [x] 3. `app/api/dispatch/route.js`: update the `!activePlatforms.rideshare` reset from `{}` to `[]`.
+- [x] 4. `app/api/dispatch/route.js`: rewrite the Sprint 15 ripple-swap block to use `Array.isArray` + `.map()` emitting `{ type: "flight_ripple", message: "..." }` objects. Train ripple block stays untouched.
+- [x] 5. `app/api/dispatch/route.js`: update `summarizeFlightsByHour` empty-check to `.length === 0`.
+- [x] 6. Parse-check per L4: `node --check app/api/dispatch/route.js` → `PARSE OK`.
+- [x] 7. Re-run `node test-airport-math.js` after integration to confirm the route.js logic still produces the locked array shape. ✅ 2/2 PASS.
+
+### Acceptance Criteria
+- Test-Driven Validation: `node test-airport-math.js` PASSES with the exact PO-spec array shape.
+- Payload Visibility: `=== MERGED DISPATCH PAYLOAD ===` log shows `flightsByHour` as a JSON array of objects.
+- Ripple Effect Intact: with `includeAirport === false`, the array is replaced element-wise with `{ type: "flight_ripple", message: "..." }` — no iteration error.
+- L4 parse-check: `route.js` imports cleanly.
+
+### Out of Scope (Anti-Goals)
+- Do NOT edit `SYSTEM_PROMPT` or `buildSystemPrompt`.
+- Do NOT restructure `trainsByHour` or `gigDemand`.
+- Do NOT touch any Next.js frontend UI.
+
+---
+
+## Sprint 22 — Data Structuring Phase 1 (Trains & Yelp)
+
+**Epic:** Excising the LLM (Phase 1) — Double Feature. Sprint 21 proved the LLM natively parses array shapes without prompt updates (flights). Sprint 22 finishes Phase 1 by converting the remaining two pipelines (Amtrak trains, Yelp food/grocery hotspots) to the same `.map()`-friendly array-of-objects shape so a future Next.js/React frontend can render unified UI cards.
+
+### Locked Decisions (from PO)
+- **Train output shape (locked):** `aggregateTrainArrivalsByHour` returns an **array** of objects, each with exactly: `type` (always `"train"`), `hourBucket` (e.g. `"5 PM"`), `volume` (Number, post-`rideMod`), `origins` (Array of station codes in insertion order), `hub` (always `"Rensselaer"`). No leaveBy — train egress is instant (PO anti-goal preserved from Sprint 20).
+- **Train empty case:** return `[]`. The `!Array.isArray(trains)` defensive guard must also return `[]` (was `{}`).
+- **Hotspot output shape (locked):** each hotspot object gains a `type` key (`"food"` or `"grocery"`) and `categories` becomes an `Array<string>` (was comma-joined string). Each category string is `.trim()`-ed for defensive whitespace cleanup. Fallback `"Mixed"` becomes `["Mixed"]`.
+- **Plumbing:** `computeHotspots(businesses, type)` gains a second positional arg. `getLocalDensityData` passes `"food"` and `"grocery"` literals at the two call sites.
+- **Sanitization patch (Amtrak ripple — L5 belt+suspenders preserved):** the Sprint 17 train-ripple block iterated with `Object.keys(trainsByHour)`. Breaks on array. Replace with `Array.isArray` + `.map()` emitting `{ type: "train_ripple", message: "..." }`. Message text is the Sprint 17 string verbatim.
+- **Platform-isolation reset:** `!activePlatforms.rideshare` branch must now reset `trainsByHour = []` (matches Sprint 21's flight fix). Hotspots already correctly reset to `[]`.
+- **`summarizeTrainsByHour` minimal patch:** use `Array.isArray(buckets) && buckets.length === 0` instead of `Object.keys(buckets).length === 0`.
+- **Prompt untouched (PO anti-goal):** `buildSystemPrompt` is NOT edited. LLM continues to parse the raw JSON natively this sprint.
+
+### Assumptions / Risks
+- Pure data-shape sprint. Volume math, origin ordering, cluster sweep, tier classification all preserved verbatim.
+- Adding `type` to each hotspot expands the in-prompt JSON by ~17 chars/hotspot — negligible.
+- L5 belt+suspenders preserved for the Amtrak-off case (ripple objects replace raw train data even though structural keys changed).
+- The volume-scaling step at line 847 still treats `gigDemand.foodHotspots` as an array of objects — adding `type`/`categories[]` doesn't break the `...h, volume: ...` spread.
+
+### Build Steps
+- [x] 0. Write Sprint 22 plan to `tasks/todo.md`.
+- [x] 1. Create temporary `test-structuring.js` at repo root with self-contained copies of the rewritten `aggregateTrainArrivalsByHour` + `computeHotspots`. Assert exact array shapes per PO spec (train + food hotspot). Run `node test-structuring.js`; require PASS before touching `route.js`.
+- [x] 2. `app/api/dispatch/route.js`: rewrite the tail of `aggregateTrainArrivalsByHour` — change non-array guard `return {}` → `return []`, change `buckets = {}` → `buckets = []`, push `{ type: "train", hourBucket, volume, origins, hub: "Rensselaer" }` objects. Preserve every upstream filter (dedupe, status, HIGH_VALUE_STATIONS, ALB stop lookup, rideMod scaling, sub-1 floor).
+- [x] 3. `app/api/dispatch/route.js`: update `summarizeTrainsByHour` empty-check to `Array.isArray(...) && .length === 0`.
+- [x] 4. `app/api/dispatch/route.js`: add `type` parameter to `computeHotspots` signature; emit `type` key on each pushed hotspot; emit `categories` as array (`topCats.map(s => s.trim())`, fallback `["Mixed"]`). Update both `getLocalDensityData` call sites to pass `"food"` / `"grocery"`.
+- [x] 5. `app/api/dispatch/route.js`: in POST handler, update the `!activePlatforms.rideshare` reset from `trainsByHour = {}` to `trainsByHour = []`.
+- [x] 6. `app/api/dispatch/route.js`: rewrite the Sprint 17 Amtrak ripple-swap block to use `Array.isArray` + `.map()` emitting `{ type: "train_ripple", message: "..." }` objects.
+- [x] 7. Parse-check per L4: `node --check app/api/dispatch/route.js` → `PARSE OK`.
+- [x] 8. Re-run `node test-structuring.js` after integration to confirm.
+
+### Acceptance Criteria
+- Test-Driven Validation: `node test-structuring.js` PASSES with the exact PO-spec array shapes (train + food hotspot).
+- Payload Visibility: `=== MERGED DISPATCH PAYLOAD ===` log shows `trainsByHour`, `gigDemand.foodHotspots`, `gigDemand.groceryHotspots` as arrays of objects with the `type` key.
+- Ripple Effect Intact: with `includeAmtrak === false`, the array is replaced element-wise with `{ type: "train_ripple", message: "..." }` — no iteration error.
+- L4 parse-check: `route.js` imports cleanly.
+
+### Out of Scope (Anti-Goals)
+- Do NOT edit `SYSTEM_PROMPT` or `buildSystemPrompt`.
+- Do NOT touch any Next.js frontend UI.
+- Do NOT calculate travel times or egress buffers for trains (PO anti-goal carried over from Sprint 20).
+
+---
+
+## Sprint 23 — The Deterministic Router (Multi-Algorithm)
+
+**Epic:** Excising the LLM (Phase 2). Sprints 21-22 converted every backend pipeline into strict array shapes. Sprint 23 replaces the LLM's "Chain of Thought" prioritization with a pure backend `buildItinerary(payload, strategy)` that flattens flights + trains + hotspots into a single sorted array. Three driver-selectable strategies: `chronological`, `profitability`, `hybrid`.
+
+### Locked Decisions (from PO)
+- **Function signature (locked):** `buildItinerary(payload, strategy)` returns a flat array of source items (flights, trains, food/grocery hotspots) sorted by the chosen strategy. Source items are spread from `payload.flightsByHour`, `payload.trainsByHour`, `payload.gigDemand.foodHotspots`, `payload.gigDemand.groceryHotspots`.
+- **Time normalization:** parse "H[:MM] AM/PM" → minutes-since-midnight. Prefer `leaveBy` precision when present; else `hourBucket`; else treat as "Current/Ongoing".
+- **Chronological strategy:** sort ascending by item time. Items with no time signal (hotspots) sort to top — consistent with the hybrid "Current/Ongoing" semantics.
+- **Profitability strategy:** `surgeScore` = `volume * finalRideMod` for flights/trains, `volume * finalFoodMod + 2 (if tier === "High-Value ($$$)")` for food (and grocery by symmetry). Sort descending.
+- **Hybrid strategy:** group by `hourBucket`. Sort groups chronologically. Within each group, sort by `surgeScore` desc. No-`hourBucket` items go to a "Current/Ongoing" group at the top.
+- **Payload extension:** add `finalRideMod` and `finalFoodMod` as top-level keys on `mergedPayload` (already computed in the POST handler at lines 826-827; just surface them).
+- **Default strategy:** `routingStrategy ?? "hybrid"` on the backend.
+- **Frontend dropdown:** placed inside (or below) the Location/Hub Filtering panel per PO. Three options: Chronological, Profitability, Hybrid.
+
+### Assumptions / Risks
+- The PO's surge-score formula multiplies `volume * finalRideMod` even though Sprints 18/21 already scaled flight/train volume by `finalRideMod` at the aggregator. This compounds. Per spec — proceeding as written; if PO wants to undo the compound, switch to raw counts later.
+- LLM remains untouched (anti-goal). The `itinerary` array is appended to `mergedPayload` only for terminal-log visibility and future React consumption.
+- No new sanitization needed — the existing `!activePlatforms.*` and `!includeAirport/!includeAmtrak` blocks already wipe / synthetic-swap the source arrays before `buildItinerary` runs.
+
+### Build Steps
+- [x] 0. Write Sprint 23 plan to `tasks/todo.md`.
+- [x] 1. Create `test-router.js` at repo root with a self-contained `buildItinerary` + mock `mergedPayload` per PO spec. Assert all three strategies produce the expected flat array. Run `node test-router.js`; require PASS before touching `route.js`. ✅ 3/3 PASS.
+- [x] 2. `app/api/dispatch/route.js`: port `buildItinerary` + `parseTimeLabel` + `surgeScore` helpers.
+- [x] 3. `app/api/dispatch/route.js`: destructure `routingStrategy` from request body (default `"hybrid"`). Add `finalRideMod`/`finalFoodMod` to `mergedPayload`. Compute `itinerary = buildItinerary(mergedPayload, routingStrategy)` and append.
+- [x] 4. `app/page.js`: add `routingStrategy` state, render dropdown inside the Location/Hub Filtering panel (or directly below), wire into the POST body.
+- [x] 5. Parse-check per L4: `node --check app/api/dispatch/route.js` → `PARSE OK`.
+- [x] 6. Re-run `node test-router.js` after integration to confirm the function still passes. ✅ 3/3 PASS.
+
+### Acceptance Criteria
+- Test-Driven Validation: `node test-router.js` PASSES all three strategies.
+- UI Integration: dropdown renders, state changes, value is in the POST body.
+- Payload Visibility: `=== MERGED DISPATCH PAYLOAD ===` log shows a new top-level `itinerary` array reflecting the chosen strategy.
+
+### Out of Scope (Anti-Goals)
+- Do NOT delete or modify the Anthropic LLM call. (Phase 4 work.)
+- Do NOT build React UI timeline cards yet.
+- Do NOT edit `SYSTEM_PROMPT` or `buildSystemPrompt`.
+
+## Sprint 24 — The Frontend UI Overhaul (Phase 3) — Plan
+
+**Epic:** Excising the LLM (Phase 3). Sprint 23 produced a deterministic sorted `itinerary` array on the backend. Sprint 24 makes the frontend stop rendering the LLM's text paragraph and start rendering a vertical timeline of typed React cards driven by `itinerary`.
+
+### Locked Decisions (from PO Initiation Prompt)
+- **New file:** `components/DispatchCards.jsx` at **repo root** (not `app/components/`). Per PO line "components/DispatchCards.jsx". Three named exports: `FlightCard`, `TrainCard`, `HotspotCard`. (PO said discrete files are also acceptable; staying with one file — simpler import, less file churn.)
+- **Prop name:** each card receives a single `data` prop (PO spec: `<FlightCard key={i} data={item} />`). Not `item`.
+- **Visual Excision (HARD REQUIREMENT):** the LLM's conversational text response (`data.plan`) is no longer rendered anywhere on the screen. Delete the `{plan && <pre>…</pre>}` block from `page.js`. Backend Anthropic call and `buildSystemPrompt` stay untouched (Phase 4 work) — the frontend just ignores `data.plan`.
+- **API change required:** `app/api/dispatch/route.js` currently returns only `{ plan }`. Add `itinerary` to the response payload. Source: `mergedPayload.itinerary` (already populated in Sprint 23 at [route.js:1022](app/api/dispatch/route.js#L1022)).
+- **Card-routing in `page.js`:** map over `itinerary` with `key={i}` and a switch on `item.type`:
+  - `"flight"` → `<FlightCard key={i} data={item} />`
+  - `"train"` → `<TrainCard key={i} data={item} />`
+  - `"food"` or `"grocery"` → `<HotspotCard key={i} data={item} />`
+- **Empty-state fallback:** when `itinerary.length === 0`, render a single message: `"No active surges detected for this window. Stand by or expand your search."` Style: same panel chrome as the cards.
+- **Styling:** Tailwind, mobile-friendly, dark theme to match existing `page.js` (`bg-neutral-900` / `border-neutral-700`). Accent strip or border per type:
+  - **FlightCard** → Blue accent (e.g., `border-l-4 border-blue-400`).
+  - **TrainCard** → Emerald accent (`border-emerald-400`).
+  - **HotspotCard** → Rose or Orange accent (`border-rose-400` chosen — higher contrast on dark bg than orange; revisit if PO objects).
+- **Form controls untouched.** Hours / Platforms / Location / Strategy / Button stay inline in `page.js`. (L7.)
+- **No new dependencies.** No icon library; use text labels only this sprint.
+
+### Item Shapes (verified against `app/api/dispatch/route.js`)
+```
+flight  → { type:"flight",  hourBucket:"5 PM", volume:4, origins:["JFK","BOS"], leaveBy:"4:30 PM", hub:"ALB" }
+train   → { type:"train",   hourBucket:"6 PM", volume:2, origins:["NYP","BOS"],                    hub:"Rensselaer" }
+food    → { type:"food",    location:"Pearl St & State St", volume:6, tier:"High-Value ($$$)", categories:["Sushi","Steakhouse"] }
+grocery → { type:"grocery", location:"Pearl St & State St", volume:6, tier:"Quick-Turn ($)",   categories:["Supermarket"] }
+ripples → { type:"flight_ripple"|"train_ripple", message:"..." }   // no hourBucket / no volume
+```
+
+### Card Content Spec (per PO)
+- **FlightCard** — prominent `leaveBy`, then `volume` rendered as "N Arrival(s)", then `hub` ("ALB"), then `origins.join(", ")` as a readable string.
+- **TrainCard** — `hourBucket`, `volume` ("N Arrival(s)"), `hub` ("Rensselaer"), `origins.join(", ")`.
+- **HotspotCard** — `location`, `tier`, `volume` ("Volume: N"), and `categories.map(c => <span className="px-2 py-1 ..."> {c} </span>)` rendering each category as a small Tailwind badge.
+
+### Open Question (need PO confirm)
+- **Ripple items** (`flight_ripple` / `train_ripple`) appear in `itinerary` when the user unchecks Airport/Amtrak. The PO spec's switch doesn't cover them. Options:
+  - (a) Skip in the switch — they silently drop from the UI (acceptable since they were synthesized purely to redirect the LLM, which we're now ignoring).
+  - (b) Add a minimal 4th branch rendering the `message` as a plain neutral card.
+  - **Default if no answer:** (a) — skip. The ripples only existed to steer the LLM; with the LLM excised from the UI, the synthetic message has no audience.
+
+### Assumptions / Risks
+- `data.itinerary` will be the array logged in `=== MERGED DISPATCH PAYLOAD ===`. Backend assignment confirmed at [route.js:1022](app/api/dispatch/route.js#L1022).
+- Empty itinerary is a real possibility (no key configured, all sources failed). Empty-state fallback covers it.
+- Risk: the existing `data.plan` field is still returned by the backend and may show up in dev tools; that's fine — it's not rendered.
+
+### Build Steps (per PO Core Build Steps)
+- [x] 0. Write this Sprint 24 plan to `tasks/todo.md`.
+- [x] 1. `app/api/dispatch/route.js`: add `itinerary: mergedPayload.itinerary` to the response JSON. ✅ Single-line edit at the `Response.json({ plan, eventCount, itinerary })` return.
+- [x] 2. Create `components/DispatchCards.jsx` at repo root with named exports `FlightCard`, `TrainCard`, `HotspotCard`. ✅ Pure function components, blue/emerald/rose left-border accents.
+- [x] 3. `app/page.js`: add `itinerary` state. Populate from `data.itinerary` after fetch. Reset to `[]` at the start of `handleClick`.
+- [x] 4. `app/page.js`: deleted `<pre>{plan}</pre>` block. Replaced with "Your Plan" header, empty-state fallback, and `itinerary.map(...)` switch. Ripples fall through to `return null` per user decision (silently dropped).
+- [x] 5. `plan` state kept (still set from fetch) but no longer rendered anywhere. Visual excision confirmed.
+- [x] 6. Imported `FlightCard, TrainCard, HotspotCard` from `../components/DispatchCards` in `app/page.js`.
+- [x] 7. Parse-check: `node --check app/api/dispatch/route.js` → **PARSE OK**. JSX requires Next.js compile (see step 8).
+- [ ] 8. **Manual browser verification (user must perform — I can't run a browser):** `npm run dev`, click "What's happening?". Confirm:
+  - Vertical list of typed cards renders.
+  - No LLM paragraph anywhere on screen.
+  - Switching routing strategy reorders the cards.
+  - Unchecking all platforms / hubs and clicking shows the empty-state message.
+
+### Acceptance Criteria (Definition of Done)
+- **Component Isolation:** `components/DispatchCards.jsx` exists and exports three distinct components.
+- **Data Binding:** UI maps over `itinerary` and binds JSON fields onto cards.
+- **Visual Excision:** the LLM `plan` text is not rendered anywhere on screen. Confirmed by grepping `page.js` for `pre` / `{plan}` in JSX — both gone.
+- **Empty State:** unchecking sources and dispatching shows the fallback message.
+- **Form Pixel-Parity:** Hours / Platforms / Location / Strategy / Button look and behave identically.
+- **API Contract:** `/api/dispatch` response JSON includes `itinerary` (array) — confirmed via DevTools Network tab.
+
+### Out of Scope (Anti-Goals)
+- Do NOT delete the Anthropic API call or `buildSystemPrompt` from the backend. (Phase 4.)
+- Do NOT add drag-and-drop, animations, or transitions.
+- Do NOT refactor any form control in `page.js`. (L7.)
+- Do NOT modify `buildItinerary`, `parseTimeLabel`, or `surgeScore` in `route.js`.
+- Do NOT add a state library, icon library, or any new npm dep.
+- Do NOT split `DispatchCards.jsx` into per-card files or add a barrel `index.js`.
+- Do NOT add tests for the card components this sprint.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 25 — The LLM Excision (Phase 4) — Plan
+
+**Epic:** Excising the LLM (Phase 4). Sprint 24 stopped rendering `data.plan`. Sprint 25 deletes the entire Anthropic call path from the backend so `/api/dispatch` returns the deterministic payload in milliseconds with zero AI cost.
+
+### Locked Decisions (from PO Initiation Prompt)
+- **Purge targets in `app/api/dispatch/route.js`:**
+  - `import Anthropic from "@anthropic-ai/sdk"`
+  - `buildSystemPrompt` function (lines 17–137)
+  - Inside POST: the `new Anthropic({...})` client init, the `client.messages.create({...})` call, the `<thinking>` extraction + strip, and the `ANTHROPIC_API_KEY` env check.
+  - **Note on PO line item "SYSTEM_PROMPT constant":** the codebase has no top-level `SYSTEM_PROMPT` const — the system prompt was always inlined into `buildSystemPrompt`'s return. Treated as already-deleted; only `buildSystemPrompt` actually exists to remove.
+- **Final return shape:** `Response.json(mergedPayload)`. Frontend already reads `data.itinerary` (set in Sprint 23 at `mergedPayload.itinerary`) — returning the full payload keeps that contract and gives the UI room to surface `temporalModifiers` / `weatherModifiers` later without another API change. `data.plan` disappears; Sprint 24 already stopped rendering it, so frontend keeps working.
+- **Math brain stays:** `buildItinerary`, `parseTimeLabel`, `surgeScore`, `computeTemporalModifiers`, `computeWeatherModifiers`, `aggregateArrivalsByHour`, `aggregateTrainArrivalsByHour`, `computeHotspots`, `haversineMeters`, `haversineMiles`, `formatLeaveBy`, all fetchers, and the `mergedPayload` assembly are untouched.
+- **Surgical orphan cleanup (per Rule 4):** helpers that exist *only* to format the LLM user message are removed because my excision is what orphans them:
+  - `summarizeWeather`, `summarizeFlightsByHour`, `summarizeTrainsByHour`, `summarizeEvents`, `formatLocalTime12h`, `toWallClockLabel`
+  - Inside POST: `activePlatformsLabel`, `currentLocalLabel`, `windowEndLabel`, `weatherText`, `flightsText`, `trainsText`, `gigDemandText`, `userMessage`
+- **Dependency cleanup:** `npm uninstall @anthropic-ai/sdk` to drop it from `package.json`.
+
+### Build Steps (per PO Core Build Steps)
+- [x] 0. Write this Sprint 25 plan to `tasks/todo.md`.
+- [x] 1. Delete `import Anthropic from "@anthropic-ai/sdk"` at the top of `app/api/dispatch/route.js`. ✅
+- [x] 2. Delete the entire `buildSystemPrompt` function. ✅ (~120 lines gone)
+- [x] 3. Delete the LLM-only helpers: `summarizeWeather`, `summarizeFlightsByHour`, `summarizeTrainsByHour`, `summarizeEvents`, `formatLocalTime12h`, `toWallClockLabel`. ✅
+- [x] 4. Inside POST: remove the `ANTHROPIC_API_KEY` env check, `activePlatformsLabel`, the user-message template + its label vars, the `new Anthropic({...})` client, the `client.messages.create(...)` call, the `<thinking>` capture, and the `plan` string assembly. ✅
+- [x] 5. Replace the final `Response.json({ plan, eventCount, itinerary })` with `Response.json(mergedPayload)`. ✅
+- [x] 6. `npm uninstall @anthropic-ai/sdk` — `package.json` no longer lists the SDK; 31 packages removed. ✅
+- [x] 7. `node --check app/api/dispatch/route.js` → **PARSE OK**. ✅
+- [x] 8. Grep `app/api/dispatch/route.js` for `Anthropic`, `buildSystemPrompt`, `SYSTEM_PROMPT`, `messages.create`, `thinking` → only 3 historical-comment hits (`toWallClockLabel`/`SYSTEM_PROMPT` mentioned in Sprint 4/18/21 narrative comments). No live code references. Left alone per Rule 4 (comment cleanup is out of scope). ✅
+- [ ] 9. **Manual browser verification (user must perform — I can't run a browser):** `npm run dev`, click "What's happening?". Confirm:
+  - Cards render essentially instantly (no 2–4 s Claude latency).
+  - DevTools Network tab: `/api/dispatch` response has no `plan` field; `itinerary` is present.
+  - Server log still prints `=== MERGED DISPATCH PAYLOAD ===` and `=== HOTSPOT CLUSTERS ===`; `=== CoT TIMELINE ===` is gone.
+
+### Acceptance Criteria (Definition of Done)
+- **Zero AI:** No references to Anthropic, prompts, or `messages.create` anywhere in `app/api/dispatch/route.js`.
+- **Zero AI dep:** `@anthropic-ai/sdk` no longer in `package.json` dependencies.
+- **Speed:** `/api/dispatch` returns the deterministic JSON payload immediately (bound only by Ticketmaster/Yelp/AviationStack/Amtraker/Open-Meteo upstream latency).
+- **Frontend unaffected:** existing card rendering keeps working because `data.itinerary` is still in the response (now top-level of `mergedPayload`).
+- **History intact:** Sprint 16–24 todo blocks untouched.
+
+### Out of Scope (Anti-Goals)
+- Do NOT touch `buildItinerary`, `parseTimeLabel`, `surgeScore`, or any aggregator / temporal / weather function.
+- Do NOT edit `app/page.js`, `components/DispatchCards.jsx`, or any other file outside `route.js` + `package.json` + `tasks/todo.md`.
+- Do NOT remove the `ANTHROPIC_API_KEY` entry from `.env` (user's secret store, not our concern).
+- Do NOT delete pre-existing dead code that was already orphaned before Sprint 25 (per Rule 4).
+- Do NOT introduce error handling, fallbacks, or response-shape backward-compat shims.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.

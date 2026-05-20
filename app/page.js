@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { FlightCard, TrainCard, HotspotCard } from "../components/DispatchCards";
 
 export default function Home() {
   const [status, setStatus] = useState("idle");
   const [plan, setPlan] = useState("");
+  const [itinerary, setItinerary] = useState([]);
   const [error, setError] = useState("");
   const [hours, setHours] = useState(4);
   const [platforms, setPlatforms] = useState({
@@ -14,10 +16,12 @@ export default function Home() {
   });
   const [includeAirport, setIncludeAirport] = useState(true);
   const [includeAmtrak, setIncludeAmtrak] = useState(true);
+  const [routingStrategy, setRoutingStrategy] = useState("hybrid");
 
   async function handleClick() {
     setError("");
     setPlan("");
+    setItinerary([]);
 
     if (!("geolocation" in navigator)) {
       setError("Geolocation is not supported on this device.");
@@ -34,7 +38,8 @@ export default function Home() {
         const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
         try {
-          const res = await fetch("https://beamish-salamander-98efb1.netlify.app/api/dispatch", {
+          const res = await fetch("https://beamish-salamander-98efb1.netlify.app/api/dispatch"
+, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -45,6 +50,7 @@ export default function Home() {
               platforms,
               includeAirport,
               includeAmtrak,
+              routingStrategy,
             }),
           });
 
@@ -55,6 +61,7 @@ export default function Home() {
           }
 
           setPlan(data.plan);
+          setItinerary(Array.isArray(data.itinerary) ? data.itinerary : []);
           setStatus("done");
         } catch (err) {
           setError(err.message);
@@ -157,6 +164,22 @@ export default function Home() {
           </div>
         </fieldset>
 
+        <label className="flex flex-col gap-2">
+          <span className="text-sm uppercase tracking-wide text-neutral-400">
+            Routing Strategy
+          </span>
+          <select
+            value={routingStrategy}
+            onChange={(e) => setRoutingStrategy(e.target.value)}
+            disabled={isBusy}
+            className="w-full py-3 px-4 rounded-xl bg-neutral-900 border border-neutral-700 text-lg disabled:opacity-60"
+          >
+            <option value="chronological">Chronological</option>
+            <option value="profitability">Profitability</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
+        </label>
+
         <button
           onClick={handleClick}
           disabled={isBusy}
@@ -171,14 +194,30 @@ export default function Home() {
           </div>
         )}
 
-        {plan && (
-          <div className="rounded-2xl bg-neutral-900 border border-neutral-700 p-5">
-            <h2 className="text-sm uppercase tracking-wide text-neutral-400 mb-3">
+        {status === "done" && (
+          <div className="flex flex-col gap-3">
+            <h2 className="text-sm uppercase tracking-wide text-neutral-400">
               Your Plan
             </h2>
-            <pre className="whitespace-pre-wrap font-sans text-lg leading-relaxed">
-              {plan}
-            </pre>
+            {itinerary.length === 0 ? (
+              <div className="rounded-xl bg-neutral-900 border border-neutral-700 p-5 text-neutral-300">
+                No active surges detected for this window. Stand by or expand your search.
+              </div>
+            ) : (
+              itinerary.map((item, i) => {
+                switch (item.type) {
+                  case "flight":
+                    return <FlightCard key={i} data={item} />;
+                  case "train":
+                    return <TrainCard key={i} data={item} />;
+                  case "food":
+                  case "grocery":
+                    return <HotspotCard key={i} data={item} />;
+                  default:
+                    return null;
+                }
+              })
+            )}
           </div>
         )}
       </div>
