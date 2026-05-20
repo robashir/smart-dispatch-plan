@@ -681,3 +681,50 @@ Outcome: belt-and-suspenders worked — by the time the system prompt is built, 
 
 ### Out of Scope (Anti-Goals)
 - Weather modifiers, Ticketmaster event modifiers, JSON-matrix configs, frontend changes.
+
+## Sprint 19 — The Predictive Weather Engine
+
+**Goal:** Intercept the Open-Meteo array already living in `route.js` to compute a second set of multipliers (`weatherFoodMod`, `weatherRideMod`) using a 1-hour lookahead model. Stack them directly on top of Sprint 18's temporal multipliers via pure multiplicative math — no caps, no floors on the combined multiplier — so chaotic compounding events (e.g., Fri 11 PM bar rush meeting a thunderstorm) physically explode in volume.
+
+### Decisions (locked before coding)
+- **TDD-first (mirror Sprint 18):** Build `computeWeatherModifiers(weatherArray)` inside a standalone `test-weather.js` at repo root. Validate all four states + several stacking scenarios against temporal mods. Only after 100% PASS, port into `route.js`.
+- **Input contract:** `weatherArray` is the existing `weatherWindowed` slice (objects with `{ time, tempF, precipChancePct, precipInches }`). Reads exactly `weatherArray[0]` (current hour) and `weatherArray[1]` (next hour). If the array is `null`/empty/<2 entries → default `{ weatherFoodMod: 1.0, weatherRideMod: 1.0 }` (graceful degradation per L1 spirit). Anti-goal forbids iterating beyond index 1.
+- **Output contract:** `{ weatherFoodMod: number, weatherRideMod: number }`. Default 1.0 / 1.0.
+- **State matrix (locked, from PO — evaluate strictly in this priority order; only one state can fire):**
+  1. Active Storm — `current.precipChancePct >= 50` OR `current.precipInches > 0.1` → `weatherFoodMod = 1.5`, `weatherRideMod = 0.75`
+  2. Pre-Surge — `current.precipChancePct < 50` AND `next.precipChancePct >= 50` → `weatherRideMod = 1.5`, `weatherFoodMod = 1.0`
+  3. Heatwave — `current.tempF >= 90` → `weatherFoodMod = 1.25`, `weatherRideMod = 0.9`
+  4. Default — `weatherFoodMod = 1.0`, `weatherRideMod = 1.0`
+- **Stacking math (locked, from PO):** pure multiplicative. `finalFoodMod = foodMod * weatherFoodMod`, `finalRideMod = rideMod * weatherRideMod`. NO `Math.min` / `Math.max` ceilings or floors on the combined multiplier. (The existing `Math.max(1, ...)` floor on food hotspot volume and the existing drop-bucket-if-rounds-to-0 rule on transit are pre-Sprint-18 behavior and stay.)
+- **Aggregator inputs:** pass `finalRideMod` into both `aggregateArrivalsByHour` and `aggregateTrainArrivalsByHour` (the parameter name in the aggregators stays `rideMod` — it's just receiving the compounded value now). Apply `finalFoodMod` to `gigDemand.foodHotspots[*].volume`.
+- **Payload visibility:** add `weatherModifiers: { weatherFoodMod, weatherRideMod }` as a separate key in `mergedPayload`. Keep `temporalModifiers` separate so the `=== MERGED DISPATCH PAYLOAD ===` log explicitly shows BOTH engines for debugging.
+- **Prompt note (locked, from PO):** replace ALL THREE existing "scaled by backend temporal modifiers" sentences (Flight Surge, Rail Surge, Multi-App Platform Switching) with: `"NOTE: All hotspot volumes and transit arrival counts have been algorithmically scaled by both temporal and weather modifiers. The math reflects the compounding impact of current city rhythms alongside immediate or impending weather conditions. Trust the provided numbers implicitly."`
+- **Anti-goals (PO):** NO frontend UI toggle for the weather engine. NO `Math.min` / `Math.max` cap on the combined multiplier. NO looping past `weatherArray[1]`.
+- **Cleanup:** delete `test-weather.js` only after `route.js` integration parse-checks cleanly (per Sprint Initiation rule).
+
+### Build Steps
+- [x] 0. Write Sprint 19 plan to `tasks/todo.md`.
+- [x] 1. Create standalone `test-weather.js` at repo root with `computeWeatherModifiers(weatherArray)` + tests covering: (a) each of the 4 states firing in isolation, (b) Active-Storm-beats-Pre-Surge priority check, (c) compounding scenarios that multiply temporal mods against weather mods. Run `node test-weather.js`; verify 100% PASS. ✅ 16/16 PASS (10 state cases + 6 stacking cases).
+- [x] 2. `app/api/dispatch/route.js`: port `computeWeatherModifiers` near `computeTemporalModifiers`.
+- [x] 3. `app/api/dispatch/route.js`: in POST, call `computeWeatherModifiers(weatherWindowed)`; compute `finalFoodMod = foodMod * weatherFoodMod` and `finalRideMod = rideMod * weatherRideMod`; pass `finalRideMod` into both transit aggregators (replacing `rideMod`); use `finalFoodMod` in the foodHotspots volume mutation (replacing `foodMod`).
+- [x] 4. `app/api/dispatch/route.js`: add `weatherModifiers: { weatherFoodMod, weatherRideMod }` to `mergedPayload`, alongside the existing `temporalModifiers`.
+- [x] 5. `app/api/dispatch/route.js`: replace all three "scaled by backend temporal modifiers" NOTE sentences inside `buildSystemPrompt` with the locked Sprint 19 string. ✅ grep confirmed 3/3 replacements.
+- [x] 6. Parse-check per L4: `node sprint19-parsecheck.mjs` returned `PARSE OK`.
+- [x] 7. Delete `test-weather.js` (and the temp `sprint19-parsecheck.mjs` scaffold).
+
+### Test Results (Sprint 19 TDD Run)
+
+`node test-weather.js` — 16/16 PASS:
+- State cases (10/10): default; Active Storm via precipChancePct; Active Storm via precipInches; Pre-Surge (dry→wet 1hr lookahead); Heatwave (92°F); priority — Active Storm beats Pre-Surge; priority — Heatwave loses to Active Storm; priority — Heatwave loses to Pre-Surge; graceful null array; graceful single-entry array.
+- Stacking cases (6/6, pure multiplicative — NO cap): baseline×default → 1.0/1.0; Dinner Rush × Active Storm → 2.25/0.75; Evening Commute × Pre-Surge → 1.0/2.25; Lunch Rush × Heatwave → 1.875/0.9; Friday Bar Rush × Active Storm (chaos compound) → 0.75/1.125; Evening Commute × Pre-Surge — chaos compound, no cap → 1.0/2.25.
+
+Parse-check (per L4): `PARSE OK` — `buildSystemPrompt`'s outer template literal survives the three new NOTE-sentence swaps with no inner-backtick regressions.
+
+### Acceptance Criteria
+- Test-Driven Validation: `test-weather.js` prints PASS for all 4 states and all stacking scenarios.
+- Payload Visibility: `=== MERGED DISPATCH PAYLOAD ===` log shows both `temporalModifiers` and `weatherModifiers` as separate keys.
+- Compounding Math: transit counts and food hotspot volumes reflect the pure product of both engines, with no artificial cap.
+- Parse Check: `route.js` imports cleanly (no L4 backtick regressions).
+
+### Out of Scope (Anti-Goals)
+- Frontend UI toggle for the weather engine, capping the combined multiplier, iterating past `weatherArray[1]`.
