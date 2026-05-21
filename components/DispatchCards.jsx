@@ -23,6 +23,26 @@ export function TrainCard({ data }) {
   );
 }
 
+// Sprint 32: Event Egress card. Surfaces venue + egressMod the moment the
+// surge window opens (Standard 2.0x / Mega-Venue 2.5x). Purple accent so it
+// reads distinct from FlightCard (blue) / TrainCard (emerald) / HotspotCard (rose).
+export function EventCard({ data }) {
+  return (
+    <div className="rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4">
+      <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">Event Egress</div>
+      <div className="text-2xl font-bold mb-2">{data.location}</div>
+      <div className="text-lg">{data.egressMod}x Surge Active</div>
+      <div className="flex flex-wrap gap-2 mt-2">
+        {data.categories.map((c) => (
+          <span key={c} className="px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded">
+            {c}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function HotspotCard({ data }) {
   return (
     <div className="rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-rose-400 p-4">
@@ -30,6 +50,9 @@ export function HotspotCard({ data }) {
         {data.type === "grocery" ? "Grocery Hotspot" : "Food Hotspot"}
       </div>
       <div className="text-2xl font-bold mb-2">{data.location}</div>
+      {data.anchorName && (
+        <div className="text-sm italic text-neutral-400 mb-2">Anchored by {data.anchorName}</div>
+      )}
       <div className="text-lg">{data.tier}</div>
       <div className="text-sm text-neutral-400 mb-2">Volume: {data.volume}</div>
       <div className="flex flex-wrap gap-2">

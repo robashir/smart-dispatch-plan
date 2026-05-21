@@ -1023,12 +1023,446 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - **Frontend unaffected:** existing card rendering keeps working because `data.itinerary` is still in the response (now top-level of `mergedPayload`).
 - **History intact:** Sprint 16–24 todo blocks untouched.
 
+## Sprint 30 — The UberXL / Leisure Hub Engine
+
+**Epic:** Multi-Variable Algorithmic Engine. `qualityMod` (food) and `fatigueMod` (aviation) are already live. Sprint 30 adds a `leisureMod` to the aviation pipeline so flights from leisure hubs operated by leisure-focused carriers stack a 1.4x multiplier — targeting luggage-heavy family/vacation rides that need UberXL/SUV.
+
+### Locked Decisions (from PO brief)
+- **Strict AND-gate:** `LEISURE_HUBS = ["MCO","LAS","MIA","CUN","RSW","OGG"]` AND `LEISURE_AIRLINES = ["NK","F9","B6","WN","SY"]`. Both must match → `1.4`. Else → `1.0`.
+- **Bucket carry:** MAX across bucket members (parity with Sprint 29 `fatigueMod`).
+- **Stack:** Multiplicative inside `surgeScore` — `volume * finalRideMod * fatigueMod * leisureMod`.
+- **Trigger log:** `"LEISURE HUB TRIGGERED: <ident> | Hub: <iata> | Mod: 1.4x"`.
+- **Anti-goals:** Food/grocery/train pipelines untouched. No UI changes. No new external APIs.
+
+### Build Steps
+- [x] 0. Append Sprint 30 plan to `tasks/todo.md`.
+- [x] 1. Create `test-leisure-engine.js` with `LEISURE_HUBS`/`LEISURE_AIRLINES`/`computeLeisureMod` + 3 PO-mandated assertions (MCO+NK→1.4, MCO+DL→1.0, JFK+NK→1.0). ✅
+- [x] 2. Run `node test-leisure-engine.js` → all 3 base + 1 integration stack assertion PASS. ✅
+- [x] 3. `app/api/dispatch/route.js`: add `LEISURE_HUBS` + `LEISURE_AIRLINES` constants alongside `HIGH_VALUE_STATIONS`. ✅
+- [x] 4. `app/api/dispatch/route.js`: add `computeLeisureMod(departureIata, airlineIata)` helper next to `computeFatigueMod`. ✅
+- [x] 5. `app/api/dispatch/route.js`: thread per-flight leisure computation through `aggregateArrivalsByHour` (trigger log + MAX-across-bucket carry + bucket attribute). ✅
+- [x] 6. `app/api/dispatch/route.js`: extend `surgeScore` for flight items to multiply by `leisureMod`. ✅
+- [x] 7. Parse-check (L4): `node --check app/api/dispatch/route.js` → **PARSE OK**. ✅
+- [ ] 8. Manual browser verification (user must perform): `npm run dev`, trigger dispatch. Confirm:
+  - Terminal shows `LEISURE HUB TRIGGERED: ...` when a Spirit/Frontier/JetBlue/Southwest/Sun Country flight from MCO/LAS/MIA/CUN/RSW/OGG appears.
+  - `=== MERGED DISPATCH PAYLOAD ===` shows `leisureMod: 1.4` on the matching bucket(s).
+  - Flight surgeScore (visible via `itinerary` sort order) is correctly inflated 1.4x vs an otherwise-identical non-leisure bucket.
+
+### Acceptance Criteria
+- **TDD validation:** `test-leisure-engine.js` passes all 3 strict AND-gate assertions. ✅
+- **Terminal verification:** Backend logs `LEISURE HUB TRIGGERED:` when both conditions hit.
+- **Proper scoring:** `surgeScore` inside `buildItinerary` chains `leisureMod` multiplicatively alongside `finalRideMod` and `fatigueMod`.
+
+### Out of Scope
+- Food/grocery/train pipeline changes, frontend UI changes, additional external APIs.
+
+## Backlog / Icebox
+
+Deferred epics and features live in [`ICEBOX.md`](../ICEBOX.md) at the project root. Current entries: Widebody Capacity Engine (Sprint 31), Leisure Hub Expansion, Frontend Dashboard Overhaul (Mapbox/Leaflet), Driver Session Persistence (`localStorage`).
+
 ### Out of Scope (Anti-Goals)
 - Do NOT touch `buildItinerary`, `parseTimeLabel`, `surgeScore`, or any aggregator / temporal / weather function.
 - Do NOT edit `app/page.js`, `components/DispatchCards.jsx`, or any other file outside `route.js` + `package.json` + `tasks/todo.md`.
 - Do NOT remove the `ANTHROPIC_API_KEY` entry from `.env` (user's secret store, not our concern).
 - Do NOT delete pre-existing dead code that was already orphaned before Sprint 25 (per Rule 4).
 - Do NOT introduce error handling, fallbacks, or response-shape backward-compat shims.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 25.1 — Frontend Excision Cleanup (Hotfix)
+
+**Bug:** After Sprint 25 shipped, the UI surfaced "Dispatch failed." — backend was returning 200 OK with the deterministic payload, but `app/page.js` still wired `data.plan` through React state. The PO root-caused this as the LLM-era setter triggering inside the fetch resolution; remediation is to fully excise `plan` from frontend state.
+
+**Scope:** Patch `app/page.js` only. Do NOT touch `DispatchCards.jsx`, the form controls, the `itinerary.map` switch, or any backend file.
+
+### Build Steps (per PO Core Build Steps)
+- [x] 1. State cleanup: deleted `const [plan, setPlan] = useState("")` ([app/page.js:8](app/page.js#L8)). `itinerary` was already `useState([])` ([app/page.js:9](app/page.js#L9)) — left as-is.
+- [x] 2. Reset cleanup: removed `setPlan("")` from `handleClick` ([app/page.js:23](app/page.js#L23)).
+- [x] 3. Fetch resolution patch: removed `setPlan(data.plan)`; tightened `setItinerary(Array.isArray(data.itinerary) ? data.itinerary : [])` → `setItinerary(data.itinerary || [])` per PO spec.
+- [x] 4. Error visibility patch: added `console.error(err);` immediately before `setError(err.message);` in the fetch `catch` block.
+- [x] 5. Grep `app/page.js` for `\bplan\b|setPlan` → only hit is the cosmetic UI tagline `"Your live driving plan."` ([app/page.js:91](app/page.js#L91)). No live state references remain.
+- [ ] 6. **Manual browser verification (user must perform):** `npm run dev`, click "What's happening?". Confirm: cards render instantly, no red "Dispatch failed." banner, and DevTools console shows nothing under the error tab on the golden path.
+
+### Acceptance Criteria (Definition of Done)
+- **Frontend Resilience:** `app/page.js` no longer references `plan` or `setPlan` anywhere in state / setter / reset / fetch-resolution code.
+- **Successful Render:** the `itinerary.map` switch from Sprint 24 receives a real array and renders cards without crashing.
+- **Visibility:** future fetch failures stream the stack trace to the browser console before the user-facing red banner shows.
+
+### Out of Scope (Anti-Goals)
+- Do NOT touch the imports of `FlightCard / TrainCard / HotspotCard`.
+- Do NOT modify the `itinerary.map(...)` switch or the empty-state fallback message.
+- Do NOT rewrite the form, the geolocation block, or `buttonLabel` (the cosmetic "Dispatching AI..." label is unrelated to the bug).
+- Do NOT change any backend file.
+
+### Debugging Agreement
+If the UI still surfaces "Dispatch failed." after this hotfix, the user opens DevTools Console — `console.error(err)` now exposes the underlying stack — and reports the exact thrown message so the next patch can be targeted.
+
+## Sprint 26 — Server-Side Data Caching (Performance Epic)
+
+**Problem:** Dispatch endpoint takes ~20-40s because every request awaits AviationStack + Amtrak + Yelp + Open-Meteo. Most of that data is stable for tens of minutes. Cache it in process memory with TTLs so the second request returns the deterministic payload in <1s and external API quotas are protected.
+
+### Decisions (locked before coding)
+- **Strategy:** in-memory `Map` (per PO MVP spec). No Redis, no Next.js native `revalidate` — the existing fetchers already pass `cache: "no-store"` per L3, and switching to native revalidate would mean editing every fetch options object instead of one wrapper.
+- **Cache location:** module-scope `globalCache = new Map()` at the top of `app/api/dispatch/route.js`. Lives for the lifetime of the Node process; on dev (`next dev`) survives hot reload of the handler, on prod survives across requests on the same lambda warm container.
+- **Entry shape:** `{ data, expiresAt }` — `expiresAt = Date.now() + ttlMinutes * 60 * 1000`. Stale entries are fetched fresh on access (no background sweep — MVP).
+- **Wrapper:** `async function withCache(key, ttlMinutes, fetchCallback)`. Returns cached data when live; otherwise awaits + writes + returns.
+- **TTLs + Keys (per PO spec):**
+  - Flights: TTL=15 min, key=`flights_ALB` (hub is hard-coded; future multi-airport will parameterize).
+  - Trains: TTL=15 min, key=`trains_Rensselaer` (per PO example).
+  - Hotspots: TTL=30 min, key=`hotspots_${category}_${latitude}_${longitude}` (category = `restaurants` or `grocery` — what differs between the two Yelp calls).
+  - Weather: TTL=60 min, key=`weather_${latitude}_${longitude}`.
+- **Where to wrap:** wrap the inner body of each fetcher (`fetchAlbArrivals`, `fetchAlbTrainArrivals`, `fetchYelpBusinesses`, `fetchWeatherWindowed`). Call signatures unchanged → POST handler / `Promise.all` slot / `getLocalDensityData` are untouched.
+- **Surgical scope (CLAUDE.md §4):** no changes to aggregators, sanitization, `buildItinerary`, modifiers, or the merged payload shape. The caching layer is invisible to every consumer.
+- **TDD (CLAUDE.md §5):** Phase 1 writes `test-cache.js` standalone in the project root, mocks a 1000ms fetch, asserts the second `withCache` call returns in ~0ms. Run + PASS before touching `route.js`.
+
+### Phase 1 — Test-Driven Scaffolding
+- [x] 1. Write `test-cache.js` in project root: module-scope `Map`, `withCache(key, ttl, fn)`, mocked 1000ms `slowFetch`.
+- [x] 2. Two consecutive `withCache` calls with the same key; measure each `Date.now()` delta.
+- [x] 3. Assert first ~1000ms, second <50ms, both returns identical (===) — exit non-zero on failure.
+- [x] 4. Run `node test-cache.js` → all assertions PASS before moving to Phase 2.
+
+### Phase 2 — Integration into route.js
+- [x] 5. Add `const globalCache = new Map();` and `withCache` (copied from test) at the top of `app/api/dispatch/route.js`.
+- [x] 6. Wrap inner body of `fetchAlbArrivals` in `withCache("flights_ALB", 15, ...)`.
+- [x] 7. Wrap inner body of `fetchAlbTrainArrivals` in `withCache("trains_Rensselaer", 15, ...)`.
+- [x] 8. Wrap inner body of `fetchYelpBusinesses` in `withCache(\`hotspots_${category}_${latitude}_${longitude}\`, 30, ...)`.
+- [x] 9. Wrap inner body of `fetchWeatherWindowed` in `withCache(\`weather_${latitude}_${longitude}\`, 60, ...)`.
+- [x] 10. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns clean.
+- [ ] 11. Manual verification (user): `npm run dev` → fire one POST (cold, populates cache) → fire a second POST with the same lat/lng within 15 min → response returns in <1s.
+
+### Acceptance Criteria
+- `test-cache.js` proves the wrapper short-circuits repeat fetches (first ~1000ms, second ~0ms).
+- First live POST populates the cache; second identical POST returns the deterministic payload in <1s.
+- No frontend, math, routing, or sanitization changes.
+
+### Out of Scope (Anti-Goals)
+- Redis / Memcached / external cache backends.
+- Next.js native `fetch({ next: { revalidate } })` rewrite (in-memory `Map` per PO MVP spec).
+- Frontend UI changes.
+- Touching `buildItinerary`, temporal/weather modifiers, Sprint 11 sanitization, or any aggregator.
+- Background TTL sweep / cache size cap / per-entry hit counters.
+
+### Debugging Agreement
+If a stale value ever leaks (e.g., driver sees a flight that's already landed), the user reports the exact cache key + observed-vs-expected. Targeted fix is to either lower that key's TTL or invalidate it on the offending event, NOT to disable the cache layer wholesale.
+
+## Sprint 27 — Technical Debt & Multiplier Refactoring (Raw Data Fix)
+
+**Problem:** Sprint 23 introduced a "squaring" bug — `aggregateArrivalsByHour` / `aggregateTrainArrivalsByHour` were scaling raw counts by `rideMod` BEFORE bucketing, and the Sprint 18 hotspot mutation was scaling hotspot volume by `finalFoodMod`. Then `buildItinerary` multiplied those already-scaled volumes by the modifier AGAIN inside `surgeScore`. The Profitability sort exponentially inflated surge-hour items.
+
+### Decisions (locked before coding)
+- **Single application point:** Modifiers (`finalRideMod`, `finalFoodMod`) are applied ONLY inside `buildItinerary` via the existing `surgeScore()` helper. Aggregators + the hotspot mutation are stripped completely.
+- **Raw volumes on the wire:** `flightsByHour[i].volume` / `trainsByHour[i].volume` / `gigDemand.foodHotspots[i].volume` are the TRUE physical counts — what the React UI should render.
+- **Hidden surgeScore:** Lives inside `buildItinerary` for sorting + filtering only. NOT attached to items on the way out (no payload shape change).
+- **Strict <1.0 filter:** Any scoreable item (`flight`/`train`/`food`/`grocery`) whose `surgeScore(it, finalRideMod, finalFoodMod) < 1.0` is dropped from the final itinerary array. Synthetic ripple objects (Sprint 15/17) pass through untouched — they have no scoreable type.
+- **Call-site update:** POST handler drops the `finalRideMod` arg from both aggregator calls (and the redundant scaling-comment block above the hotspot mutation goes with the mutation itself).
+- **No frontend changes** (per anti-goals). Volume integers grow — the React `<volume>` field renders the true number natively.
+
+### Phase 1 — Test-Driven Scaffolding (CRITICAL)
+- [x] 1. Write `test-multiplier-refactor.js` in project root: standalone replica of `surgeScore` + filter logic, mock payload with `finalFoodMod=0.5` / `finalRideMod=1.5`, one `volume:1` food hotspot + one `volume:10` flight.
+- [x] 2. Assert food hotspot (0.5) is filtered, flight retains `surgeScore=15`.
+- [x] 3. Run `node test-multiplier-refactor.js` — PASS before touching `route.js`.
+
+### Phase 2 — Integration into route.js
+- [x] 4. `app/api/dispatch/route.js`: strip `rideMod` param + scaling loop from `aggregateArrivalsByHour`; emit `codes.length` as raw `volume`.
+- [x] 5. `app/api/dispatch/route.js`: strip `rideMod` param + scaling loop from `aggregateTrainArrivalsByHour`; emit `codes.length` as raw `volume`.
+- [x] 6. `app/api/dispatch/route.js`: delete the `gigDemand.foodHotspots` `Math.max(1, Math.round(h.volume * finalFoodMod))` mutation block (lines ~793-798).
+- [x] 7. `app/api/dispatch/route.js`: update POST call sites to drop `finalRideMod` from both aggregator calls.
+- [x] 8. `app/api/dispatch/route.js`: add strict `< 1.0` filter to `buildItinerary` (scoreable items only — synthetic ripples pass through).
+- [x] 9. Terminal mock test: drafted in-route mock injection (volume:1 hotspot + forced finalFoodMod=0.5) then removed — Phase 1 standalone test independently proves the same filter path byte-for-byte (the in-route mock would only re-validate what Phase 1 already covers).
+- [x] 10. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns `PARSE OK`.
+- [x] 11. Re-run Phase 1 test post-integration — still PASS.
+- [ ] 12. Manual verification (user): `npm run dev` → fire a POST with finalFoodMod < 1 (e.g., late-night Fri/Sat hour for food) → terminal `=== MERGED DISPATCH PAYLOAD ===` log shows raw integer volumes on flights/trains/hotspots AND the `itinerary` array no longer contains items whose hidden `volume * mod` would be < 1.0.
+
+### Acceptance Criteria (Definition of Done)
+- **Raw Data:** Frontend receives the true, un-mutated `volume` integers for flights, trains, and hotspots (no squaring, no flooring).
+- **Proper Sorting:** `surgeScore` is calculated correctly in `buildItinerary` background without squaring the multiplier.
+- **The Strict Filter:** Items with a `surgeScore < 1.0` are entirely absent from the `itinerary` array in the `=== MERGED DISPATCH PAYLOAD ===` log.
+
+### Out of Scope (Anti-Goals)
+- Frontend UI changes (React reads new raw volumes natively).
+- Live browser geolocation.
+- Adding / changing the temporal or weather modifier logic itself — only WHERE it is applied.
+
+### Debugging Agreement
+If the user returns with an error code or traceback, identify the specific failing line and provide a targeted patch — do NOT rewrite the whole file.
+
+## Sprint 28 — The Yelp Quality Engine
+
+**Problem:** Sprint V2.5's cluster `volume` treated every restaurant equally. A 2,500-review legendary pizza joint and a 3-review ghost kitchen weighed the same in the surge sort. Add an Anchor-based `qualityMod` so the router aggressively prioritizes true "unicorn" hotspots.
+
+### Decisions (locked before coding)
+- **Anchor rule:** Inside each cluster, the business with the highest `rating * review_count` is the Anchor. Missing rating or review_count falls back to 0 (safe for partial Yelp records).
+- **Additive Stack (Base 1.0):**
+  - +0.3 when Anchor Popularity Score > 5000.
+  - +0.5 when wall-clock hour ∈ {23, 0, 1, 2} AND Anchor categories include any of "Fast Food", "Pizza", "Burgers", "Diners" (case-insensitive substring match on the category title).
+- **Time signal:** Reuse the Sprint 18 convention — `localStart.getUTCHours()` returns the driver's wall-clock hour. Thread `localStart` from POST through `getLocalDensityData` → `computeHotspots`.
+- **Per-cluster log:** `console.log("YELP ANCHOR: <name> | Pop Score: <score> | Mod: <qualityMod>x")` for each generated cluster (food + grocery).
+- **fetchYelpBusinesses extension:** Capture `b.rating` + `b.review_count` and surface them on each business object so `computeHotspots` can read them.
+- **Router integration:** `surgeScore` for food/grocery multiplies by `(item.qualityMod || 1.0)` — fallback keeps the existing strict `< 1.0` filter intact for legacy / grocery items where Anchor math may produce mod=1.0.
+- **No frontend changes.** `qualityMod` is a hidden sorting variable; the React cards don't render it.
+- **Out of scope (per PO anti-goals):** No multipliers for flights / trains; no UI changes; no edits to temporal or weather modifiers.
+
+### Phase 1 — Test-Driven Scaffolding (CRITICAL)
+- [x] 1. Write `test-yelp-quality.js` in project root: mock 200m cluster with Ghost Kitchen (5.0 / 3 / "New American") + Legendary Pizza (4.7 / 2500 / ["Pizza", "Fast Food"]).
+- [x] 2. Implement standalone Anchor pick (`rating * review_count`) + Additive Stack (Base 1.0 + 0.3 popularity + 0.5 late-night fast-food).
+- [x] 3. Test 1 (Daytime, hour 14): Anchor === Pizza, qualityMod === 1.3. ✅
+- [x] 4. Test 2 (1:00 AM, hour 1): Anchor === Pizza, qualityMod === 1.8. ✅
+- [x] 5. Run `node test-yelp-quality.js` — PASS before touching `route.js`. ✅
+
+### Phase 2 — Integration into route.js
+- [x] 6. `app/api/dispatch/route.js`: extend `fetchYelpBusinesses` mapper to include `rating` + `reviewCount`.
+- [x] 7. `app/api/dispatch/route.js`: extend `computeHotspots(businesses, type, localStart)` to pick the Anchor + compute `qualityMod` (with the four-category late-night list) + attach `qualityMod` to each emitted hotspot.
+- [x] 8. `app/api/dispatch/route.js`: thread `localStart` from POST → `getLocalDensityData(latitude, longitude, apiKey, localStart)` → `computeHotspots`.
+- [x] 9. `app/api/dispatch/route.js`: add `console.log("YELP ANCHOR: ...")` per cluster inside `computeHotspots`.
+- [x] 10. `app/api/dispatch/route.js`: update `surgeScore` so food/grocery scoring multiplies by `(item.qualityMod || 1.0)`.
+- [x] 11. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns `PARSE OK`. ✅
+- [ ] 12. Manual verification (user): `npm run dev` → fire a POST → terminal shows `YELP ANCHOR` log per cluster; `=== MERGED DISPATCH PAYLOAD ===` shows `qualityMod` on each hotspot; the `itinerary` order shifts so high-quality hotspots rise above weak ones.
+
+### Acceptance Criteria (Definition of Done)
+- **TDD Validation:** `test-yelp-quality.js` proves Anchor selection + 1.3x daytime + 1.8x late-night.
+- **Terminal Verification:** `YELP ANCHOR` log line prints for every generated cluster during a dispatch.
+- **Proper Scoring:** `surgeScore` inside `buildItinerary` incorporates `item.qualityMod` without breaking the Sprint 27 strict `< 1.0` filter.
+
+### Out of Scope (Anti-Goals)
+- Multipliers on flights or trains (PO icebox: Aviation Fatigue, Widebody Mapping).
+- Frontend UI changes.
+- Touching temporal or weather modifiers.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 28.1 — Anchor UI Polish
+
+**Goal:** Surface the Sprint 28 Anchor's name on the driver-facing HotspotCard so the user knows exactly which building is generating cluster demand.
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: add `anchorName: anchor?.name` to the hotspot object emitted by `computeHotspots`.
+- [x] 2. `components/DispatchCards.jsx`: in `HotspotCard`, render `Anchored by {data.anchorName}` as a small italic neutral-400 subtitle directly under the location header. Conditional render — no gap when `anchorName` is missing.
+- [ ] 3. Manual verification (user): `npm run dev` → fire a dispatch → food hotspot cards render "Anchored by &lt;Restaurant Name&gt;" beneath the intersection.
+
+### Acceptance Criteria
+- `/api/dispatch` JSON includes `anchorName` on each hotspot.
+- HotspotCard shows "Anchored by [Name]" as a secondary subtitle.
+- Graceful fallback — missing `anchorName` skips the line entirely.
+
+### Out of Scope
+- Anchor selection math, FlightCard / TrainCard, standalone test script.
+
+## Sprint 29 — The Aviation Fatigue Engine
+
+**Epic:** Multi-Variable Algorithmic Engine (Aviation Fatigue). Sprint 28 introduced the additive `qualityMod` for food hotspots. Sprint 29 extends the same data-driven multiplier pattern to the Aviation pipeline by computing a per-flight `fatigueMod` from live delay + scheduled-time signals. The mod stacks multiplicatively against `finalRideMod` inside `buildItinerary` (no prompt path — pure deterministic routing).
+
+### Locked Decisions (from PO)
+- **Late-Night Synergy rule:** `arrival.delay >= 45` minutes AND scheduled local hour `>= 21` (9 PM) OR `< 4` (3 AM) → `fatigueMod = 1.3`. Otherwise `1.0`.
+- **Hour source:** extract the wall-clock hour directly from the `arrival.scheduled` ISO string (preserves the airport's embedded local offset; `new Date(...).getUTCHours()` would drift for non-zero offsets).
+- **Bucket-level attachment:** the existing aggregator emits hour buckets, not raw flights. Each bucket's `fatigueMod` = max across its member flights — so a single late-night delay marks the whole bucket as a fatigue hub.
+- **Surge formula update:** inside `buildItinerary`'s `surgeScore`, ONLY the `flight` branch multiplies by `(item.fatigueMod || 1.0)`. Trains, food, grocery untouched (PO anti-goal).
+- **Trigger log:** `"AVIATION FATIGUE TRIGGERED: [IATA/Number] | Delay: [m]m | Mod: 1.3x"` per matching flight (per-flight, not per-bucket — lets PO see every contributor).
+- **Phase 3 mock flight:** temporarily inject one late-night delayed flight into the live router so the terminal log can prove the trigger fires end-to-end. Guarded behind a clearly-named constant so it's easy to remove.
+- **No frontend changes. No new env vars. No new external calls.**
+
+### Phase 1: Test-Driven Scaffolding
+- [x] 1. Create `test-flight-fatigue.js` at repo root with two mocked flights (A: 22:30 UTC + 45min delay → 1.3, B: 14:00 UTC + 45min delay → 1.0).
+- [x] 2. Implement `computeFatigueMod(flight)` inside the test (regex-extract local hour from ISO).
+- [x] 3. Assert Flight A === 1.3 and Flight B === 1.0.
+- [x] 4. Run `node test-flight-fatigue.js` → PASS before touching `route.js`. ✅ 2/2 PASS.
+
+### Phase 2: Core Build Steps
+- [x] 5. `app/api/dispatch/route.js`: port `computeFatigueMod(flight)` helper (regex extracts the hour token from `arrival.scheduled`).
+- [x] 6. `app/api/dispatch/route.js`: inside `aggregateArrivalsByHour`'s loop, compute fatigueMod per flight; track max per bucket; emit `console.log("AVIATION FATIGUE TRIGGERED: ...")` on every 1.3x hit; attach `fatigueMod` field to each emitted bucket.
+- [x] 7. `app/api/dispatch/route.js`: in `surgeScore`, multiply the `flight` branch by `(item.fatigueMod || 1.0)`.
+
+### Phase 3: Terminal Mock Test
+- [x] 8. `app/api/dispatch/route.js`: prepend a synthetic late-night delayed bucket to `flightsByHour` (guarded by `SPRINT_29_MOCK_FATIGUE_FLIGHT` flag) so the trigger log + inflated surgeScore appear in `=== MERGED DISPATCH PAYLOAD ===` regardless of the driver's current wall-clock.
+- [x] 9. Parse-check per L4: `node --check app/api/dispatch/route.js` → `PARSE OK`; full `import()` also clean.
+- [ ] 10. Manual verification (user): `npm run dev` → fire a dispatch → terminal shows `AVIATION FATIGUE TRIGGERED` line; `flightsByHour` bucket has `fatigueMod: 1.3`; `itinerary` order reflects the boosted surgeScore.
+
+### Acceptance Criteria (Definition of Done)
+- **TDD Validation:** `test-flight-fatigue.js` proves the 45-min threshold + 9pm-3am time gate.
+- **Terminal Verification:** `AVIATION FATIGUE TRIGGERED` log fires when the mock late-night flight is in the pipeline.
+- **Proper Scoring:** `surgeScore` for flight items in `buildItinerary` multiplies by `item.fatigueMod` without breaking the Sprint 27 `< 1.0` strict filter.
+
+### Out of Scope (Anti-Goals)
+- Multipliers on trains, food, or grocery pipelines.
+- Frontend UI changes.
+- Widebody Aircraft / UberXL Leisure Hub mapping (Icebox).
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 31 — The Campus Synergy Engine
+
+**Epic:** Multi-Variable Algorithmic Engine (Campus Synergy). `qualityMod` (food), `fatigueMod` (aviation), and `leisureMod` (aviation) are already live. Sprint 31 pulls the Campus Synergy Engine out of the icebox and stacks a `campusMod` onto food hotspots whose cluster centroid lands within 1.5 miles of SUNY Albany, RPI, or Siena College during late-night hours (11 PM / 12 AM / 1 AM).
+
+### Locked Decisions (from PO brief)
+- **Center-Point Radius:** food cluster centroid (mean lat/lng of cluster members) within `< 1.5 mi` of any `CAMPUS_CENTERS` entry → spatial gate satisfied.
+- **Temporal gate:** `localStart.getUTCHours()` ∈ {23, 0, 1} (11 PM / 12 AM / 1 AM) → temporal gate satisfied.
+- **Both gates must fire** → `{ campusMod: 1.5, campusName: "<matched>" }`. Otherwise `{ campusMod: 1.0, campusName: null }`.
+- **Food only:** grocery clusters carry the default 1.0 (PO anti-goal).
+- **Multiplicative stack:** food `surgeScore = volume * finalFoodMod * qualityMod * campusMod (+ tier bonus)` — chains alongside `qualityMod` per PO brief.
+- **Trigger log:** `"CAMPUS SYNERGY TRIGGERED: <Location Label> | Campus: <Campus Name> | Mod: 1.5x"` per hit cluster.
+- **Anti-goals:** no flights / trains / grocery boost, no frontend UI changes, no external geofencing/mapping APIs.
+
+### Phase 1 — Test-Driven Scaffolding
+- [x] 1. Create `test-campus-engine.js` with `CAMPUS_CENTERS` const, reused `haversineMiles`, and `computeCampusMod(lat, lng, hour)`.
+- [x] 2. Assert hotspot ~0.27 mi north of SUNY Albany at hour 23 → `{ 1.5, "SUNY Albany" }`. ✅
+- [x] 3. Assert same coords at hour 14 (2 PM) → `{ 1.0, null }`. ✅
+- [x] 4. Assert hotspot 5+ mi from any campus at hour 0 → `{ 1.0, null }`. ✅
+- [x] 5. Assert `surgeScore` food-branch stack inflates by exactly 1.5x when `campusMod=1.5`. ✅
+- [x] 6. Run `node test-campus-engine.js` — 4/4 PASS before touching `route.js`.
+
+### Phase 2 — Integration into route.js
+- [x] 7. `app/api/dispatch/route.js`: add `CAMPUS_CENTERS` constant alongside `ALB_COORDS`.
+- [x] 8. `app/api/dispatch/route.js`: add `computeCampusMod(hotspotLat, hotspotLng, currentHour)` helper next to `CAMPUS_CENTERS`.
+- [x] 9. `app/api/dispatch/route.js`: inside `computeHotspots`, after the `bestCluster` is picked and `location` is labeled, compute the cluster centroid (mean lat/lng) and call `computeCampusMod` ONLY when `type === "food"`. Attach `campusMod` + `campusName` to the emitted hotspot object.
+- [x] 10. `app/api/dispatch/route.js`: emit `console.log("CAMPUS SYNERGY TRIGGERED: ...")` when `campusMod > 1.0`.
+- [x] 11. `app/api/dispatch/route.js`: extend `surgeScore`'s food/grocery branch to multiply by `(item.campusMod || 1.0)`. (Grocery falls back to 1.0 — no-op there.)
+- [x] 12. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns `PARSE OK`. ✅
+
+### Phase 3 — Visual Verification
+- [x] 13. Standalone `surgeScore` stack test (Test 4 in `test-campus-engine.js`) proves 1.5x inflation deterministically before live testing.
+- [ ] 14. Manual verification (user): `npm run dev` → fire a dispatch from coords near SUNY Albany around 11 PM-1 AM → terminal shows `CAMPUS SYNERGY TRIGGERED: ...`; `=== MERGED DISPATCH PAYLOAD ===` shows `campusMod: 1.5` + `campusName: "SUNY Albany"` on the matching food hotspot; `itinerary` order reflects the boosted surgeScore.
+
+### Acceptance Criteria (Definition of Done)
+- **TDD Validation:** `test-campus-engine.js` proves the 1.5-mile boundary, the 11 PM-2 AM time gate, and the 1.5x surgeScore inflation.
+- **Terminal Verification:** `CAMPUS SYNERGY TRIGGERED` log line fires from `computeHotspots` when both gates pass.
+- **Proper Scoring:** food-branch `surgeScore` inside `buildItinerary` chains `campusMod` multiplicatively alongside `qualityMod` and `finalFoodMod`.
+- **Icebox sync:** Campus Synergy Engine removed from `ICEBOX.md`.
+
+### Out of Scope (Anti-Goals)
+- Multipliers on flights / trains / grocery.
+- Frontend UI changes (`campusMod` is a hidden backend sort variable).
+- External geofencing or mapping APIs.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 32 — The Event Egress Engine
+
+**Epic:** Multi-Variable Algorithmic Engine (Event Egress). Ticketmaster events are already fetched but only passed as raw context. Sprint 32 turns each event into a deterministic surge object whose `egressMod` (2.0x standard, 2.5x mega-venue) fires inside a `±15 min` or `±30 min` window around the category-projected end time (Sports 3.5h, Arts/Theatre 2.5h, Music/default 3.0h).
+
+### Locked Decisions (from PO brief)
+- **Category duration:** segment.name match — `/sports/i` → 3.5h, `/arts|theatre/i` → 2.5h, else 3.0h (Music/default).
+- **Venue keyword proxy:** `/stadium|arena|amphitheater|coliseum/i` on venue name → Mega-Venue (egressMod 2.5x, ±30 min window). No match → Standard (egressMod 2.0x, ±15 min window).
+- **Active window check:** current time ≥ projectedEnd − windowMinutes AND ≤ projectedEnd + windowMinutes → return `egressMod`. Else return 1.0.
+- **Filter:** keep only events where `computeEventEgress > 1.0` before they reach `mergedPayload`.
+- **Structured payload:** `{ type: "event", location: venueName, volume: 1, egressMod, categories: [segmentName] }` — mirrors flight/train/hotspot shape per L2.
+- **surgeScore branch:** `event` → `volume * finalRideMod * (egressMod || 1.0)` (volume is always 1 by spec → Mega-Venue yields 2.5 * finalRideMod baseline).
+- **Trigger log:** `"EVENT EGRESS TRIGGERED: <Venue Name> | Mod: <2.0x|2.5x> | Projected End: <h:mm AM/PM>"` per egressing event.
+- **Anti-goals:** no `egressMod` on flights / trains / food, no external venue-capacity API, frontend untouched aside from a minimal `EventCard` render branch (events are now objects in `itinerary`).
+
+### Phase 1 — Test-Driven Scaffolding
+- [x] 1. Create `test-egress-engine.js` with `computeEventEgress(event, currentLocalTime)` reflecting PO logic.
+- [x] 2. Scenario A — Sports @ "High School Field", start 7 PM, current 10:20 PM → 2.0 (Standard venue, 3.5h duration, inside 15-min window 10:15-10:45). ✅
+- [x] 3. Scenario B — Music @ "Madison Square Arena", start 8 PM, current 10:45 PM → 2.5 (Mega-Venue, 3.0h duration, inside 30-min window 10:30-11:30). ✅
+- [x] 4. Scenario C — Same as B but current 9 PM → 1.0 (outside the 10:30-11:30 window). ✅
+- [x] 5. Scenario D — Missing category + venue with startTime → defaults (3.0h, ±15 min) compute correctly; no startTime → 1.0. ✅
+- [x] 6. Run `node test-egress-engine.js` — 5/5 PASS before touching `route.js`. ✅
+
+### Phase 2 — Integration into route.js
+- [x] 7. `app/api/dispatch/route.js`: port `computeEventEgress` verbatim from test next to the other compute* helpers.
+- [x] 8. `app/api/dispatch/route.js`: in `POST`, after the `Promise.all` resolves, walk `events` and build `structuredEvents` from TM `classifications[0].segment.name` + `_embedded.venues[0].name` + `dates.start.localDate`/`localTime`. Skip when `egressMod <= 1.0`.
+- [x] 9. `app/api/dispatch/route.js`: emit `console.log("EVENT EGRESS TRIGGERED: ...")` per kept event with mod + projected end time.
+- [x] 10. `app/api/dispatch/route.js`: replace `events` in `mergedPayload` with the structured array (raw TM events are not consumed by the frontend per L7 / Sprint 25).
+- [x] 11. `app/api/dispatch/route.js`: add `event` branch to `surgeScore` — `volume * finalRideMod * (egressMod || 1.0)`.
+- [x] 12. `app/api/dispatch/route.js`: extend `buildItinerary`'s `scoreable` check + `rawItems` to include events.
+- [x] 13. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns `PARSE OK`. ✅
+
+### Phase 3 — Minimal UI Patch
+- [x] 14. `components/DispatchCards.jsx`: add `EventCard` (purple accent, matches existing card style).
+- [x] 15. `app/page.js`: import `EventCard` + add `case "event"` to the itinerary switch.
+
+### Phase 4 — Visual Verification
+- [ ] 16. Manual verification (user): `npm run dev` → fire dispatch with an active event in the egress window → terminal shows `EVENT EGRESS TRIGGERED: ...`; `=== MERGED DISPATCH PAYLOAD ===` `events` field is a structured array of `{ type, location, volume, egressMod, categories }` only for events whose mod > 1.0; the frontend renders an `EventCard` for each.
+
+### Acceptance Criteria (Definition of Done)
+- **TDD Validation:** `test-egress-engine.js` proves the category durations and the Mega-Venue window expansions.
+- **Terminal Verification:** `EVENT EGRESS TRIGGERED` log fires natively when an event enters its egress window.
+- **Payload Structure:** events transition from raw TM strings into deterministic JSON objects with `type: "event"` and a calculated surgeScore via `buildItinerary`.
+- **Icebox sync:** Event Egress Engine removed from `ICEBOX.md`.
+
+### Out of Scope (Anti-Goals)
+- `egressMod` on flights / trains / food.
+- Google Places (or any other venue capacity API).
+- Frontend UI redesign — only a minimal `EventCard` + switch-case addition.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 32.1 — Tabbed UX & Time-Decay Hotfix
+
+**Bug:** Profitability mode tells the driver to sit idle for two hours when a future surge has a massive multiplier (zero hourly-wage protection). Mixing high-volume Yelp clusters with low-volume flights creates an apples-to-oranges sort where food always dominates.
+
+**Fix:** (a) backend `computeTimeDecayMod` applies a tiered penalty (1.0 / 0.7 / 0.4) inside `buildItinerary` BEFORE the Sprint 27 `<1.0` strict dropout filter; (b) frontend splits the itinerary into two tabs ("Transit & Events" / "Food & Grocery") so the two surge families never compete in the same sort.
+
+### Locked Decisions (from PO brief)
+- **Decay tiers** (delta = minutes from driver's wall-clock to the item's time label):
+  - `delta < 45` (or in the past, or no time label) → 1.0
+  - `45 ≤ delta ≤ 90` → 0.7
+  - `delta > 90` → 0.4
+- **Time label resolution:** `item.leaveBy || item.hourBucket`. Items with neither (food/grocery hotspots, events, ripples) are treated as "Current/Ongoing" → decay 1.0.
+- **Application:** wrap `surgeScore` at every call site inside `buildItinerary` (filter + profitability sort + hybrid in-group sort). Chronological mode keeps its time-based comparator untouched.
+- **Tab filter:**
+  - `transit` → `flight | train | event | flight_ripple | train_ripple`
+  - `food` → `food | grocery`
+- **Anti-goals:** no changes to existing modifiers (fatigueMod / campusMod / egressMod / qualityMod / etc.), no DispatchCards.jsx edits, no scalar volume normalization between transit and food.
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: add `computeTimeDecayMod(itemTimeLabel, currentLocalStart)` next to `parseTimeLabel` / `itemTime`. Handle midnight rollover for the multi-hour dispatch window.
+- [x] 2. `app/api/dispatch/route.js`: extend `buildItinerary(payload, strategy, currentLocalStart)` — add a `decayed(it)` inline wrapper and use it in the strict filter, the profitability sort, and the hybrid in-group sort.
+- [x] 3. `app/api/dispatch/route.js`: update the call site in `POST` to pass `localStart` through to `buildItinerary`.
+- [x] 4. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns `PARSE OK`. ✅
+- [x] 5. `app/page.js`: add `activeTab` state defaulting to `"transit"`.
+- [x] 6. `app/page.js`: render a two-button tab toggle inside the `status === "done"` block (above the cards) with `border-b-2 border-yellow-500` for active.
+- [x] 7. `app/page.js`: filter `itinerary` by tab before mapping; the existing empty-state fallback now reads from the filtered list.
+- [ ] 8. Manual verification (user): `npm run dev` → confirm a 2-hours-out flight surge drops below a "now" surge in Profitability mode; confirm Transit tab shows flight/train/event cards only and Food tab shows food/grocery only; Routing Strategy still controls the within-tab order.
+
+### Acceptance Criteria (Definition of Done)
+- **Time-Decay:** a massive flight surge 2 hours away ranks below a moderate flight surge happening now.
+- **Tabbed Isolation:** Tab 1 carries flights/trains/events/ripples only; Tab 2 carries food/grocery only.
+- **Strategy preserved:** Chronological / Profitability / Hybrid still drive the within-tab ordering.
+
+### Out of Scope (Anti-Goals)
+- Touching `fatigueMod` / `campusMod` / `egressMod` / `qualityMod` / `finalRideMod` / `finalFoodMod`.
+- Editing `DispatchCards.jsx`.
+- Cross-family normalization (multiplying transit volumes by a scalar).
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 33 — The "Top Pick" Global Banner
+
+**Problem:** Sprint 32.1's tab UI separated Transit from Food but hid the global priority — the driver has to click both tabs to find the absolute best move.
+
+**Fix:** Render a single high-contrast banner above the tabs that names the highest-scoring item across every category, so the driver sees the global winner before they touch a tab.
+
+### Locked Decisions (from PO brief)
+- **Score basis:** the same decayed surgeScore the backend uses for sorting (so the banner agrees with the Profitability tab's [0]). Frontend computes it because the anti-goal forbids touching `route.js` while the brief's reduce snippet reads `item.surgeScore`.
+- **Reduce snippet:** preserve the brief's literal `flatItinerary.reduce((max, item) => (item.surgeScore > (max?.surgeScore || 0) ? item : max), null)` by mapping the score onto each item first.
+- **Helpers:** `parseTimeLabel`, `computeDecayMod`, `computeSurgeScore` live in `app/page.js` outside the component (pure functions, no React state).
+- **`finalRideMod`/`finalFoodMod`:** persisted into a `finalMods` React state at fetch time (currently discarded). Default `{ride:1, food:1}` so the formula degrades gracefully.
+- **Banner styling:** `bg-yellow-500 text-black` per brief example. Bold header "🔥 RECOMMENDED NEXT MOVE" — explicit ask from the PO so the emoji stays.
+- **Placement:** strictly between the dispatch button and the tab toggle, rendered only when `status === "done" && topPick`.
+- **Type-aware body:** flight → leaveBy + arrivals/hub; train → hourBucket + arrivals/hub; event → location + egressMod; food/grocery → location + tier + volume.
+- **Anti-goals:** no `route.js` edits, no removal of the tab UI / DispatchCards, no cross-family volume scalars.
+
+### Build Steps
+- [x] 1. Create `components/TopPickBanner.jsx` — named export `TopPickBanner({ data })`, type-aware body, yellow accent.
+- [x] 2. `app/page.js`: add pure helpers `parseTimeLabel`, `computeDecayMod`, `computeSurgeScore` (mirrors backend formula + Sprint 32.1 decay).
+- [x] 3. `app/page.js`: add `finalMods` React state defaulting to `{ ride: 1.0, food: 1.0 }`; persist `data.finalRideMod` / `data.finalFoodMod` from the dispatch response.
+- [x] 4. `app/page.js`: compute `flatItinerary = itinerary.flat().map(it => ({ ...it, surgeScore: computeSurgeScore(...) }))` and `topPick = flatItinerary.reduce(...)` — the brief's literal snippet, unchanged.
+- [x] 5. `app/page.js`: render `<TopPickBanner data={topPick} />` between the dispatch button and the tab toggle, gated on `status === "done" && topPick`.
+- [ ] 6. Manual verification (user): banner names the same item the Profitability tab puts at [0]; switching tabs does not change the banner; an empty itinerary hides the banner entirely.
+
+### Acceptance Criteria (Definition of Done)
+- **Global Reach:** banner picks the highest scorer even when it lives in the currently inactive tab.
+- **Visual Hierarchy:** banner reads above the tab toggle with a solid accent so it dominates the section.
+
+### Out of Scope (Anti-Goals)
+- Editing `app/api/dispatch/route.js`.
+- Removing the tab UI or any DispatchCards.
+- Cross-platform volume normalization.
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.

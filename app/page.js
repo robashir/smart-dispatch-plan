@@ -1,11 +1,67 @@
 "use client";
 
 import { useState } from "react";
-import { FlightCard, TrainCard, HotspotCard } from "../components/DispatchCards";
+import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
+import { TopPickBanner } from "../components/TopPickBanner";
+
+// Sprint 33: pure helpers mirroring the backend's surgeScore + Sprint 32.1
+// time-decay so the banner can recompute the same ranking score the API
+// already used internally. Kept outside the component because they hold no
+// React state and never need to re-init on render. Anti-goal forbids
+// exposing the score from route.js, so this is the duplication price.
+function parseTimeLabel(label) {
+  if (!label || typeof label !== "string") return Infinity;
+  const m = label.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (!m) return Infinity;
+  let h = Number(m[1]);
+  const min = m[2] ? Number(m[2]) : 0;
+  const ampm = m[3].toUpperCase();
+  if (h === 12) h = 0;
+  if (ampm === "PM") h += 12;
+  return h * 60 + min;
+}
+
+function computeDecayMod(itemTimeLabel) {
+  if (!itemTimeLabel) return 1.0;
+  const now = new Date();
+  const offsetMin = now.getTimezoneOffset();
+  const local = new Date(now.getTime() - offsetMin * 60 * 1000);
+  const currentMin = local.getUTCHours() * 60 + local.getUTCMinutes();
+  const itemMin = parseTimeLabel(itemTimeLabel);
+  if (!Number.isFinite(itemMin)) return 1.0;
+  let delta = itemMin - currentMin;
+  if (delta < -360) delta += 1440;
+  if (delta < 45) return 1.0;
+  if (delta <= 90) return 0.7;
+  return 0.4;
+}
+
+function computeSurgeScore(item, finalRideMod, finalFoodMod) {
+  let base = 0;
+  if (item.type === "event") {
+    base = (Number(item.volume) || 0) * finalRideMod * (Number(item.egressMod) || 1.0);
+  } else if (item.type === "flight") {
+    base =
+      (Number(item.volume) || 0) *
+      finalRideMod *
+      (Number(item.fatigueMod) || 1.0) *
+      (Number(item.leisureMod) || 1.0);
+  } else if (item.type === "train") {
+    base = (Number(item.volume) || 0) * finalRideMod;
+  } else if (item.type === "food" || item.type === "grocery") {
+    const qualityMod = Number(item.qualityMod) || 1.0;
+    const campusMod = Number(item.campusMod) || 1.0;
+    base =
+      (Number(item.volume) || 0) * finalFoodMod * qualityMod * campusMod +
+      (item.tier === "High-Value ($$$)" ? 2 : 0);
+  } else {
+    return 0;
+  }
+  return base * computeDecayMod(item.leaveBy || item.hourBucket);
+}
 
 export default function Home() {
   const [status, setStatus] = useState("idle");
-  const [plan, setPlan] = useState("");
   const [itinerary, setItinerary] = useState([]);
   const [error, setError] = useState("");
   const [hours, setHours] = useState(4);
@@ -17,10 +73,11 @@ export default function Home() {
   const [includeAirport, setIncludeAirport] = useState(true);
   const [includeAmtrak, setIncludeAmtrak] = useState(true);
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
+  const [activeTab, setActiveTab] = useState("transit");
+  const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
 
   async function handleClick() {
     setError("");
-    setPlan("");
     setItinerary([]);
 
     if (!("geolocation" in navigator)) {
@@ -38,7 +95,7 @@ export default function Home() {
         const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
         try {
-          const res = await fetch("https://beamish-salamander-98efb1.netlify.app/api/dispatch"
+          const res = await fetch("/api/dispatch"
 , {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -60,10 +117,14 @@ export default function Home() {
             throw new Error(data.error || "Dispatch failed.");
           }
 
-          setPlan(data.plan);
-          setItinerary(Array.isArray(data.itinerary) ? data.itinerary : []);
+          setItinerary(data.itinerary || []);
+          setFinalMods({
+            ride: Number(data.finalRideMod) || 1.0,
+            food: Number(data.finalFoodMod) || 1.0,
+          });
           setStatus("done");
         } catch (err) {
+          console.error(err);
           setError(err.message);
           setStatus("idle");
         }
@@ -84,6 +145,49 @@ export default function Home() {
       : "What's happening?";
 
   const isBusy = status === "locating" || status === "dispatching";
+
+  // Sprint 33: global Top Pick. Run BEFORE the tab filter so the banner
+  // can name a winner in the inactive tab if it deserves the crown.
+  // .flat() is a defensive no-op against any future nested-group payload.
+  const flatItinerary = itinerary.flat().map((item) => ({
+    ...item,
+    surgeScore: computeSurgeScore(item, finalMods.ride, finalMods.food),
+  }));
+  // Sprint 33.1: Actionable Time-Gate. The backend's decay tiers don't fully
+  // suppress massive transit multipliers 3h+ out, so the banner ignores any
+  // future item past 90 minutes. Items with no/invalid time label (ongoing
+  // food/grocery) bypass the gate.
+  const nowForGate = new Date();
+  const localForGate = new Date(
+    nowForGate.getTime() - nowForGate.getTimezoneOffset() * 60 * 1000
+  );
+  const currentLocalStart =
+    localForGate.getUTCHours() * 60 + localForGate.getUTCMinutes();
+  const topPick = flatItinerary
+    .filter((item) => {
+      const label = item.leaveBy || item.hourBucket;
+      if (!label) return true;
+      const itemMin = parseTimeLabel(label);
+      if (!Number.isFinite(itemMin)) return true;
+      let delta = itemMin - currentLocalStart;
+      if (delta < -360) delta += 1440;
+      return delta <= 90;
+    })
+    .reduce(
+      (max, item) => (item.surgeScore > (max?.surgeScore || 0) ? item : max),
+      null
+    );
+
+  // Sprint 32.1: split the itinerary into Transit vs Food families. The
+  // backend already applies the Routing Strategy ordering — this is a pure
+  // visual filter so the two families never compete in the same sort.
+  const TRANSIT_TYPES = ["flight", "train", "event", "flight_ripple", "train_ripple"];
+  const FOOD_TYPES = ["food", "grocery"];
+  const filteredItinerary = itinerary.filter((item) =>
+    activeTab === "transit"
+      ? TRANSIT_TYPES.includes(item.type)
+      : FOOD_TYPES.includes(item.type)
+  );
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 py-10">
@@ -194,17 +298,42 @@ export default function Home() {
           </div>
         )}
 
+        {status === "done" && topPick && <TopPickBanner data={topPick} />}
+
         {status === "done" && (
           <div className="flex flex-col gap-3">
             <h2 className="text-sm uppercase tracking-wide text-neutral-400">
               Your Plan
             </h2>
-            {itinerary.length === 0 ? (
+
+            <div className="flex border-b border-neutral-700">
+              {[
+                { key: "transit", label: "Transit & Events" },
+                { key: "food", label: "Food & Grocery" },
+              ].map(({ key, label }) => {
+                const isActive = activeTab === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setActiveTab(key)}
+                    className={`flex-1 py-2 text-sm font-semibold transition border-b-2 ${
+                      isActive
+                        ? "border-yellow-500 text-yellow-400"
+                        : "border-transparent text-neutral-500 hover:text-neutral-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {filteredItinerary.length === 0 ? (
               <div className="rounded-xl bg-neutral-900 border border-neutral-700 p-5 text-neutral-300">
                 No active surges detected for this window. Stand by or expand your search.
               </div>
             ) : (
-              itinerary.map((item, i) => {
+              filteredItinerary.map((item, i) => {
                 switch (item.type) {
                   case "flight":
                     return <FlightCard key={i} data={item} />;
@@ -213,6 +342,8 @@ export default function Home() {
                   case "food":
                   case "grocery":
                     return <HotspotCard key={i} data={item} />;
+                  case "event":
+                    return <EventCard key={i} data={item} />;
                   default:
                     return null;
                 }

@@ -1,3 +1,21 @@
+// Sprint 26: in-memory TTL cache shared across requests on a warm process.
+// Lives at module scope so it persists across POST invocations on the same
+// Node container (dev server and prod lambda warm container alike). Entry
+// shape is { data, expiresAt }; stale entries are refetched on access.
+// Validated in isolation by test-cache.js before being ported here.
+const globalCache = new Map();
+
+async function withCache(key, ttlMinutes, fetchCallback) {
+  const now = Date.now();
+  const entry = globalCache.get(key);
+  if (entry && entry.expiresAt > now) {
+    return entry.data;
+  }
+  const data = await fetchCallback();
+  globalCache.set(key, { data, expiresAt: now + ttlMinutes * 60 * 1000 });
+  return data;
+}
+
 // Sprint V2: only count arrivals from major leisure/business hubs — these
 // riders are more likely to need rideshare (and XL for luggage). Short
 // commuter hops (EWR, PHL, etc.) are dropped before bucketing.
@@ -8,9 +26,77 @@ const HIGH_VALUE_HUBS = ["MCO", "ATL", "ORD", "DFW", "DEN", "LAX", "LAS", "JFK",
 // Schenectady commuter hops, etc.) are dropped before bucketing.
 const HIGH_VALUE_STATIONS = ["NYP", "BOS", "WAS", "PHL"];
 
+// Sprint 30: UberXL / Leisure Hub Engine. A flight from a known vacation
+// hub (Orlando, Vegas, Miami, Cancun, Fort Myers, Maui) operated by a
+// leisure-focused airline (Spirit, Frontier, JetBlue, Southwest, Sun
+// Country) is statistically luggage-heavy and family-sized → XL fare.
+const LEISURE_HUBS = ["MCO", "LAS", "MIA", "CUN", "RSW", "OGG"];
+const LEISURE_AIRLINES = ["NK", "F9", "B6", "WN", "SY"];
+
 // Sprint 20: spatial anchor for the airport. Used with haversineMiles +
 // the 20 mph city-speed assumption to compute the driver's leaveBy time.
 const ALB_COORDS = { lat: 42.7483, lng: -73.8017 };
+
+// Sprint 31: Campus Synergy Engine. Late-night (11 PM / 12 AM / 1 AM) food
+// hotspots whose cluster centroid lands within 1.5 miles of a known campus
+// earn a 1.5x campusMod. Validated in isolation by test-campus-engine.js
+// before being ported here.
+const CAMPUS_CENTERS = [
+  { name: "SUNY Albany", lat: 42.6861, lng: -73.8237 },
+  { name: "RPI", lat: 42.7298, lng: -73.6789 },
+  { name: "Siena College", lat: 42.7194, lng: -73.7532 },
+];
+
+function computeCampusMod(hotspotLat, hotspotLng, currentHour) {
+  const isLateNight = currentHour === 23 || currentHour === 0 || currentHour === 1;
+  if (!isLateNight) return { campusMod: 1.0, campusName: null };
+  for (const campus of CAMPUS_CENTERS) {
+    const distance = haversineMiles(hotspotLat, hotspotLng, campus.lat, campus.lng);
+    if (distance < 1.5) {
+      return { campusMod: 1.5, campusName: campus.name };
+    }
+  }
+  return { campusMod: 1.0, campusName: null };
+}
+
+// Sprint 32: Event Egress Engine. Project the event's end time off its
+// classification segment (Sports 3.5h, Arts/Theatre 2.5h, Music/default 3.0h),
+// expand the surge window when the venue name implies stadium-scale capacity,
+// and return the corresponding egressMod ONLY while currentLocalTime falls
+// inside that window. Ported verbatim from test-egress-engine.js after all
+// PO scenarios PASSed.
+function computeEventEgress(event, currentLocalTime) {
+  const segmentName = event?.segmentName || "";
+  const venueName = event?.venueName || "";
+  const startTime = event?.startTime;
+
+  let durationHours;
+  if (/sports/i.test(segmentName)) durationHours = 3.5;
+  else if (/arts|theatre/i.test(segmentName)) durationHours = 2.5;
+  else durationHours = 3.0;
+
+  const isMegaVenue = /stadium|arena|amphitheater|coliseum/i.test(venueName);
+  const egressMod = isMegaVenue ? 2.5 : 2.0;
+  const windowMinutes = isMegaVenue ? 30 : 15;
+
+  if (!(startTime instanceof Date) || Number.isNaN(startTime.getTime())) return 1.0;
+  if (!(currentLocalTime instanceof Date) || Number.isNaN(currentLocalTime.getTime())) return 1.0;
+
+  const end = new Date(startTime.getTime() + durationHours * 60 * 60 * 1000);
+  const windowStart = new Date(end.getTime() - windowMinutes * 60 * 1000);
+  const windowEnd = new Date(end.getTime() + windowMinutes * 60 * 1000);
+
+  if (currentLocalTime >= windowStart && currentLocalTime <= windowEnd) return egressMod;
+  return 1.0;
+}
+
+// Sprint 32: shared with the trigger-log so the projected end time stays
+// in lockstep with the duration table used inside computeEventEgress.
+function eventDurationHours(segmentName) {
+  if (/sports/i.test(segmentName)) return 3.5;
+  if (/arts|theatre/i.test(segmentName)) return 2.5;
+  return 3.0;
+}
 
 function toTicketmasterDateTime(date) {
   // Ticketmaster requires YYYY-MM-DDTHH:mm:ssZ (UTC, no milliseconds)
@@ -99,64 +185,71 @@ async function fetchTicketmasterEvents({ latitude, longitude, start, end, apiKey
 }
 
 async function fetchWeatherWindowed({ latitude, longitude, hours }) {
-  const url = new URL("https://api.open-meteo.com/v1/forecast");
-  url.searchParams.set("latitude", String(latitude));
-  url.searchParams.set("longitude", String(longitude));
-  url.searchParams.set(
-    "hourly",
-    "temperature_2m,precipitation_probability,precipitation,weathercode"
-  );
-  // Open-Meteo aligns to whole hours; request hours+1 so windowing always covers the user's full block.
-  url.searchParams.set("forecast_hours", String(hours + 1));
-  url.searchParams.set("temperature_unit", "fahrenheit");
-  url.searchParams.set("timezone", "auto");
+  // Sprint 26: 60-min TTL cache per PO spec. Key encodes coords only;
+  // `hours` is intentionally NOT in the key (per spec) — the cached array
+  // is always sized to the first caller's window, and downstream consumers
+  // (computeWeatherModifiers) read indices [0] and [1] only.
+  const cacheKey = `weather_${latitude}_${longitude}`;
+  return withCache(cacheKey, 60, async () => {
+    const url = new URL("https://api.open-meteo.com/v1/forecast");
+    url.searchParams.set("latitude", String(latitude));
+    url.searchParams.set("longitude", String(longitude));
+    url.searchParams.set(
+      "hourly",
+      "temperature_2m,precipitation_probability,precipitation,weathercode"
+    );
+    // Open-Meteo aligns to whole hours; request hours+1 so windowing always covers the user's full block.
+    url.searchParams.set("forecast_hours", String(hours + 1));
+    url.searchParams.set("temperature_unit", "fahrenheit");
+    url.searchParams.set("timezone", "auto");
 
-  const MAX_ATTEMPTS = 3;
-  let lastErr;
+    const MAX_ATTEMPTS = 3;
+    let lastErr;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-    try {
-      const res = await fetch(url.toString(), { signal: controller.signal, cache: "no-store" });
-      clearTimeout(timeoutId);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      try {
+        const res = await fetch(url.toString(), { signal: controller.signal, cache: "no-store" });
+        clearTimeout(timeoutId);
 
-      if (res.status >= 500 && res.status < 600) {
-        throw new Error(`Weather API ${res.status}`);
-      }
-      if (!res.ok) {
-        throw new Error(`Weather API ${res.status}: ${await res.text()}`);
-      }
+        if (res.status >= 500 && res.status < 600) {
+          throw new Error(`Weather API ${res.status}`);
+        }
+        if (!res.ok) {
+          throw new Error(`Weather API ${res.status}: ${await res.text()}`);
+        }
 
-      const data = await res.json();
-      const times = data.hourly?.time || [];
-      const temps = data.hourly?.temperature_2m || [];
-      const precipProb = data.hourly?.precipitation_probability || [];
-      const precip = data.hourly?.precipitation || [];
+        const data = await res.json();
+        const times = data.hourly?.time || [];
+        const temps = data.hourly?.temperature_2m || [];
+        const precipProb = data.hourly?.precipitation_probability || [];
+        const precip = data.hourly?.precipitation || [];
 
-      // Slice to exactly the user's selected window.
-      const windowed = times.slice(0, hours + 1).map((t, i) => ({
-        time: t,
-        tempF: temps[i],
-        precipChancePct: precipProb[i],
-        precipInches: precip[i],
-      }));
+        // Slice to exactly the user's selected window.
+        const windowed = times.slice(0, hours + 1).map((t, i) => ({
+          time: t,
+          tempF: temps[i],
+          precipChancePct: precipProb[i],
+          precipInches: precip[i],
+        }));
 
-      return windowed;
-    } catch (err) {
-      clearTimeout(timeoutId);
-      lastErr = err;
-      if (attempt < MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, 500 * attempt));
+        return windowed;
+      } catch (err) {
+        clearTimeout(timeoutId);
+        lastErr = err;
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+        }
       }
     }
-  }
 
-  console.warn(
-    `Weather fetch failed after ${MAX_ATTEMPTS} attempts:`,
-    lastErr?.message
-  );
-  return null;
+    console.warn(
+      `Weather fetch failed after ${MAX_ATTEMPTS} attempts:`,
+      lastErr?.message
+    );
+    return null;
+  });
 }
 
 // Sprint 7: revert from Puppeteer scrape to AviationStack API. Heavy browser
@@ -164,23 +257,60 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
 // AviationStack returns flights in the shape `aggregateArrivalsByHour` already
 // expects: `{ flight_status, arrival: { scheduled }, departure: { iata } }`.
 async function fetchAlbArrivals({ apiKey }) {
-  const url = new URL("http://api.aviationstack.com/v1/flights");
-  url.searchParams.set("access_key", apiKey);
-  url.searchParams.set("arr_iata", "ALB");
-  url.searchParams.set("limit", "100");
+  // Sprint 26: 15-min TTL cache per PO spec. Key is the static hub label
+  // because every dispatch request reads the same ALB feed.
+  return withCache("flights_ALB", 15, async () => {
+    const url = new URL("http://api.aviationstack.com/v1/flights");
+    url.searchParams.set("access_key", apiKey);
+    url.searchParams.set("arr_iata", "ALB");
+    url.searchParams.set("limit", "100");
 
-  try {
-    const res = await fetch(url.toString(), { cache: "no-store" });
-    if (!res.ok) {
-      console.warn(`AviationStack API ${res.status}`);
+    try {
+      const res = await fetch(url.toString(), { cache: "no-store" });
+      if (!res.ok) {
+        console.warn(`AviationStack API ${res.status}`);
+        return [];
+      }
+      const data = await res.json();
+      return Array.isArray(data?.data) ? data.data : [];
+    } catch (err) {
+      console.warn("Flight fetch failed:", err.message);
       return [];
     }
-    const data = await res.json();
-    return Array.isArray(data?.data) ? data.data : [];
-  } catch (err) {
-    console.warn("Flight fetch failed:", err.message);
-    return [];
-  }
+  });
+}
+
+// Sprint 29: Aviation Fatigue Engine. Late-Night Synergy rule — a flight
+// delayed >= 45 min AND scheduled to land >= 9 PM or before 4 AM (airport
+// local time) earns a 1.3x fatigueMod. Local hour is regex-extracted from
+// the ISO string so the airport's embedded offset is preserved (using
+// `new Date(...).getUTCHours()` would drift for non-zero offsets). Ported
+// verbatim from test-flight-fatigue.js after both PO scenarios PASSed.
+function computeFatigueMod(flight) {
+  const delay = Number(flight?.arrival?.delay);
+  if (!Number.isFinite(delay) || delay < 45) return 1.0;
+
+  const scheduled = flight?.arrival?.scheduled;
+  if (typeof scheduled !== "string") return 1.0;
+
+  const match = scheduled.match(/T(\d{2}):/);
+  if (!match) return 1.0;
+  const hour = Number(match[1]);
+  if (!Number.isFinite(hour)) return 1.0;
+
+  if (hour >= 21 || hour < 4) return 1.3;
+  return 1.0;
+}
+
+// Sprint 30: Strict AND-gate. Both the origin hub AND the airline must
+// belong to the leisure cohort for the 1.4x multiplier to fire. Validated
+// in isolation by test-leisure-engine.js (3 assertions) before being
+// ported here.
+function computeLeisureMod(departureIata, airlineIata) {
+  const hubMatch = LEISURE_HUBS.includes(departureIata);
+  const airlineMatch = LEISURE_AIRLINES.includes(airlineIata);
+  if (hubMatch && airlineMatch) return 1.4;
+  return 1.0;
 }
 
 // Bucket arrivals into local-hour labels ("5 PM", "6 PM") for the window.
@@ -189,9 +319,21 @@ async function fetchAlbArrivals({ apiKey }) {
 // Sprint V2: drop flights whose departure IATA isn't in HIGH_VALUE_HUBS, and
 // emit values as "<count> Arrivals (from CODE, CODE)" strings instead of ints
 // so the LLM sees origin context inline.
-function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideMod = 1.0, minutesToAirport = 0) {
+// Sprint 27: rideMod stripped. Aggregator returns the RAW counted volume so
+// the frontend reads the true physical plane count. buildItinerary is now
+// the only place finalRideMod is applied (to the hidden surgeScore for sort
+// + the <1.0 strict filter). Prevents the Sprint 23 "squaring" bug where the
+// volume was multiplied here AND again at routing time.
+// Sprint 29: per-flight fatigueMod computed inside the dedupe/filter loop;
+// the bucket carries the MAX across its members so a single late-night
+// delay flags the whole hour as a fatigue hub.
+// Sprint 30: per-flight leisureMod (strict Hub+Airline AND-gate) computed
+// in the same loop; bucket carries MAX across members (parity with fatigue).
+function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, minutesToAirport = 0) {
   const originsByHour = {};
   const earliestShiftedByHour = {};
+  const fatigueModByHour = {};
+  const leisureModByHour = {};
   const seen = new Set();
   for (const f of flights) {
     const status = (f.flight_status || "").toLowerCase();
@@ -229,29 +371,57 @@ function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideM
     if (!earliestShiftedByHour[label] || shiftedLocal < earliestShiftedByHour[label]) {
       earliestShiftedByHour[label] = shiftedLocal;
     }
+
+    // Sprint 29: compute per-flight fatigue; log every trigger so the PO
+    // can spot each contributor; carry the MAX across the bucket so one
+    // late-night delay marks the whole hour.
+    const fatigueMod = computeFatigueMod(f);
+    if (fatigueMod > 1.0) {
+      const ident = f.flight?.iata || f.flight?.number || depIata;
+      const delayMin = Number(f.arrival?.delay) || 0;
+      console.log(
+        `AVIATION FATIGUE TRIGGERED: ${ident} | Delay: ${delayMin}m | Mod: ${fatigueMod}x`
+      );
+    }
+    if (!fatigueModByHour[label] || fatigueMod > fatigueModByHour[label]) {
+      fatigueModByHour[label] = fatigueMod;
+    }
+
+    // Sprint 30: leisureMod fires only when origin hub AND airline both
+    // belong to the leisure cohort. Log every trigger; bucket carries MAX.
+    const airlineIata = f.airline?.iata;
+    const leisureMod = computeLeisureMod(depIata, airlineIata);
+    if (leisureMod > 1.0) {
+      const ident = f.flight?.iata || f.flight?.number || depIata;
+      console.log(
+        `LEISURE HUB TRIGGERED: ${ident} | Hub: ${depIata} | Mod: ${leisureMod}x`
+      );
+    }
+    if (!leisureModByHour[label] || leisureMod > leisureModByHour[label]) {
+      leisureModByHour[label] = leisureMod;
+    }
   }
 
-  // Sprint 18: scale raw count by temporal rideMod BEFORE formatting. If the
-  // rounded count drops to 0, omit the bucket entirely (per PO graceful
-  // flooring rule).
   // Sprint 20: leaveBy = earliest shifted arrival in bucket − minutesToAirport.
-  // Sprint 21: emit a strict array of objects (not a dict of strings) so the
-  // future Next.js frontend can .map() directly. The LLM is trusted to parse
-  // the raw JSON natively this sprint — SYSTEM_PROMPT is intentionally not
-  // updated.
+  // Sprint 21: emit a strict array of objects so the frontend can .map() it.
+  // Sprint 27: emit the RAW codes.length as volume. Multiplier application
+  // lives exclusively inside buildItinerary now (kills the double-scaling
+  // "squaring" bug from Sprint 23).
   const buckets = [];
   for (const [hour, codes] of Object.entries(originsByHour)) {
-    const scaled = Math.round(codes.length * rideMod);
-    if (scaled <= 0) continue;
     const earliest = earliestShiftedByHour[hour];
     const leaveByDate = new Date(earliest.getTime() - minutesToAirport * 60 * 1000);
     buckets.push({
       type: "flight",
       hourBucket: hour,
-      volume: scaled,
+      volume: codes.length,
       origins: codes,
       leaveBy: formatLeaveBy(leaveByDate),
       hub: "ALB",
+      // Sprint 29: bucket carries the MAX fatigueMod across its members.
+      fatigueMod: fatigueModByHour[hour] || 1.0,
+      // Sprint 30: bucket carries the MAX leisureMod across its members.
+      leisureMod: leisureModByHour[hour] || 1.0,
     });
   }
   return buckets;
@@ -264,42 +434,47 @@ function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, rideM
 //   - { ALB: { trainId: {...}, ... } }   <-- this shape caused "trains is not iterable"
 // Inspector log + ironclad fallback guarantee this function ALWAYS returns an array.
 async function fetchAlbTrainArrivals() {
-  const url = "https://api-v3.amtraker.com/v3/stations/ALB";
-  try {
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) {
-      console.warn(`Amtraker API ${res.status}`);
-      return [];
-    }
-    const data = await res.json();
-
-    console.log("RAW AMTRAK DATA:", data);
-
+  // Sprint 26: 15-min TTL cache per PO spec. Rensselaer is the hub label
+  // (Amtrak station is colloquially "Rensselaer/ALB"); key matches the
+  // PO example "trains_Rensselaer".
+  return withCache("trains_Rensselaer", 15, async () => {
+    const url = "https://api-v3.amtraker.com/v3/stations/ALB";
     try {
-      let extracted;
-      if (Array.isArray(data)) {
-        extracted = data;
-      } else if (Array.isArray(data?.ALB)) {
-        extracted = data.ALB;
-      } else if (data?.ALB && typeof data.ALB === "object") {
-        extracted = Object.values(data.ALB);
-      } else if (data && typeof data === "object") {
-        extracted = Object.values(data).flat();
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) {
+        console.warn(`Amtraker API ${res.status}`);
+        return [];
       }
+      const data = await res.json();
 
-      if (!Array.isArray(extracted)) {
+      console.log("RAW AMTRAK DATA:", data);
+
+      try {
+        let extracted;
+        if (Array.isArray(data)) {
+          extracted = data;
+        } else if (Array.isArray(data?.ALB)) {
+          extracted = data.ALB;
+        } else if (data?.ALB && typeof data.ALB === "object") {
+          extracted = Object.values(data.ALB);
+        } else if (data && typeof data === "object") {
+          extracted = Object.values(data).flat();
+        }
+
+        if (!Array.isArray(extracted)) {
+          console.warn("Amtrak Parse Failed, falling back to empty array");
+          return [];
+        }
+        return extracted;
+      } catch (parseErr) {
         console.warn("Amtrak Parse Failed, falling back to empty array");
         return [];
       }
-      return extracted;
-    } catch (parseErr) {
-      console.warn("Amtrak Parse Failed, falling back to empty array");
+    } catch (err) {
+      console.warn("Train fetch failed:", err.message);
       return [];
     }
-  } catch (err) {
-    console.warn("Train fetch failed:", err.message);
-    return [];
-  }
+  });
 }
 
 // Bucket train arrivals at ALB into local-hour labels for the window.
@@ -307,7 +482,9 @@ async function fetchAlbTrainArrivals() {
 // Sprint 16: drop cancelled trains AND drop trains whose origCode isn't in
 // HIGH_VALUE_STATIONS. Emit values as "<count> Arrival(s) (from CODE, CODE)"
 // strings so the LLM sees origin context inline (mirrors flight aggregator).
-function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin, rideMod = 1.0) {
+// Sprint 27: rideMod stripped (parity with the flight aggregator). Raw
+// bucket counts only; buildItinerary applies finalRideMod for sort + filter.
+function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
   if (!Array.isArray(trains)) return [];
   const originsByHour = {};
   const seen = new Set();
@@ -343,19 +520,15 @@ function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin, r
     originsByHour[label].push(origCode);
   }
 
-  // Sprint 18: scale raw count by temporal rideMod BEFORE formatting. If the
-  // rounded count drops to 0, omit the bucket entirely.
-  // Sprint 22: emit a strict array of objects (not a dict of strings) so the
-  // future Next.js frontend can .map() directly. Mirrors the Sprint 21 flight
-  // refactor. No leaveBy — train egress is instant (PO anti-goal).
+  // Sprint 22: emit a strict array of objects so the frontend can .map() it.
+  // No leaveBy — train egress is instant (PO anti-goal).
+  // Sprint 27: emit RAW codes.length as volume (parity with flight aggregator).
   const buckets = [];
   for (const [hour, codes] of Object.entries(originsByHour)) {
-    const scaled = Math.round(codes.length * rideMod);
-    if (scaled <= 0) continue;
     buckets.push({
       type: "train",
       hourBucket: hour,
-      volume: scaled,
+      volume: codes.length,
       origins: codes,
       hub: "Rensselaer",
     });
@@ -407,57 +580,73 @@ function formatLeaveBy(date) {
 // cluster them downstream. Defensive per L1: inspector-log the raw shape,
 // Array.isArray guard, return [] on any failure.
 async function fetchYelpBusinesses({ latitude, longitude, category, apiKey }) {
-  const url = new URL("https://api.yelp.com/v3/businesses/search");
-  url.searchParams.set("latitude", String(latitude));
-  url.searchParams.set("longitude", String(longitude));
-  url.searchParams.set("radius", "5000");
-  url.searchParams.set("categories", category);
-  url.searchParams.set("open_now", "true");
-  url.searchParams.set("limit", "10");
+  // Sprint 26: 30-min TTL cache per PO spec. Key encodes both category
+  // and driver coords so two drivers in different cities cannot collide.
+  const cacheKey = `hotspots_${category}_${latitude}_${longitude}`;
+  return withCache(cacheKey, 30, async () => {
+    const url = new URL("https://api.yelp.com/v3/businesses/search");
+    url.searchParams.set("latitude", String(latitude));
+    url.searchParams.set("longitude", String(longitude));
+    url.searchParams.set("radius", "5000");
+    url.searchParams.set("categories", category);
+    url.searchParams.set("open_now", "true");
+    url.searchParams.set("limit", "10");
 
-  try {
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      console.warn(`Yelp API ${res.status} for category=${category}`);
+    try {
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        console.warn(`Yelp API ${res.status} for category=${category}`);
+        return [];
+      }
+      const data = await res.json();
+      const sample = (Array.isArray(data?.businesses) ? data.businesses : []).map((b) => ({
+        name: b.name,
+        price: b.price,
+        coordinates: b.coordinates,
+        address: b.location?.address1,
+        categories: b.categories?.map((c) => c.title),
+      }));
+      console.log(`RAW YELP DATA (${category}):`, JSON.stringify(sample, null, 2));
+      if (!Array.isArray(data?.businesses)) {
+        console.warn(`Yelp parse failed for category=${category}, falling back to []`);
+        return [];
+      }
+      return data.businesses
+        .map((b) => ({
+          name: b.name || "Unknown",
+          lat: b.coordinates?.latitude,
+          lng: b.coordinates?.longitude,
+          price: b.price || "",
+          categories: Array.isArray(b.categories) ? b.categories.map((c) => c.title) : [],
+          address1: b.location?.address1 || "",
+          // Sprint 28: Anchor signal — Popularity Score = rating * reviewCount.
+          rating: Number(b.rating) || 0,
+          reviewCount: Number(b.review_count) || 0,
+        }))
+        .filter((b) => Number.isFinite(b.lat) && Number.isFinite(b.lng));
+    } catch (err) {
+      console.warn(`Yelp fetch failed (${category}):`, err.message);
       return [];
     }
-    const data = await res.json();
-    const sample = (Array.isArray(data?.businesses) ? data.businesses : []).map((b) => ({
-      name: b.name,
-      price: b.price,
-      coordinates: b.coordinates,
-      address: b.location?.address1,
-      categories: b.categories?.map((c) => c.title),
-    }));
-    console.log(`RAW YELP DATA (${category}):`, JSON.stringify(sample, null, 2));
-    if (!Array.isArray(data?.businesses)) {
-      console.warn(`Yelp parse failed for category=${category}, falling back to []`);
-      return [];
-    }
-    return data.businesses
-      .map((b) => ({
-        name: b.name || "Unknown",
-        lat: b.coordinates?.latitude,
-        lng: b.coordinates?.longitude,
-        price: b.price || "",
-        categories: Array.isArray(b.categories) ? b.categories.map((c) => c.title) : [],
-        address1: b.location?.address1 || "",
-      }))
-      .filter((b) => Number.isFinite(b.lat) && Number.isFinite(b.lng));
-  } catch (err) {
-    console.warn(`Yelp fetch failed (${category}):`, err.message);
-    return [];
-  }
+  });
 }
+
+// Sprint 28: Yelp Quality Engine. Late-night fast-food categories trigger
+// the +0.5 Additive Stack bonus on the Anchor's qualityMod. Case-insensitive
+// substring match so "Fast Food", "Pizza Place", "Burger Joint", etc. all hit.
+const LATE_NIGHT_ANCHOR_CATEGORIES = ["fast food", "pizza", "burgers", "diners"];
 
 // Sprint V2.5: greedy 200m cluster sweep. Pick the business with the most
 // neighbors-within-200m as the next cluster center, label it with the
 // dominant cross-streets / tier / categories, remove its members, repeat.
 // Up to 3 clusters returned.
-function computeHotspots(businesses, type) {
+// Sprint 28: per-cluster Anchor (max rating * reviewCount) + Additive Stack
+// qualityMod (+0.3 popularity > 5000, +0.5 late-night fast-food). Ported
+// verbatim from test-yelp-quality.js after both Daytime + 1 AM tests PASSed.
+function computeHotspots(businesses, type, localStart) {
   if (!Array.isArray(businesses) || businesses.length === 0) return [];
 
   const remaining = [...businesses];
@@ -507,12 +696,65 @@ function computeHotspots(businesses, type) {
       .slice(0, 2)
       .map(([c]) => c.trim());
 
+    // Sprint 28: Anchor pick + Additive Stack qualityMod.
+    let anchor = bestCluster[0];
+    let popularityScore = (Number(anchor?.rating) || 0) * (Number(anchor?.reviewCount) || 0);
+    for (const b of bestCluster) {
+      const score = (Number(b.rating) || 0) * (Number(b.reviewCount) || 0);
+      if (score > popularityScore) {
+        anchor = b;
+        popularityScore = score;
+      }
+    }
+    let qualityMod = 1.0;
+    if (popularityScore > 5000) qualityMod += 0.3;
+    const hour = localStart instanceof Date ? localStart.getUTCHours() : -1;
+    const isLateNight = hour === 23 || hour === 0 || hour === 1 || hour === 2;
+    const anchorCats = (anchor?.categories || []).map((c) => String(c).toLowerCase());
+    const matchesLateNightCat = anchorCats.some((c) =>
+      LATE_NIGHT_ANCHOR_CATEGORIES.some((trigger) => c.includes(trigger))
+    );
+    if (isLateNight && matchesLateNightCat) qualityMod += 0.5;
+
+    console.log(
+      `YELP ANCHOR: ${anchor?.name || "Unknown"} | Pop Score: ${popularityScore} | Mod: ${qualityMod}x`
+    );
+
+    // Sprint 31: Campus Synergy. Compute cluster centroid (mean lat/lng of
+    // members), then run the spatial+temporal gate against CAMPUS_CENTERS.
+    // Only food hotspots qualify — grocery clusters are out of scope.
+    let campusMod = 1.0;
+    let campusName = null;
+    if (type === "food") {
+      const centroidLat =
+        bestCluster.reduce((sum, b) => sum + b.lat, 0) / bestCluster.length;
+      const centroidLng =
+        bestCluster.reduce((sum, b) => sum + b.lng, 0) / bestCluster.length;
+      const campusResult = computeCampusMod(centroidLat, centroidLng, hour);
+      campusMod = campusResult.campusMod;
+      campusName = campusResult.campusName;
+      if (campusMod > 1.0) {
+        console.log(
+          `CAMPUS SYNERGY TRIGGERED: ${location} | Campus: ${campusName} | Mod: ${campusMod}x`
+        );
+      }
+    }
+
     hotspots.push({
       type,
       location,
       volume: bestCluster.length,
       tier,
       categories: topCats.length > 0 ? topCats : ["Mixed"],
+      qualityMod,
+      // Sprint 28.1: surface the Anchor's name so the React HotspotCard can
+      // render "Anchored by <name>" beneath the intersection header.
+      anchorName: anchor?.name,
+      // Sprint 31: campusMod (1.0 default, 1.5x for late-night campus-adjacent
+      // food clusters) and the matched campus label. Multiplied into the
+      // food branch of surgeScore alongside qualityMod.
+      campusMod,
+      campusName,
     });
 
     const clusterSet = new Set(bestCluster);
@@ -544,12 +786,66 @@ function itemTime(item) {
   return -Infinity;
 }
 
+// Sprint 32.1: Time-Decay modifier. Protects the driver's hourly wage by
+// penalizing future surges that are too far away to chase. Tiers:
+//   delta < 45 min (or in the past, or no time label) -> 1.0
+//   45 <= delta <= 90 min                              -> 0.7
+//   delta > 90 min                                     -> 0.4
+// `delta` is computed against the driver's wall-clock (currentLocalStart
+// already lives in the wall-clock-as-UTC frame per Sprint 3.1). The dispatch
+// window can stretch up to 4 hours and may cross midnight, so a strongly
+// negative raw delta is treated as next-day rather than "in the past".
+function computeTimeDecayMod(itemTimeLabel, currentLocalStart) {
+  if (!itemTimeLabel) return 1.0;
+  if (!(currentLocalStart instanceof Date) || Number.isNaN(currentLocalStart.getTime())) return 1.0;
+
+  const itemMin = parseTimeLabel(itemTimeLabel);
+  if (!Number.isFinite(itemMin)) return 1.0;
+
+  const currentMin = currentLocalStart.getUTCHours() * 60 + currentLocalStart.getUTCMinutes();
+  let delta = itemMin - currentMin;
+  // Midnight rollover: only legitimately-negative values are "small past"
+  // values (within the dispatch window). Anything more than 6 hours negative
+  // must belong to the next calendar day.
+  if (delta < -360) delta += 1440;
+
+  if (delta < 45) return 1.0;
+  if (delta <= 90) return 0.7;
+  return 0.4;
+}
+
 function surgeScore(item, finalRideMod, finalFoodMod) {
-  if (item.type === "flight" || item.type === "train") {
+  // Sprint 32: Event Egress branch. Base volume is always 1 per PO spec, so
+  // a Mega-Venue (egressMod 2.5) yields a 2.5 * finalRideMod baseline before
+  // the Sprint 27 strict <1.0 filter inside buildItinerary.
+  if (item.type === "event") {
+    return (Number(item.volume) || 0) * finalRideMod * (Number(item.egressMod) || 1.0);
+  }
+  if (item.type === "flight") {
+    // Sprint 29: fatigueMod stacks multiplicatively on top of finalRideMod
+    // (1.0 default, 1.3x when the bucket holds a late-night delayed flight).
+    // Sprint 30: leisureMod stacks on top of fatigueMod (1.0 default, 1.4x
+    // when the bucket holds a leisure-hub + leisure-airline match).
+    return (
+      (Number(item.volume) || 0) *
+      finalRideMod *
+      (Number(item.fatigueMod) || 1.0) *
+      (Number(item.leisureMod) || 1.0)
+    );
+  }
+  if (item.type === "train") {
     return (Number(item.volume) || 0) * finalRideMod;
   }
   if (item.type === "food" || item.type === "grocery") {
-    const base = (Number(item.volume) || 0) * finalFoodMod;
+    // Sprint 28: Anchor's qualityMod (1.0 base, up to 1.8x) multiplies the
+    // raw volume alongside the temporal/weather finalFoodMod. Tier bonus
+    // stays additive on top — Quick-Turn unicorns shouldn't lose to weak $$$.
+    // Sprint 31: campusMod (1.0 default, 1.5x for late-night campus-adjacent
+    // food clusters) chains multiplicatively. Grocery hotspots carry the
+    // default 1.0 so the math is a no-op there.
+    const qualityMod = Number(item.qualityMod) || 1.0;
+    const campusMod = Number(item.campusMod) || 1.0;
+    const base = (Number(item.volume) || 0) * finalFoodMod * qualityMod * campusMod;
     const bonus = item.tier === "High-Value ($$$)" ? 2 : 0;
     return base + bonus;
   }
@@ -563,7 +859,7 @@ function surgeScore(item, finalRideMod, finalFoodMod) {
 //   hybrid        — group by hourBucket (chronological), within group by
 //                   surgeScore desc; no-hourBucket items go to a
 //                   "Current/Ongoing" group at the top.
-function buildItinerary(payload, strategy) {
+function buildItinerary(payload, strategy, currentLocalStart) {
   const flights = Array.isArray(payload?.flightsByHour) ? payload.flightsByHour : [];
   const trains = Array.isArray(payload?.trainsByHour) ? payload.trainsByHour : [];
   const food =
@@ -574,17 +870,42 @@ function buildItinerary(payload, strategy) {
     payload?.gigDemand && Array.isArray(payload.gigDemand.groceryHotspots)
       ? payload.gigDemand.groceryHotspots
       : [];
-  const items = [...flights, ...trains, ...food, ...grocery];
+  // Sprint 32: Sprint 32 structures events into the same itinerary stream as
+  // flights / trains / hotspots. Only events with egressMod > 1.0 reach this
+  // point — buildItinerary itself does no further filtering on them.
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  const rawItems = [...flights, ...trains, ...food, ...grocery, ...events];
 
   const finalRideMod = Number.isFinite(payload?.finalRideMod) ? payload.finalRideMod : 1.0;
   const finalFoodMod = Number.isFinite(payload?.finalFoodMod) ? payload.finalFoodMod : 1.0;
 
+  // Sprint 32.1: wrap surgeScore with the Time-Decay multiplier. Applied at
+  // every call site below (strict filter + profitability sort + hybrid in-
+  // group sort) so a 2-hours-out surge can no longer outrank a "now" surge.
+  const decayed = (it) =>
+    surgeScore(it, finalRideMod, finalFoodMod) *
+    computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
+
+  // Sprint 27: strict <1.0 filter. Aggregators now emit RAW volume, so this
+  // is the single place finalRideMod / finalFoodMod get applied. Any item
+  // whose modifier-scaled surgeScore is below 1.0 is dropped entirely. Synthetic
+  // ripple objects + items with no scoreable type pass through untouched (score 0
+  // on the synthetic shape would otherwise wipe them — they're informational).
+  // Sprint 32.1: decay is applied BEFORE the cutoff so a 0.4x-decayed item
+  // can fall below 1.0 and get pruned alongside the natively-weak items.
+  const items = rawItems.filter((it) => {
+    const scoreable =
+      it.type === "flight" ||
+      it.type === "train" ||
+      it.type === "food" ||
+      it.type === "grocery" ||
+      it.type === "event";
+    if (!scoreable) return true;
+    return decayed(it) >= 1.0;
+  });
+
   if (strategy === "profitability") {
-    return [...items].sort(
-      (a, b) =>
-        surgeScore(b, finalRideMod, finalFoodMod) -
-        surgeScore(a, finalRideMod, finalFoodMod)
-    );
+    return [...items].sort((a, b) => decayed(b) - decayed(a));
   }
 
   if (strategy === "chronological") {
@@ -607,11 +928,7 @@ function buildItinerary(payload, strategy) {
     const arr = groups
       .get(key)
       .slice()
-      .sort(
-        (a, b) =>
-          surgeScore(b, finalRideMod, finalFoodMod) -
-          surgeScore(a, finalRideMod, finalFoodMod)
-      );
+      .sort((a, b) => decayed(b) - decayed(a));
     out.push(...arr);
   }
   return out;
@@ -619,14 +936,15 @@ function buildItinerary(payload, strategy) {
 
 // Returns { foodHotspots, groceryHotspots } arrays, or null when no API key
 // is configured (so dispatch can run degraded).
-async function getLocalDensityData(latitude, longitude, apiKey) {
+// Sprint 28: localStart threaded through for the late-night Anchor bonus.
+async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
   if (!apiKey) return null;
   const [foodBiz, groceryBiz] = await Promise.all([
     fetchYelpBusinesses({ latitude, longitude, category: "restaurants", apiKey }),
     fetchYelpBusinesses({ latitude, longitude, category: "grocery", apiKey }),
   ]);
-  const foodHotspots = computeHotspots(foodBiz, "food");
-  const groceryHotspots = computeHotspots(groceryBiz, "grocery");
+  const foodHotspots = computeHotspots(foodBiz, "food", localStart);
+  const groceryHotspots = computeHotspots(groceryBiz, "grocery", localStart);
   console.log(
     "=== HOTSPOT CLUSTERS ===\n" +
       JSON.stringify({ foodHotspots, groceryHotspots }, null, 2)
@@ -709,7 +1027,7 @@ export async function POST(request) {
       fetchWeatherWindowed({ latitude, longitude, hours: hoursNum }),
       flightApiKey ? fetchAlbArrivals({ apiKey: flightApiKey }) : Promise.resolve([]),
       fetchAlbTrainArrivals(),
-      getLocalDensityData(latitude, longitude, yelpApiKey),
+      getLocalDensityData(latitude, longitude, yelpApiKey, localStart),
     ]);
 
     // Sprint 18: compute temporal multipliers off the driver's wall-clock
@@ -733,12 +1051,15 @@ export async function POST(request) {
     const milesToAirport = haversineMiles(latitude, longitude, ALB_COORDS.lat, ALB_COORDS.lng);
     const minutesToAirport = Math.ceil((milesToAirport / 20) * 60);
 
+    // Sprint 27: aggregators return RAW volumes (no rideMod scaling). The
+    // finalRideMod / finalFoodMod multipliers ride alongside in mergedPayload
+    // and are applied exclusively inside buildItinerary (hidden surgeScore
+    // for sort + strict <1.0 filter). Kills the Sprint 23 squaring bug.
     let flightsByHour = aggregateArrivalsByHour(
       rawFlights,
       localStart,
       localEnd,
       offsetMin,
-      finalRideMod,
       minutesToAirport
     );
 
@@ -746,18 +1067,51 @@ export async function POST(request) {
       rawTrains,
       localStart,
       localEnd,
-      offsetMin,
-      finalRideMod
+      offsetMin
     );
 
-    // Sprint 18: apply finalFoodMod to each existing hotspot's volume. Floor
-    // at 1 so a sub-1.0 multiplier never erases a hotspot that originally
-    // existed. Sprint 19: finalFoodMod = temporal foodMod * weather mod.
-    if (gigDemand && Array.isArray(gigDemand.foodHotspots)) {
-      gigDemand.foodHotspots = gigDemand.foodHotspots.map((h) => ({
-        ...h,
-        volume: Math.max(1, Math.round(h.volume * finalFoodMod)),
-      }));
+    // Sprint 32: Event Egress Engine. Walk the raw TM array, derive each
+    // event's segment/venue/startTime, compute egressMod against localStart
+    // (wall-clock-as-UTC), and KEEP only the events whose mod > 1.0. The
+    // surviving objects match the Phase 1 Structuring shape so they slot into
+    // buildItinerary alongside flights / trains / hotspots. Raw TM events
+    // were unused by the frontend (Sprint 25 excised the LLM) so replacing
+    // mergedPayload.events with the structured array is safe.
+    let structuredEvents = [];
+    if (Array.isArray(events)) {
+      for (const e of events) {
+        const segmentName = e?.classifications?.[0]?.segment?.name || "";
+        const venueName = e?._embedded?.venues?.[0]?.name || "";
+        const localDate = e?.dates?.start?.localDate;
+        const localTime = e?.dates?.start?.localTime;
+        let startTime = null;
+        if (typeof localDate === "string" && typeof localTime === "string") {
+          // Wall-clock-as-UTC frame to match localStart (per Sprint 3.1 trick).
+          const d = new Date(`${localDate}T${localTime}Z`);
+          if (!Number.isNaN(d.getTime())) startTime = d;
+        }
+        const egressMod = computeEventEgress(
+          { segmentName, venueName, startTime },
+          localStart
+        );
+        if (egressMod <= 1.0) continue;
+
+        const duration = eventDurationHours(segmentName);
+        const projectedEnd = startTime
+          ? formatLeaveBy(new Date(startTime.getTime() + duration * 60 * 60 * 1000))
+          : "Unknown";
+        console.log(
+          `EVENT EGRESS TRIGGERED: ${venueName || "Unknown Venue"} | Mod: ${egressMod}x | Projected End: ${projectedEnd}`
+        );
+
+        structuredEvents.push({
+          type: "event",
+          location: venueName || "Unknown Venue",
+          volume: 1,
+          egressMod,
+          categories: [segmentName || "Music"],
+        });
+      }
     }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept
@@ -810,7 +1164,7 @@ export async function POST(request) {
       weatherModifiers,
       finalRideMod,
       finalFoodMod,
-      events,
+      events: structuredEvents,
       weather: weatherWindowed ?? "Weather data unavailable",
       flightsByHour,
       trainsByHour,
@@ -820,7 +1174,11 @@ export async function POST(request) {
     // Sprint 23: deterministic router. Flatten + sort the merged surge data
     // by the driver's chosen strategy. Visible in the terminal log so future
     // React timeline cards can consume it directly without an LLM call.
-    mergedPayload.itinerary = buildItinerary(mergedPayload, routingStrategy);
+    // Sprint 27: buildItinerary is now the SOLE consumer of finalRideMod /
+    // finalFoodMod — it computes the hidden surgeScore for sorting and the
+    // strict <1.0 filter, so the volumes in flightsByHour / trainsByHour /
+    // gigDemand stay raw and physical for the frontend.
+    mergedPayload.itinerary = buildItinerary(mergedPayload, routingStrategy, localStart);
 
     // Acceptance Criteria: log the fully merged payload BEFORE the LLM call.
     console.log(
