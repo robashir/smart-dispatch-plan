@@ -4,6 +4,27 @@ import { useEffect, useState } from "react";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 import { TopPickBanner } from "../components/TopPickBanner";
 
+// Sprint 35: Promise wrapper around navigator.geolocation.getCurrentPosition.
+// Resolves with the coords object, rejects on permission denial / timeout /
+// missing API. Kept outside the component because it holds no React state.
+function getGeolocation() {
+  return new Promise((resolve, reject) => {
+    if (typeof navigator === "undefined" || !("geolocation" in navigator)) {
+      reject(new Error("Geolocation not supported."));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve(pos.coords),
+      (err) => reject(err),
+      { enableHighAccuracy: false, timeout: 10000 }
+    );
+  });
+}
+
+// Sprint 35: Roessleville fallback. If GPS is denied / times out, dispatch
+// still computes a real itinerary instead of crashing.
+const ROESSLEVILLE_COORDS = { latitude: 42.69516, longitude: -73.86063 };
+
 // Sprint 33: pure helpers mirroring the backend's surgeScore + Sprint 32.1
 // time-decay so the banner can recompute the same ranking score the API
 // already used internally. Kept outside the component because they hold no
@@ -133,70 +154,70 @@ export default function Home() {
   async function handleClick() {
     setError("");
     setItinerary([]);
-
-    if (!("geolocation" in navigator)) {
-      setError("Geolocation is not supported on this device.");
-      return;
-    }
-
     setStatus("locating");
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setStatus("dispatching");
+    // Sprint 35: Intent-Driven Intercept. Await the device's live coordinates
+    // here (browser shows the permission prompt on first click). On any
+    // failure — denial, timeout, no GPS — fall back to Roessleville so the
+    // dispatch still runs.
+    let latitude = ROESSLEVILLE_COORDS.latitude;
+    let longitude = ROESSLEVILLE_COORDS.longitude;
+    try {
+      const coords = await getGeolocation();
+      latitude = coords.latitude;
+      longitude = coords.longitude;
+    } catch (geoErr) {
+      console.warn(
+        "Geolocation unavailable — falling back to Roessleville:",
+        geoErr.message
+      );
+    }
 
-        const timezoneOffsetMinutes = new Date().getTimezoneOffset();
+    setStatus("dispatching");
 
-        try {
-          // Sprint 34: only inject campusEvent when today's local date is
-          // listed in the BYOD calendar. Missing key means the backend sees
-          // a vanilla payload (back-compat).
-          const today = todayLocalISO();
-          const todaysEvent = campusCalendar.find((row) => row.date === today);
-          const body = {
-            latitude,
-            longitude,
-            hours,
-            timezoneOffsetMinutes,
-            platforms,
-            includeAirport,
-            includeAmtrak,
-            routingStrategy,
-          };
-          if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
+    const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
-          const res = await fetch("/api/dispatch"
-, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
+    try {
+      // Sprint 34: only inject campusEvent when today's local date is
+      // listed in the BYOD calendar. Missing key means the backend sees
+      // a vanilla payload (back-compat).
+      const today = todayLocalISO();
+      const todaysEvent = campusCalendar.find((row) => row.date === today);
+      const body = {
+        latitude,
+        longitude,
+        hours,
+        timezoneOffsetMinutes,
+        platforms,
+        includeAirport,
+        includeAmtrak,
+        routingStrategy,
+      };
+      if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
 
-          const data = await res.json();
+      const res = await fetch("/api/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-          if (!res.ok) {
-            throw new Error(data.error || "Dispatch failed.");
-          }
+      const data = await res.json();
 
-          setItinerary(data.itinerary || []);
-          setFinalMods({
-            ride: Number(data.finalRideMod) || 1.0,
-            food: Number(data.finalFoodMod) || 1.0,
-          });
-          setStatus("done");
-        } catch (err) {
-          console.error(err);
-          setError(err.message);
-          setStatus("idle");
-        }
-      },
-      (geoErr) => {
-        setError(`Location error: ${geoErr.message}`);
-        setStatus("idle");
-      },
-      { enableHighAccuracy: false, timeout: 10000 }
-    );
+      if (!res.ok) {
+        throw new Error(data.error || "Dispatch failed.");
+      }
+
+      setItinerary(data.itinerary || []);
+      setFinalMods({
+        ride: Number(data.finalRideMod) || 1.0,
+        food: Number(data.finalFoodMod) || 1.0,
+      });
+      setStatus("done");
+    } catch (err) {
+      console.error(err);
+      setError(err.message);
+      setStatus("idle");
+    }
   }
 
   const buttonLabel =

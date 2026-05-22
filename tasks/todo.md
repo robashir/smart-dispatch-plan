@@ -1511,3 +1511,36 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 35 — Live Geolocation (The "Blue Dot")
+
+**Goal:** The backend already accepts dynamic `latitude` / `longitude`, but the frontend was producing them via a callback-shaped `getCurrentPosition` and aborting the whole dispatch when permission was denied. Wrap geolocation in a Promise, intercept on click (not load), and fall back to Roessleville on any failure so dispatch never crashes.
+
+### Locked Decisions (from PO brief)
+- **Promise wrapper:** `getGeolocation()` helper defined OUTSIDE the component (no React state). Resolves with `pos.coords`, rejects on denial/timeout/no-GPS.
+- **Intent-Driven Intercept:** browser's "Allow Location" prompt must NOT fire on page load. It fires exactly when the user clicks "What's happening?" the first time.
+- **Fallback constant:** `ROESSLEVILLE_COORDS = { latitude: 42.69516, longitude: -73.86063 }`. Used only when the Promise rejects. `console.warn` on fall-through; no UI error.
+- **Status flow:** keep existing `"locating"` → `"dispatching"` → `"done"` states; just swap the callback for `await`.
+- **Anti-goals (enforced):** do NOT touch `app/api/dispatch/route.js`; do NOT add UI toggles/settings/checkboxes; do NOT use `watchPosition` or a live map.
+
+### Build Steps
+- [x] 0. Write Sprint 35 plan to `tasks/todo.md`.
+- [x] 1. `app/page.js`: add `getGeolocation()` Promise helper outside the component (wraps `navigator.geolocation.getCurrentPosition`, rejects on failure).
+- [x] 2. `app/page.js`: add `ROESSLEVILLE_COORDS` constant (42.69516, -73.86063).
+- [x] 3. `app/page.js`: refactor `handleClick` — `await getGeolocation()` inside a try/catch; on rejection, fall back to Roessleville coords + `console.warn`.
+- [x] 4. `app/page.js`: confirm coords flow into the existing `/api/dispatch` POST body unchanged.
+- [ ] 5. Manual verification (user): (a) hard refresh → no "Allow Location" popup on load; (b) click "What's happening?" → popup appears once; (c) DevTools Network → `/api/dispatch` request body shows live `latitude`/`longitude` from the device, not 42.69516/-73.86063; (d) deny the permission → dispatch still runs with Roessleville coords and console shows the warn line.
+
+### Acceptance Criteria (Definition of Done)
+- **Pristine Load:** no geolocation prompt until the dispatch button is clicked.
+- **Intent Trigger:** prompt fires on first click of "What's happening?".
+- **Dynamic Payload:** `/api/dispatch` body uses the device's GPS coordinates when permission is granted.
+- **Graceful Fallback:** denial / timeout / missing GPS falls back to Roessleville without crashing the dispatch.
+
+### Out of Scope (Anti-Goals)
+- Any changes to `app/api/dispatch/route.js` (backend already accepts dynamic coords).
+- New UI toggles, settings panels, or checkboxes.
+- Continuous tracking (`watchPosition`) or visual loading map.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
