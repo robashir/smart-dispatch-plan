@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 import { TopPickBanner } from "../components/TopPickBanner";
 
@@ -75,6 +75,60 @@ export default function Home() {
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
   const [activeTab, setActiveTab] = useState("transit");
   const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
+  // Sprint 34: BYOD semester calendar. Persisted in localStorage so a driver
+  // uploads once per semester and forgets it. Each entry is { date, eventType }.
+  const [campusCalendar, setCampusCalendar] = useState([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("campusCalendar");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setCampusCalendar(parsed);
+      }
+    } catch (e) {
+      console.warn("campusCalendar hydrate failed:", e.message);
+    }
+  }, []);
+
+  function todayLocalISO() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${dd}`;
+  }
+
+  function handleCsvUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const parsed = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [date, eventType] = line.split(",").map((s) => (s || "").trim());
+          return { date, eventType };
+        })
+        // Drop header rows / malformed lines — only keep YYYY-MM-DD entries.
+        .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.eventType);
+      setCampusCalendar(parsed);
+      try {
+        localStorage.setItem("campusCalendar", JSON.stringify(parsed));
+      } catch (err) {
+        console.warn("campusCalendar persist failed:", err.message);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // Expiration check — latest stored date is in the past.
+  const calendarExpired =
+    campusCalendar.length > 0 &&
+    campusCalendar.every((row) => row.date < todayLocalISO());
 
   async function handleClick() {
     setError("");
@@ -95,20 +149,28 @@ export default function Home() {
         const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
         try {
+          // Sprint 34: only inject campusEvent when today's local date is
+          // listed in the BYOD calendar. Missing key means the backend sees
+          // a vanilla payload (back-compat).
+          const today = todayLocalISO();
+          const todaysEvent = campusCalendar.find((row) => row.date === today);
+          const body = {
+            latitude,
+            longitude,
+            hours,
+            timezoneOffsetMinutes,
+            platforms,
+            includeAirport,
+            includeAmtrak,
+            routingStrategy,
+          };
+          if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
+
           const res = await fetch("/api/dispatch"
 , {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              latitude,
-              longitude,
-              hours,
-              timezoneOffsetMinutes,
-              platforms,
-              includeAirport,
-              includeAmtrak,
-              routingStrategy,
-            }),
+            body: JSON.stringify(body),
           });
 
           const data = await res.json();
@@ -265,6 +327,34 @@ export default function Home() {
               />
               <span>Amtrak (Rensselaer)</span>
             </label>
+          </div>
+        </fieldset>
+
+        <fieldset className="flex flex-col gap-2">
+          <span className="text-sm uppercase tracking-wide text-neutral-400">
+            Institution Settings
+          </span>
+          <div className="flex flex-col gap-2 rounded-xl bg-neutral-900/60 border border-neutral-800 p-4">
+            <label className="text-sm text-neutral-400">
+              Upload semester calendar (CSV: Date, EventType)
+            </label>
+            <input
+              type="file"
+              accept=".csv"
+              onChange={handleCsvUpload}
+              disabled={isBusy}
+              className="text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-neutral-800 file:text-neutral-200 file:cursor-pointer disabled:opacity-60"
+            />
+            {campusCalendar.length > 0 && (
+              <div className="text-xs text-neutral-500">
+                {campusCalendar.length} dates loaded.
+              </div>
+            )}
+            {calendarExpired && (
+              <div className="text-sm text-red-400">
+                Calendar expired. Please upload a new CSV.
+              </div>
+            )}
           </div>
         </fieldset>
 

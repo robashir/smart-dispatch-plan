@@ -954,7 +954,7 @@ async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent } =
       await request.json();
 
     // Sprint 23: deterministic router strategy. Default to "hybrid" when
@@ -1042,7 +1042,21 @@ export async function POST(request) {
     const weatherModifiers = computeWeatherModifiers(weatherWindowed);
     const { weatherFoodMod, weatherRideMod } = weatherModifiers;
     const finalFoodMod = foodMod * weatherFoodMod;
-    const finalRideMod = rideMod * weatherRideMod;
+    let finalRideMod = rideMod * weatherRideMod;
+
+    // Sprint 34: BYOD Campus Calendar — Move-In / Break days surge transit
+    // demand (departing students, arriving families) before flights/trains
+    // are aggregated. Game / Syllabus days surge food demand around campus
+    // hotspots; that branch fires after Yelp data is in hand (below).
+    const campusEventStr = typeof campusEvent === "string" ? campusEvent : "";
+    const isTransitCampusDay = /move|break/i.test(campusEventStr);
+    const isFoodCampusDay = /game|syllabus/i.test(campusEventStr);
+    if (isTransitCampusDay) {
+      finalRideMod *= 1.5;
+      console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
+    } else if (isFoodCampusDay) {
+      console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
+    }
 
     // Sprint 20: Zero-Prompt Math. Compute exact driving time to ALB from the
     // driver's current coords (Haversine miles ÷ 20 mph city assumption) so
@@ -1114,6 +1128,26 @@ export async function POST(request) {
       }
     }
 
+    // Sprint 34: Hospital Shift Injector. Albany Med + St. Peter's run
+    // 7-to-7 nursing shifts; the 30-minute changeover dump is statistically
+    // the densest predictable rideshare event in the city. Time gate reads
+    // wall-clock-as-UTC off localStart (Sprint 3.1) — two windows, 06:30-
+    // 07:30 and 18:30-19:30. egressMod 3.0 outranks Mega-Venue (2.5x) so the
+    // event floats to the top of Profitability sort naturally.
+    const wallMinutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+    const inAmShift = wallMinutes >= 390 && wallMinutes <= 450;
+    const inPmShift = wallMinutes >= 1110 && wallMinutes <= 1170;
+    if (activePlatforms.rideshare && (inAmShift || inPmShift)) {
+      structuredEvents.push({
+        type: "event",
+        location: "Albany Med & St. Peter's Hospitals",
+        volume: 1,
+        egressMod: 3.0,
+        categories: ["Nursing Shift Change"],
+      });
+      console.log("HOSPITAL SHIFT INJECTED: Albany Med & St. Peter's Hospitals | egressMod 3.0x");
+    }
+
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept
     // failing on the LLM's "data obligation". Erase inactive-platform data
     // BEFORE building/logging the payload so it never reaches the LLM.
@@ -1124,6 +1158,20 @@ export async function POST(request) {
     if (gigDemand && typeof gigDemand === "object") {
       if (!activePlatforms.food) gigDemand.foodHotspots = [];
       if (!activePlatforms.grocery) gigDemand.groceryHotspots = [];
+    }
+
+    // Sprint 34: BYOD Game / Syllabus day. Apply the 1.5x campusMod boost on
+    // each surviving food hotspot (Sprint 31 already seeds campusMod 1.0/1.5
+    // for late-night campus-adjacent clusters; this stacks on top of it).
+    if (
+      isFoodCampusDay &&
+      gigDemand &&
+      typeof gigDemand === "object" &&
+      Array.isArray(gigDemand.foodHotspots)
+    ) {
+      for (const h of gigDemand.foodHotspots) {
+        h.campusMod = (Number(h.campusMod) || 1.0) * 1.5;
+      }
     }
 
     // Sprint 15 refinement — Synthetic Data Swap. Prompt-only "do not route

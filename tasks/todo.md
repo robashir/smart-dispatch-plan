@@ -1466,3 +1466,48 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 34 — The Institutional Engine
+
+**Goal:** National algorithms miss rigid local schedules (hospital shifts, university calendars). Inject those signals two ways: a client-side BYOD CSV uploader (semester calendar in localStorage) and a hardcoded hospital shift-change time gate (6:30-7:30 AM/PM) that emits a synthetic high-priority event.
+
+### Locked Decisions (from PO brief)
+- **Persistence:** CSV is parsed client-side and stored in `localStorage` under `"campusCalendar"`. No `fs`, no backend storage (anti-goal).
+- **CSV shape:** 2 columns — `Date` (YYYY-MM-DD) and `EventType` (free-form, e.g. "Move-In" / "Break" / "Game" / "Syllabus"). Tolerate an optional header row by skipping any line whose first cell isn't a YYYY-MM-DD date.
+- **Payload injection:** before each `/api/dispatch` POST, look up today's local YYYY-MM-DD in the stored calendar; inject `campusEvent: "<EventType>"` ONLY if today matches. Omit the key entirely otherwise (back-compat).
+- **Expiration warning:** if `max(date) < today`, render a small red warning below the uploader. No popup, no nag, no auto-disable.
+- **Backend Move/Break boost:** match case-insensitive on the substring "move" or "break" → multiply `finalRideMod` by 1.5 BEFORE the transit aggregators run (boosts flight/train surgeScore downstream via the unchanged `buildItinerary` math).
+- **Backend Game/Syllabus boost:** match case-insensitive on "game" or "syllabus" → multiply each `foodHotspot.campusMod` by 1.5 AFTER `getLocalDensityData` returns. Grocery hotspots untouched (parity with Sprint 31 — `campusMod` only fires on food).
+- **Trigger log:** `console.log("BYOD CAMPUS EVENT ACTIVE: <EventName>")` once per dispatch when either branch fires.
+- **Hospital time gate:** `localStart.getUTCHours()` + `getUTCMinutes()` (wall-clock-as-UTC per Sprint 3.1). Two windows — 06:30-07:30 and 18:30-19:30, inclusive on both ends.
+- **Hospital injection scope:** ONLY when `activePlatforms.rideshare === true`. Off-platform drivers don't see it.
+- **Hospital event shape:** `{ type: "event", location: "Albany Med & St. Peter's Hospitals", volume: 1, egressMod: 3.0, categories: ["Nursing Shift Change"] }` — reuse EventCard (anti-goal: no new card component). egressMod 3.0 outranks Mega-Venue (2.5x) so it floats to the top of Profitability.
+- **Insertion point:** push the synthetic event into `structuredEvents` BEFORE `buildItinerary` runs. The existing pipeline scores + sorts it naturally — no carve-out inside `buildItinerary` needed.
+- **Anti-goals (PO brief, enforced):** do NOT touch the Sprint 33.1 TopPickBanner time-gate, do NOT use `fs`/backend storage, do NOT create a new Hospital card.
+
+### Build Steps
+- [x] 0. Write Sprint 34 plan to `tasks/todo.md`.
+- [x] 1. `app/api/dispatch/route.js`: destructure `campusEvent` from the request body.
+- [x] 2. `app/api/dispatch/route.js`: change `const finalRideMod` to `let`; multiply by 1.5 when `campusEvent` matches /move|break/i.
+- [x] 3. `app/api/dispatch/route.js`: after `getLocalDensityData` returns, if `campusEvent` matches /game|syllabus/i, multiply each `gigDemand.foodHotspots[*].campusMod` by 1.5.
+- [x] 4. `app/api/dispatch/route.js`: emit `console.log("BYOD CAMPUS EVENT ACTIVE: <EventName>")` exactly once when any branch fires.
+- [x] 5. `app/api/dispatch/route.js`: compute the wall-clock minute-of-day from `localStart`; if `activePlatforms.rideshare` AND in 06:30-07:30 or 18:30-19:30, push the synthetic hospital event into `structuredEvents` before `buildItinerary`.
+- [x] 6. `app/page.js`: add `campusCalendar` state (array), hydrate from `localStorage.getItem("campusCalendar")` inside a `useEffect`.
+- [x] 7. `app/page.js`: add "Institution Settings" panel below the Location/Hub Filtering fieldset with a `<input type="file" accept=".csv" />` and an `onChange` parser that splits on newlines + commas, maps to `{ date, eventType }`, writes back to state + localStorage.
+- [x] 8. `app/page.js`: render the expiration warning when `max(calendar.date) < today`.
+- [x] 9. `app/page.js`: inside `handleClick`, compute today's local YYYY-MM-DD and conditionally add `campusEvent: matched.eventType` to the POST body.
+- [x] 10. Parse-check per L4: `node -e "import('file:///.../route.js')"` returns clean.
+- [ ] 11. Manual verification (user): (a) refresh page → uploaded CSV persists; (b) at 6:45 PM local with rideshare on → "Albany Med & St. Peter's Hospitals" event card appears at top of Profitability tab; (c) when today's date is marked "Move-In" → terminal logs `BYOD CAMPUS EVENT ACTIVE: Move-In` and flight/train surgeScores ~50% higher than baseline.
+
+### Acceptance Criteria (Definition of Done)
+- **Frontend Persistence:** uploaded CSV survives page refresh via localStorage.
+- **Hospital Injection:** at 6:45 PM (local) a high-priority event card naturally appears for the hospital shift change.
+- **Calendar Math:** when today is "Move-In", flight/train volumes are mathematically inflated.
+
+### Out of Scope (Anti-Goals)
+- Modifying the Sprint 33.1 TopPickBanner time-gate.
+- Server-side CSV storage (`fs` or DB).
+- New UI card for Hospitals — must reuse `EventCard`.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
