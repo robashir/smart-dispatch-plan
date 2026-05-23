@@ -37,6 +37,16 @@ const LEISURE_AIRLINES = ["NK", "F9", "B6", "WN", "SY"];
 // the 20 mph city-speed assumption to compute the driver's leaveBy time.
 const ALB_COORDS = { lat: 42.7483, lng: -73.8017 };
 
+// Sprint 37: spatial anchor for Albany-Rensselaer Amtrak station. Used to
+// pin train surge buckets on the Mapbox radar.
+const AMTRAK_COORDS = { lat: 42.6463, lng: -73.7392 };
+
+// Sprint 36: spatial anchors for the State Capital engine. ESP gates the
+// Lobbyist Premium (1.5-mi centroid radius); both ESP + Harriman are the
+// location label on the 4 PM commuter synthetic event.
+const ESP_COORDS = { lat: 42.6514, lng: -73.7608 };
+const HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 };
+
 // Sprint 31: Campus Synergy Engine. Late-night (11 PM / 12 AM / 1 AM) food
 // hotspots whose cluster centroid lands within 1.5 miles of a known campus
 // earn a 1.5x campusMod. Validated in isolation by test-campus-engine.js
@@ -57,6 +67,24 @@ function computeCampusMod(hotspotLat, hotspotLng, currentHour) {
     }
   }
   return { campusMod: 1.0, campusName: null };
+}
+
+// Sprint 36: Lobbyist Premium Engine. Strict all-of gate — Tue/Wed/Thu,
+// 17:00-20:59 wall-clock, tier "High-Value ($$$)", cluster centroid within
+// 1.5 mi of ESP. Mirrors campusMod's shape so it can chain multiplicatively
+// inside surgeScore's food branch alongside qualityMod + campusMod.
+function computeCorporateMod(hotspot, currentDay, currentHour) {
+  if (currentDay < 2 || currentDay > 4) return 1.0;
+  if (currentHour < 17 || currentHour > 20) return 1.0;
+  if (hotspot.tier !== "High-Value ($$$)") return 1.0;
+  const distance = haversineMiles(
+    hotspot.centroidLat,
+    hotspot.centroidLng,
+    ESP_COORDS.lat,
+    ESP_COORDS.lng
+  );
+  if (distance >= 1.5) return 1.0;
+  return 1.8;
 }
 
 // Sprint 32: Event Egress Engine. Project the event's end time off its
@@ -329,7 +357,12 @@ function computeLeisureMod(departureIata, airlineIata) {
 // delay flags the whole hour as a fatigue hub.
 // Sprint 30: per-flight leisureMod (strict Hub+Airline AND-gate) computed
 // in the same loop; bucket carries MAX across members (parity with fatigue).
-function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, minutesToAirport = 0) {
+// Sprint 27.1: destructured-object signature. Locks each argument to its
+// name so future inserts/removals in the middle of the list can't silently
+// shift downstream positionals (the airport-egress math was the highest-
+// risk site for that drift). `rideMod` is accepted defensively even though
+// the Sprint 27 body never reads it.
+function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rideMod = 1.0, minutesToAirport = 0 }) {
   const originsByHour = {};
   const earliestShiftedByHour = {};
   const fatigueModByHour = {};
@@ -422,6 +455,9 @@ function aggregateArrivalsByHour(flights, localStart, localEnd, offsetMin, minut
       fatigueMod: fatigueModByHour[hour] || 1.0,
       // Sprint 30: bucket carries the MAX leisureMod across its members.
       leisureMod: leisureModByHour[hour] || 1.0,
+      // Sprint 37: ALB coords so the Mapbox radar can pin each flight bucket.
+      lat: ALB_COORDS.lat,
+      lng: ALB_COORDS.lng,
     });
   }
   return buckets;
@@ -484,7 +520,10 @@ async function fetchAlbTrainArrivals() {
 // strings so the LLM sees origin context inline (mirrors flight aggregator).
 // Sprint 27: rideMod stripped (parity with the flight aggregator). Raw
 // bucket counts only; buildItinerary applies finalRideMod for sort + filter.
-function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
+// Sprint 27.1: destructured-object signature (parity with the flight
+// aggregator). `rideMod` is accepted defensively even though the Sprint 27
+// body never reads it.
+function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin, rideMod = 1.0 }) {
   if (!Array.isArray(trains)) return [];
   const originsByHour = {};
   const seen = new Set();
@@ -531,6 +570,9 @@ function aggregateTrainArrivalsByHour(trains, localStart, localEnd, offsetMin) {
       volume: codes.length,
       origins: codes,
       hub: "Rensselaer",
+      // Sprint 37: Amtrak coords so the Mapbox radar can pin each train bucket.
+      lat: AMTRAK_COORDS.lat,
+      lng: AMTRAK_COORDS.lng,
     });
   }
   return buckets;
@@ -720,22 +762,41 @@ function computeHotspots(businesses, type, localStart) {
       `YELP ANCHOR: ${anchor?.name || "Unknown"} | Pop Score: ${popularityScore} | Mod: ${qualityMod}x`
     );
 
-    // Sprint 31: Campus Synergy. Compute cluster centroid (mean lat/lng of
-    // members), then run the spatial+temporal gate against CAMPUS_CENTERS.
-    // Only food hotspots qualify — grocery clusters are out of scope.
+    // Sprint 37: cluster centroid computed for ALL hotspots (food + grocery)
+    // so the Mapbox radar can pin both families. Sprint 31's campus gate +
+    // Sprint 36's lobbyist gate still consume it only for food.
+    const centroidLat =
+      bestCluster.reduce((sum, b) => sum + b.lat, 0) / bestCluster.length;
+    const centroidLng =
+      bestCluster.reduce((sum, b) => sum + b.lng, 0) / bestCluster.length;
+
+    // Sprint 31: Campus Synergy. Run the spatial+temporal gate against
+    // CAMPUS_CENTERS. Only food hotspots qualify — grocery clusters are out
+    // of scope.
+    // Sprint 36: same centroid feeds the Lobbyist Premium gate (ESP 1.5-mi
+    // radius). currentDay is wall-clock-as-UTC per Sprint 3.1.
     let campusMod = 1.0;
     let campusName = null;
+    let corporateMod = 1.0;
     if (type === "food") {
-      const centroidLat =
-        bestCluster.reduce((sum, b) => sum + b.lat, 0) / bestCluster.length;
-      const centroidLng =
-        bestCluster.reduce((sum, b) => sum + b.lng, 0) / bestCluster.length;
       const campusResult = computeCampusMod(centroidLat, centroidLng, hour);
       campusMod = campusResult.campusMod;
       campusName = campusResult.campusName;
       if (campusMod > 1.0) {
         console.log(
           `CAMPUS SYNERGY TRIGGERED: ${location} | Campus: ${campusName} | Mod: ${campusMod}x`
+        );
+      }
+
+      const currentDay = localStart instanceof Date ? localStart.getUTCDay() : -1;
+      corporateMod = computeCorporateMod(
+        { tier, centroidLat, centroidLng },
+        currentDay,
+        hour
+      );
+      if (corporateMod > 1.0) {
+        console.log(
+          `CORPORATE LOBBYIST PREMIUM TRIGGERED: ${anchor?.name || "Unknown"} | Mod: ${corporateMod}x`
         );
       }
     }
@@ -755,6 +816,15 @@ function computeHotspots(businesses, type, localStart) {
       // food branch of surgeScore alongside qualityMod.
       campusMod,
       campusName,
+      // Sprint 36: corporateMod (1.0 default, 1.8x for Tue/Wed/Thu 5-8 PM
+      // High-Value clusters within 1.5 mi of ESP). Chains multiplicatively
+      // into the food branch of surgeScore; grocery hotspots never set it,
+      // so the read defaults to 1.0 there.
+      corporateMod,
+      // Sprint 37: cluster centroid so the Mapbox radar can drop a pin
+      // on the geographic middle of the cluster.
+      lat: centroidLat,
+      lng: centroidLng,
     });
 
     const clusterSet = new Set(bestCluster);
@@ -843,11 +913,18 @@ function surgeScore(item, finalRideMod, finalFoodMod) {
     // Sprint 31: campusMod (1.0 default, 1.5x for late-night campus-adjacent
     // food clusters) chains multiplicatively. Grocery hotspots carry the
     // default 1.0 so the math is a no-op there.
+    // Sprint 36: corporateMod (1.0 default, 1.8x for the Lobbyist Premium
+    // gate) wraps the whole formula.
+    // Sprint 36.1: strict type-gate. Even if a grocery item accidentally
+    // carries the field, the ternary forces 1.0 — the Sprint 36 anti-goal
+    // ("do not apply to grocery") becomes mathematically impossible to
+    // violate, not just defensively unlikely.
     const qualityMod = Number(item.qualityMod) || 1.0;
     const campusMod = Number(item.campusMod) || 1.0;
+    const corporateMod = item.type === "food" ? (Number(item.corporateMod) || 1.0) : 1.0;
     const base = (Number(item.volume) || 0) * finalFoodMod * qualityMod * campusMod;
     const bonus = item.tier === "High-Value ($$$)" ? 2 : 0;
-    return base + bonus;
+    return (base + bonus) * corporateMod;
   }
   return 0;
 }
@@ -1069,20 +1146,20 @@ export async function POST(request) {
     // finalRideMod / finalFoodMod multipliers ride alongside in mergedPayload
     // and are applied exclusively inside buildItinerary (hidden surgeScore
     // for sort + strict <1.0 filter). Kills the Sprint 23 squaring bug.
-    let flightsByHour = aggregateArrivalsByHour(
-      rawFlights,
+    let flightsByHour = aggregateArrivalsByHour({
+      flights: rawFlights,
       localStart,
       localEnd,
       offsetMin,
-      minutesToAirport
-    );
+      minutesToAirport,
+    });
 
-    let trainsByHour = aggregateTrainArrivalsByHour(
-      rawTrains,
+    let trainsByHour = aggregateTrainArrivalsByHour({
+      trains: rawTrains,
       localStart,
       localEnd,
-      offsetMin
-    );
+      offsetMin,
+    });
 
     // Sprint 32: Event Egress Engine. Walk the raw TM array, derive each
     // event's segment/venue/startTime, compute egressMod against localStart
@@ -1128,6 +1205,15 @@ export async function POST(request) {
       }
     }
 
+    // PIPELINE PHASE 2: Inject synthetic local events strictly AFTER external API filtering.
+    // Sprint 36.2: this sequencing is load-bearing — Phase 1 (above) maps Ticketmaster's
+    // raw `{ classifications, _embedded.venues, dates.start.localDate/localTime }` objects
+    // through the egressMod > 1.0 gate. Synthetic injections (Hospital, State Commuter)
+    // skip that filter entirely because they're authored locally with the structured
+    // shape already in hand. Re-ordering would either feed the TM filter a synthetic
+    // object missing its required paths (crash) or drop the synthetic events on the
+    // egressMod <= 1.0 floor when their numbers happen to fall there.
+
     // Sprint 34: Hospital Shift Injector. Albany Med + St. Peter's run
     // 7-to-7 nursing shifts; the 30-minute changeover dump is statistically
     // the densest predictable rideshare event in the city. Time gate reads
@@ -1144,8 +1230,40 @@ export async function POST(request) {
         volume: 1,
         egressMod: 3.0,
         categories: ["Nursing Shift Change"],
+        // Sprint 37: Albany Med area coords for the Mapbox radar pin.
+        lat: 42.6534,
+        lng: -73.7933,
       });
       console.log("HOSPITAL SHIFT INJECTED: Albany Med & St. Peter's Hospitals | egressMod 3.0x");
+    }
+
+    // Sprint 36: State Commuter Injector. Mon-Fri 15:30-17:00 wall-clock
+    // (inclusive on both ends — wall-clock hours 15 to 16, or 17 if minutes
+    // are 0) is the densest predictable rideshare event in Albany: the
+    // Empire State Plaza + Harriman Campus state workforce all clocking out
+    // at once. egressMod 2.5 mirrors a Mega-Venue so it surfaces near the
+    // top of Profitability without overriding the 3.0x hospital surge.
+    const currentDay = localStart.getUTCDay();
+    const inStateCommuterWindow = wallMinutes >= 930 && wallMinutes <= 1020;
+    if (
+      activePlatforms.rideshare &&
+      currentDay >= 1 &&
+      currentDay <= 5 &&
+      inStateCommuterWindow
+    ) {
+      structuredEvents.push({
+        type: "event",
+        location: "Empire State Plaza & Harriman Campus",
+        volume: 1,
+        egressMod: 2.5,
+        categories: ["State Worker Commute"],
+        // Sprint 37: ESP coords for the Mapbox radar pin.
+        lat: ESP_COORDS.lat,
+        lng: ESP_COORDS.lng,
+      });
+      console.log(
+        "STATE COMMUTER INJECTED: Empire State Plaza & Harriman Campus | egressMod 2.5x"
+      );
     }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept

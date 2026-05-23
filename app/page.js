@@ -1,8 +1,10 @@
 "use client";
 
+import "mapbox-gl/dist/mapbox-gl.css";
 import { useEffect, useState } from "react";
-import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 import { TopPickBanner } from "../components/TopPickBanner";
+import DispatchMap from "../components/DispatchMap";
+import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 
 // Sprint 35: Promise wrapper around navigator.geolocation.getCurrentPosition.
 // Resolves with the coords object, rejects on permission denial / timeout /
@@ -96,9 +98,39 @@ export default function Home() {
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
   const [activeTab, setActiveTab] = useState("transit");
   const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
+  // Sprint 37: live driver coords for the pulsing blue dot on the radar.
+  // Reset on each dispatch so a stale fix never floats over the new plan.
+  // Sprint 37.2: renamed coords → driverCoords for an unambiguous prop chain
+  // (the blue dot was missing because state hydration was easy to misread).
+  const [driverCoords, setDriverCoords] = useState(null);
   // Sprint 34: BYOD semester calendar. Persisted in localStorage so a driver
   // uploads once per semester and forgets it. Each entry is { date, eventType }.
   const [campusCalendar, setCampusCalendar] = useState([]);
+  // Sprint 38: global Map/List toggle. Default "map" so the SSR pass renders
+  // the radar; the useEffect below replaces it with the driver's prior choice
+  // once the browser hydrates.
+  const [viewMode, setViewMode] = useState("map");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = localStorage.getItem("dispatchViewMode");
+      console.log("[Sprint38] hydrated viewMode from localStorage:", stored);
+      if (stored === "map" || stored === "list") setViewMode(stored);
+    } catch (e) {
+      console.warn("dispatchViewMode hydrate failed:", e.message);
+    }
+  }, []);
+
+  function handleViewModeChange(mode) {
+    setViewMode(mode);
+    try {
+      localStorage.setItem("dispatchViewMode", mode);
+      console.log("[Sprint38] persisted viewMode:", mode);
+    } catch (e) {
+      console.warn("dispatchViewMode persist failed:", e.message);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -154,6 +186,7 @@ export default function Home() {
   async function handleClick() {
     setError("");
     setItinerary([]);
+    setDriverCoords(null);
     setStatus("locating");
 
     // Sprint 35: Intent-Driven Intercept. Await the device's live coordinates
@@ -163,15 +196,18 @@ export default function Home() {
     let latitude = ROESSLEVILLE_COORDS.latitude;
     let longitude = ROESSLEVILLE_COORDS.longitude;
     try {
-      const coords = await getGeolocation();
-      latitude = coords.latitude;
-      longitude = coords.longitude;
+      const fix = await getGeolocation();
+      latitude = fix.latitude;
+      longitude = fix.longitude;
     } catch (geoErr) {
       console.warn(
         "Geolocation unavailable — falling back to Roessleville:",
         geoErr.message
       );
     }
+    // Sprint 37: stash whatever coords we ended up with (real or fallback)
+    // so DispatchMap can render the blue dot.
+    setDriverCoords({ latitude, longitude });
 
     setStatus("dispatching");
 
@@ -417,6 +453,32 @@ export default function Home() {
               Your Plan
             </h2>
 
+            {/* Sprint 38: global Map/List segmented control. Sits above the
+                Transit/Food tabs because it governs the entire plan view, not
+                just one family. Strict conditional render below unmounts the
+                Mapbox WebGL context when the driver chooses List. */}
+            <div className="flex gap-1 rounded-full bg-neutral-900 border border-neutral-700 p-1">
+              {[
+                { key: "map", label: "Map" },
+                { key: "list", label: "List" },
+              ].map(({ key, label }) => {
+                const isActive = viewMode === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => handleViewModeChange(key)}
+                    className={`flex-1 py-2 text-sm font-semibold rounded-full transition ${
+                      isActive
+                        ? "bg-neutral-700 text-white"
+                        : "bg-transparent text-neutral-400 hover:text-neutral-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="flex border-b border-neutral-700">
               {[
                 { key: "transit", label: "Transit & Events" },
@@ -439,26 +501,40 @@ export default function Home() {
               })}
             </div>
 
-            {filteredItinerary.length === 0 ? (
-              <div className="rounded-xl bg-neutral-900 border border-neutral-700 p-5 text-neutral-300">
-                No active surges detected for this window. Stand by or expand your search.
+            {/* Sprint 37: vertical card list swapped for the Mapbox radar.
+                Tabs above still filter the dataset that gets pinned, so the
+                map respects the Transit/Food split. DispatchCards are kept
+                in the repo for future popup reuse.
+                Sprint 37.1: strictly-sized 600px wrapper — the Map collapses
+                to 0 px and renders as an invisible canvas without an explicit
+                height on its parent.
+                Sprint 38: strict conditional render — Map and List never
+                co-exist. Unmounting the Mapbox subtree releases the WebGL
+                context and frees GPU memory on the driver's device. */}
+            {viewMode === "map" && (
+              <div className="w-full h-[600px] mt-4 rounded-xl overflow-hidden border border-neutral-700">
+                <DispatchMap itinerary={filteredItinerary} driverCoords={driverCoords} />
               </div>
-            ) : (
-              filteredItinerary.map((item, i) => {
-                switch (item.type) {
-                  case "flight":
-                    return <FlightCard key={i} data={item} />;
-                  case "train":
-                    return <TrainCard key={i} data={item} />;
-                  case "food":
-                  case "grocery":
-                    return <HotspotCard key={i} data={item} />;
-                  case "event":
-                    return <EventCard key={i} data={item} />;
-                  default:
-                    return null;
-                }
-              })
+            )}
+
+            {viewMode === "list" && (
+              <div className="flex flex-col gap-3 mt-4">
+                {filteredItinerary.map((item, i) => {
+                  switch (item.type) {
+                    case "flight":
+                      return <FlightCard key={i} data={item} />;
+                    case "train":
+                      return <TrainCard key={i} data={item} />;
+                    case "event":
+                      return <EventCard key={i} data={item} />;
+                    case "food":
+                    case "grocery":
+                      return <HotspotCard key={i} data={item} />;
+                    default:
+                      return null;
+                  }
+                })}
+              </div>
             )}
           </div>
         )}

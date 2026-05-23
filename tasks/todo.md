@@ -270,6 +270,29 @@
 - Network payload (DevTools) shows `platforms: { rideshare, food, grocery }` matching UI state.
 - AI plan only recommends platforms in the active list, regardless of density signals.
 
+## Sprint 10 — Strict Platform Guardrails (Prompt Engineering)
+
+**Problem:** LLM has "Data Obligation" — it combines irrelevant data sources with active platforms (e.g., suggesting Instacart grocery pickups at the airport for arriving flight passengers). Existing CRITICAL block is too soft and even tells the model to route drivers to airport/Amtrak when rideshare is off.
+
+### Decisions (locked before coding)
+- **Inject True/False state via system prompt:** Convert `SYSTEM_PROMPT` constant to `buildSystemPrompt(activePlatforms)` function. Renders the three boolean states inline immediately above the new rules block so the LLM sees the exact state per request.
+- **Replace, not append:** Remove the existing soft "CRITICAL — ACTIVE PLATFORMS" block. The new "CRITICAL PLATFORM ISOLATION RULES" section is the single source of truth — the old block contradicts the new behavior (it said "route the driver to airport/Amtrak even if rideshare is off").
+- **Four sub-rules:** Rideshare / Food Delivery / Grocery / Anti-Mashing — each names the specific terms to NEVER mention when the platform is FALSE.
+- **No frontend changes. No new env vars. No new data flow.** Pure prompt engineering.
+
+### Build Steps
+- [x] 0. Write Sprint 10 plan to `tasks/todo.md`.
+- [x] 1. `app/api/dispatch/route.js`: convert `SYSTEM_PROMPT` constant to `buildSystemPrompt(activePlatforms)` function.
+- [x] 2. `app/api/dispatch/route.js`: replace old "CRITICAL — ACTIVE PLATFORMS" block with new "CRITICAL PLATFORM ISOLATION RULES" section, with True/False state injected directly above it.
+- [x] 3. `app/api/dispatch/route.js`: update the `client.messages.create` call site to use `buildSystemPrompt(activePlatforms)`.
+- [ ] 4. Manual verification: uncheck Rideshare + Food, leave Grocery on. With no supermarkets nearby, plan must NOT mention airport, flights, ALB, Rensselaer, DoorDash, or UberEats — should tell driver to wait or relocate.
+- [ ] 5. Manual verification: uncheck everything except Grocery. Word "Airport" and "Flights" must never appear in the plan.
+
+### Acceptance Criteria
+- When only "Grocery" is checked, "Airport" / "Flights" / "ALB" never appear in the plan.
+- LLM provides logical, platform-specific advice without hallucinating crossover events.
+- System prompt visibly states each platform's True/False right above the isolation rules.
+
 ## Sprint 11 — Payload Sanitization (Hard Guardrails)
 
 **Problem:** Sprint 10's strict prompt rules still aren't enough — LLM hallucinates flight/food/grocery plans for disabled platforms. Stop trying to control via prompt; sanitize the payload itself.
@@ -299,29 +322,6 @@
 ### Out of Scope
 - Wiping `events` when rideshare is off (brief did not request).
 - Frontend changes, new env vars, prompt rewrites.
-
-## Sprint 10 — Strict Platform Guardrails (Prompt Engineering)
-
-**Problem:** LLM has "Data Obligation" — it combines irrelevant data sources with active platforms (e.g., suggesting Instacart grocery pickups at the airport for arriving flight passengers). Existing CRITICAL block is too soft and even tells the model to route drivers to airport/Amtrak when rideshare is off.
-
-### Decisions (locked before coding)
-- **Inject True/False state via system prompt:** Convert `SYSTEM_PROMPT` constant to `buildSystemPrompt(activePlatforms)` function. Renders the three boolean states inline immediately above the new rules block so the LLM sees the exact state per request.
-- **Replace, not append:** Remove the existing soft "CRITICAL — ACTIVE PLATFORMS" block. The new "CRITICAL PLATFORM ISOLATION RULES" section is the single source of truth — the old block contradicts the new behavior (it said "route the driver to airport/Amtrak even if rideshare is off").
-- **Four sub-rules:** Rideshare / Food Delivery / Grocery / Anti-Mashing — each names the specific terms to NEVER mention when the platform is FALSE.
-- **No frontend changes. No new env vars. No new data flow.** Pure prompt engineering.
-
-### Build Steps
-- [x] 0. Write Sprint 10 plan to `tasks/todo.md`.
-- [x] 1. `app/api/dispatch/route.js`: convert `SYSTEM_PROMPT` constant to `buildSystemPrompt(activePlatforms)` function.
-- [x] 2. `app/api/dispatch/route.js`: replace old "CRITICAL — ACTIVE PLATFORMS" block with new "CRITICAL PLATFORM ISOLATION RULES" section, with True/False state injected directly above it.
-- [x] 3. `app/api/dispatch/route.js`: update the `client.messages.create` call site to use `buildSystemPrompt(activePlatforms)`.
-- [ ] 4. Manual verification: uncheck Rideshare + Food, leave Grocery on. With no supermarkets nearby, plan must NOT mention airport, flights, ALB, Rensselaer, DoorDash, or UberEats — should tell driver to wait or relocate.
-- [ ] 5. Manual verification: uncheck everything except Grocery. Word "Airport" and "Flights" must never appear in the plan.
-
-### Acceptance Criteria
-- When only "Grocery" is checked, "Airport" / "Flights" / "ALB" never appear in the plan.
-- LLM provides logical, platform-specific advice without hallucinating crossover events.
-- System prompt visibly states each platform's True/False right above the isolation rules.
 
 ## Sprint V2.5 — Precision Food Dispatch (Spatial Hotspots)
 
@@ -471,7 +471,7 @@
 ### Out of Scope
 - Re-introducing distance as a non-financial dispatch signal (e.g., tie-breaker between equally-dense hotspots). Frontend changes. Sprint 11 sanitization changes.
 
-## Sprint 15 — Netlify Backend Deployment (Cloud Split)
+## Infra 1 — Netlify Backend Deployment (Cloud Split)
 
 **Goal:** Deploy the Next.js backend (incl. `/api/dispatch`) to a live Netlify URL so the upcoming Capacitor native shell can call it. Static export is incompatible with API routes — Netlify's Next.js runtime keeps the dynamic server alive.
 
@@ -1023,39 +1023,6 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - **Frontend unaffected:** existing card rendering keeps working because `data.itinerary` is still in the response (now top-level of `mergedPayload`).
 - **History intact:** Sprint 16–24 todo blocks untouched.
 
-## Sprint 30 — The UberXL / Leisure Hub Engine
-
-**Epic:** Multi-Variable Algorithmic Engine. `qualityMod` (food) and `fatigueMod` (aviation) are already live. Sprint 30 adds a `leisureMod` to the aviation pipeline so flights from leisure hubs operated by leisure-focused carriers stack a 1.4x multiplier — targeting luggage-heavy family/vacation rides that need UberXL/SUV.
-
-### Locked Decisions (from PO brief)
-- **Strict AND-gate:** `LEISURE_HUBS = ["MCO","LAS","MIA","CUN","RSW","OGG"]` AND `LEISURE_AIRLINES = ["NK","F9","B6","WN","SY"]`. Both must match → `1.4`. Else → `1.0`.
-- **Bucket carry:** MAX across bucket members (parity with Sprint 29 `fatigueMod`).
-- **Stack:** Multiplicative inside `surgeScore` — `volume * finalRideMod * fatigueMod * leisureMod`.
-- **Trigger log:** `"LEISURE HUB TRIGGERED: <ident> | Hub: <iata> | Mod: 1.4x"`.
-- **Anti-goals:** Food/grocery/train pipelines untouched. No UI changes. No new external APIs.
-
-### Build Steps
-- [x] 0. Append Sprint 30 plan to `tasks/todo.md`.
-- [x] 1. Create `test-leisure-engine.js` with `LEISURE_HUBS`/`LEISURE_AIRLINES`/`computeLeisureMod` + 3 PO-mandated assertions (MCO+NK→1.4, MCO+DL→1.0, JFK+NK→1.0). ✅
-- [x] 2. Run `node test-leisure-engine.js` → all 3 base + 1 integration stack assertion PASS. ✅
-- [x] 3. `app/api/dispatch/route.js`: add `LEISURE_HUBS` + `LEISURE_AIRLINES` constants alongside `HIGH_VALUE_STATIONS`. ✅
-- [x] 4. `app/api/dispatch/route.js`: add `computeLeisureMod(departureIata, airlineIata)` helper next to `computeFatigueMod`. ✅
-- [x] 5. `app/api/dispatch/route.js`: thread per-flight leisure computation through `aggregateArrivalsByHour` (trigger log + MAX-across-bucket carry + bucket attribute). ✅
-- [x] 6. `app/api/dispatch/route.js`: extend `surgeScore` for flight items to multiply by `leisureMod`. ✅
-- [x] 7. Parse-check (L4): `node --check app/api/dispatch/route.js` → **PARSE OK**. ✅
-- [ ] 8. Manual browser verification (user must perform): `npm run dev`, trigger dispatch. Confirm:
-  - Terminal shows `LEISURE HUB TRIGGERED: ...` when a Spirit/Frontier/JetBlue/Southwest/Sun Country flight from MCO/LAS/MIA/CUN/RSW/OGG appears.
-  - `=== MERGED DISPATCH PAYLOAD ===` shows `leisureMod: 1.4` on the matching bucket(s).
-  - Flight surgeScore (visible via `itinerary` sort order) is correctly inflated 1.4x vs an otherwise-identical non-leisure bucket.
-
-### Acceptance Criteria
-- **TDD validation:** `test-leisure-engine.js` passes all 3 strict AND-gate assertions. ✅
-- **Terminal verification:** Backend logs `LEISURE HUB TRIGGERED:` when both conditions hit.
-- **Proper scoring:** `surgeScore` inside `buildItinerary` chains `leisureMod` multiplicatively alongside `finalRideMod` and `fatigueMod`.
-
-### Out of Scope
-- Food/grocery/train pipeline changes, frontend UI changes, additional external APIs.
-
 ## Backlog / Icebox
 
 Deferred epics and features live in [`ICEBOX.md`](../ICEBOX.md) at the project root. Current entries: Widebody Capacity Engine (Sprint 31), Leisure Hub Expansion, Frontend Dashboard Overhaul (Mapbox/Leaflet), Driver Session Persistence (`localStorage`).
@@ -1145,6 +1112,27 @@ If the UI still surfaces "Dispatch failed." after this hotfix, the user opens De
 
 ### Debugging Agreement
 If a stale value ever leaks (e.g., driver sees a flight that's already landed), the user reports the exact cache key + observed-vs-expected. Targeted fix is to either lower that key's TTL or invalidate it on the offending event, NOT to disable the cache layer wholesale.
+
+## Sprint 27.1 — Signature Refactoring (Tech Debt)
+
+**Problem:** Both aggregators (`aggregateArrivalsByHour`, `aggregateTrainArrivalsByHour`) relied on up to 5 positional arguments. Upcoming work needs to remove arguments from the middle of these signatures, which would silently shift downstream positionals (the airport-egress `minutesToAirport` slot was the highest-risk drift site).
+
+**Fix:** Refactor both aggregators to accept a single destructured options object so argument order can no longer matter. Pure signature mapping — internal math/logic/variables are untouched.
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: change `aggregateArrivalsByHour` signature to `({ flights, localStart, localEnd, offsetMin, rideMod = 1.0, minutesToAirport = 0 })`. `rideMod` is accepted defensively per PO example even though the Sprint 27 body doesn't read it.
+- [x] 2. `app/api/dispatch/route.js`: change `aggregateTrainArrivalsByHour` signature to `({ trains, localStart, localEnd, offsetMin, rideMod = 1.0 })`. Same defensive `rideMod`.
+- [x] 3. `app/api/dispatch/route.js`: update both POST call sites to pass an object with matching keys (`flights: rawFlights` / `trains: rawTrains`).
+- [x] 4. Parse-check per L4: `node --check` + ESM `import()` both clean.
+
+### Acceptance Criteria (Definition of Done)
+- Both aggregator definitions accept a single destructured-object argument.
+- Both POST call sites pass the data via named keys, not positionals.
+- No change to internal math/logic/variables inside either aggregator.
+
+### Out of Scope (Anti-Goals)
+- Modifying internal math/logic/variables inside the aggregators.
+- Executing Sprint 27's raw-data fix as part of this sprint (already shipped earlier; this is purely structural).
 
 ## Sprint 27 — Technical Debt & Multiplier Refactoring (Raw Data Fix)
 
@@ -1290,6 +1278,39 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 30 — The UberXL / Leisure Hub Engine
+
+**Epic:** Multi-Variable Algorithmic Engine. `qualityMod` (food) and `fatigueMod` (aviation) are already live. Sprint 30 adds a `leisureMod` to the aviation pipeline so flights from leisure hubs operated by leisure-focused carriers stack a 1.4x multiplier — targeting luggage-heavy family/vacation rides that need UberXL/SUV.
+
+### Locked Decisions (from PO brief)
+- **Strict AND-gate:** `LEISURE_HUBS = ["MCO","LAS","MIA","CUN","RSW","OGG"]` AND `LEISURE_AIRLINES = ["NK","F9","B6","WN","SY"]`. Both must match → `1.4`. Else → `1.0`.
+- **Bucket carry:** MAX across bucket members (parity with Sprint 29 `fatigueMod`).
+- **Stack:** Multiplicative inside `surgeScore` — `volume * finalRideMod * fatigueMod * leisureMod`.
+- **Trigger log:** `"LEISURE HUB TRIGGERED: <ident> | Hub: <iata> | Mod: 1.4x"`.
+- **Anti-goals:** Food/grocery/train pipelines untouched. No UI changes. No new external APIs.
+
+### Build Steps
+- [x] 0. Append Sprint 30 plan to `tasks/todo.md`.
+- [x] 1. Create `test-leisure-engine.js` with `LEISURE_HUBS`/`LEISURE_AIRLINES`/`computeLeisureMod` + 3 PO-mandated assertions (MCO+NK→1.4, MCO+DL→1.0, JFK+NK→1.0). ✅
+- [x] 2. Run `node test-leisure-engine.js` → all 3 base + 1 integration stack assertion PASS. ✅
+- [x] 3. `app/api/dispatch/route.js`: add `LEISURE_HUBS` + `LEISURE_AIRLINES` constants alongside `HIGH_VALUE_STATIONS`. ✅
+- [x] 4. `app/api/dispatch/route.js`: add `computeLeisureMod(departureIata, airlineIata)` helper next to `computeFatigueMod`. ✅
+- [x] 5. `app/api/dispatch/route.js`: thread per-flight leisure computation through `aggregateArrivalsByHour` (trigger log + MAX-across-bucket carry + bucket attribute). ✅
+- [x] 6. `app/api/dispatch/route.js`: extend `surgeScore` for flight items to multiply by `leisureMod`. ✅
+- [x] 7. Parse-check (L4): `node --check app/api/dispatch/route.js` → **PARSE OK**. ✅
+- [ ] 8. Manual browser verification (user must perform): `npm run dev`, trigger dispatch. Confirm:
+  - Terminal shows `LEISURE HUB TRIGGERED: ...` when a Spirit/Frontier/JetBlue/Southwest/Sun Country flight from MCO/LAS/MIA/CUN/RSW/OGG appears.
+  - `=== MERGED DISPATCH PAYLOAD ===` shows `leisureMod: 1.4` on the matching bucket(s).
+  - Flight surgeScore (visible via `itinerary` sort order) is correctly inflated 1.4x vs an otherwise-identical non-leisure bucket.
+
+### Acceptance Criteria
+- **TDD validation:** `test-leisure-engine.js` passes all 3 strict AND-gate assertions. ✅
+- **Terminal verification:** Backend logs `LEISURE HUB TRIGGERED:` when both conditions hit.
+- **Proper scoring:** `surgeScore` inside `buildItinerary` chains `leisureMod` multiplicatively alongside `finalRideMod` and `fatigueMod`.
+
+### Out of Scope
+- Food/grocery/train pipeline changes, frontend UI changes, additional external APIs.
 
 ## Sprint 31 — The Campus Synergy Engine
 
@@ -1467,6 +1488,14 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
 
+## Sprint 33.1 — The Actionable Banner Hotfix
+
+Added a `.filter()` step to the `topPick` calculation in `app/page.js` to ignore items more than 90 minutes in the future, preventing the banner from recommending dead-time transit traps.
+
+### Build Steps
+- [x] 1. `app/page.js`: add a 90-minute actionable-time filter to the `topPick` calculation so the global banner can only surface items whose `leaveBy` / `hourBucket` falls within the next 90 minutes.
+- [x] 2. Manual verification: with a strong surge >90 min out and a weaker surge in the next hour, banner picks the closer surge — not the dead-time transit trap.
+
 ## Sprint 34 — The Institutional Engine
 
 **Goal:** National algorithms miss rigid local schedules (hospital shifts, university calendars). Inject those signals two ways: a client-side BYOD CSV uploader (semester calendar in localStorage) and a hardcoded hospital shift-change time gate (6:30-7:30 AM/PM) that emits a synthetic high-priority event.
@@ -1544,3 +1573,271 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 36 — The Hybrid Capital Engine
+
+**Epic:** The Corporate & State Engine. Two-stage timeline targeting Albany's government workforce:
+1. State commuter wave (4 PM weekdays) → state office complexes.
+2. Lobbyist premium (Tue/Wed/Thu evenings) → high-end downtown restaurants near Empire State Plaza.
+
+### Locked Decisions (from PO brief)
+- **Spatial constants:** `ESP_COORDS = { lat: 42.6514, lng: -73.7608 }` (Empire State Plaza / Downtown), `HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 }` (Harriman State Campus). Live alongside `ALB_COORDS`.
+- **Temporal source:** `currentDay = localStart.getUTCDay()` — wall-clock-as-UTC per Sprint 3.1; 0 = Sun, 5 = Fri.
+- **Commuter time gate:** Mon-Fri (`currentDay >= 1 && currentDay <= 5`) AND `wallMinutes` in `[930, 1020]` (15:30 to 17:00 inclusive — wall-clock hours 15 to 16, or 17 if minutes are 0).
+- **Commuter injection:** only when `activePlatforms.rideshare === true`. Synthetic event shape `{ type: "event", location: "Empire State Plaza & Harriman Campus", volume: 1, egressMod: 2.5, categories: ["State Worker Commute"] }`. Pushed into `structuredEvents` BEFORE `buildItinerary` so the existing pipeline scores + sorts it (parity with Sprint 34 hospital injector).
+- **Lobbyist gate (all-of):** `currentDay 2-4` (Tue-Thu), `currentHour >= 17 && currentHour <= 20`, tier `"High-Value ($$$)"`, cluster centroid within 1.5 mi of `ESP_COORDS` (uses existing `haversineMiles`). Returns `1.8`, otherwise `1.0`.
+- **Helper:** new `computeCorporateMod(hotspot, currentDay, currentHour)` runs inside `computeHotspots` food branch (parallel to `computeCampusMod`). Called with `{ tier, centroidLat, centroidLng }`; centroid is the same one Sprint 31 already computes for campus.
+- **Trigger log:** `console.log("CORPORATE LOBBYIST PREMIUM TRIGGERED: <Anchor Name> | Mod: 1.8x")` when the gate fires.
+- **Math integration:** `surgeScore`'s food branch multiplies the existing `base + bonus` by `(Number(item.corporateMod) || 1.0)`. Grocery hotspots never receive `corporateMod`, so the read defaults to 1.0 (no-op) — anti-goal: don't apply to flights/trains/grocery.
+- **Anti-goals (enforced):** do NOT change frontend UI or React components.
+
+### Build Steps
+- [x] 0. Write Sprint 36 plan to `tasks/todo.md`.
+- [x] 1. `app/api/dispatch/route.js`: add `ESP_COORDS` and `HARRIMAN_COORDS` constants alongside `ALB_COORDS`.
+- [x] 2. `app/api/dispatch/route.js`: add `computeCorporateMod(hotspot, currentDay, currentHour)` helper near `computeCampusMod`.
+- [x] 3. `app/api/dispatch/route.js`: inside `computeHotspots` food branch, derive `currentDay` from `localStart`, call `computeCorporateMod` with the cluster's tier + centroid, attach `corporateMod` to the emitted food hotspot, log the trigger.
+- [x] 4. `app/api/dispatch/route.js`: in `surgeScore`'s food/grocery branch, multiply `(base + bonus)` by `(Number(item.corporateMod) || 1.0)`.
+- [x] 5. `app/api/dispatch/route.js`: after the Hospital Shift Injector, gate-check Mon-Fri + 15:30-17:00 + rideshare, push the State Commuter synthetic event into `structuredEvents`.
+- [x] 6. Parse-check per L4: `node --check` + ESM `import()` both report clean.
+- [ ] 7. Manual verification (user): (a) at 4:15 PM on a Wednesday with rideshare on → Empire State Plaza & Harriman Campus event card naturally appears at the top of Profitability; (b) at 6:30 PM on a Wednesday → high-end downtown steakhouses within 1.5 mi of ESP receive a 1.8x boost and shuffle to the top of Profitability; terminal logs `STATE COMMUTER INJECTED:` and `CORPORATE LOBBYIST PREMIUM TRIGGERED:` lines respectively.
+
+### Acceptance Criteria (Definition of Done)
+- **Commuter Rush:** at 4:15 PM on a Wednesday, a high-priority Event Card naturally appears for the state office complexes.
+- **Lobbyist Premium:** at 6:30 PM on a Wednesday, high-end downtown steakhouses receive a 1.8x boost, shuffling them to the top of the Profitability list.
+
+### Out of Scope (Anti-Goals)
+- Frontend UI or React component changes.
+- Applying `corporateMod` to flights, trains, or grocery hotspots.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 36.1 — Corporate Engine Hotfix
+
+**Problem:** Sprint 36 placed `corporateMod` inside the shared food/grocery branch of `surgeScore` and relied on `(Number(item.corporateMod) || 1.0)` to no-op for grocery hotspots (because the field is only attached in the food branch of `computeHotspots`). That's a soft guarantee — if a future upstream change ever bleeds `corporateMod` onto a grocery hotspot, the 1.8x boost would silently fire there, violating the Sprint 36 anti-goal ("Do not apply to grocery").
+
+**Fix:** Replace the implicit-fallback read with an explicit type-gate so the boost is mathematically impossible on a grocery item, regardless of what the object carries.
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: in `surgeScore`'s food/grocery branch, swap `const corporateMod = Number(item.corporateMod) || 1.0;` for `const corporateMod = item.type === "food" ? (Number(item.corporateMod) || 1.0) : 1.0;`.
+- [x] 2. Parse-check per L4: `node --check` + ESM `import()` both clean.
+
+### Acceptance Criteria (Definition of Done)
+- A grocery item carrying a stray `corporateMod` field can no longer receive the 1.8x boost — `corporateMod` resolves to 1.0 for any `item.type !== "food"`.
+- Food-branch behavior unchanged: `corporateMod` still resolves to `Number(item.corporateMod) || 1.0`.
+
+### Out of Scope (Anti-Goals)
+- Frontend UI or React component changes.
+- Touching `computeHotspots` / `computeCorporateMod` / the State Commuter Injector — those already enforce food-only attachment upstream; this hotfix is a defense-in-depth layer at the consumption site.
+
+## Sprint 36.2 — Event Pipeline Sequencing
+
+**Vulnerability:** Order-of-operations risk in the POST handler. Sprint 32's Ticketmaster mapping/filter (Phase 1) and Sprints 34/36's synthetic injectors (Phase 2) both write to the same `structuredEvents` array. If a synthetic event were ever pushed before Phase 1 ran, two things break: (a) the Phase 1 loop would never see it (it iterates the raw TM `events` array, not `structuredEvents`), but more importantly (b) if anyone ever refactors Phase 1 to walk `structuredEvents`, the synthetic objects — which lack the TM-specific `{ classifications, _embedded.venues, dates.start.localDate/localTime }` paths — would either crash the mapper or be dropped on the `egressMod <= 1.0` floor.
+
+**Fix:** Audit the POST handler and annotate the boundary. Existing order is already correct (Phase 1 at lines ~1146-1188; Phase 2 at line ~1190+); add a load-bearing architectural comment so future edits cannot accidentally reorder without seeing the warning.
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: audit POST handler — Phase 1 (Ticketmaster map/filter into `structuredEvents`) precedes Phase 2 (Hospital + State Commuter `push`). No code move required.
+- [x] 2. `app/api/dispatch/route.js`: insert `// PIPELINE PHASE 2: Inject synthetic local events strictly AFTER external API filtering.` immediately above the Sprint 34 Hospital Injector block, with a follow-up paragraph explaining why re-ordering would break the synthetic objects.
+- [x] 3. Parse-check per L4: `node --check` + ESM `import()` both clean.
+
+### Acceptance Criteria (Definition of Done)
+- POST handler enforces strict order: Phase 1 (TM filter) completes before Phase 2 (synthetic injection) begins.
+- Architectural comment above Phase 2 documents the dependency so a future refactor cannot silently invert the order.
+
+### Out of Scope (Anti-Goals)
+- Modifying any internal math, logic, or variable inside either phase.
+- Frontend UI or React component changes.
+
+## Sprint 37 — Interactive Map UI (Mapbox Radar)
+
+**Goal:** Replace the vertical card list with a live Mapbox radar showing the driver's pulsing GPS pin and color-coded surge pins for every itinerary item carrying coords.
+
+### Decisions (locked before coding)
+- **Backend coord plumbing:** every itinerary-emitting path stamps `lat`/`lng` onto its output object. ALB for flights, AMTRAK for trains, cluster centroid for hotspots (food AND grocery — centroid lifted out of the food-only block), Albany Med area `42.6534, -73.7933` for the Hospital Injector, ESP coords for the State Commuter Injector. Ticketmaster events are NOT geocoded in this sprint — they fall through the `Number.isFinite` guard in the marker map and skip silently.
+- **Map library:** `react-map-gl` + `mapbox-gl`. Token already lives in `.env` as `NEXT_PUBLIC_MAPBOX_TOKEN`.
+- **Center / zoom:** Albany (42.6526, -73.7562) @ zoom 11, `mapbox://styles/mapbox/dark-v11`.
+- **Pin palette:** Flight/airport = white; Train (+ ripple) = emerald-400; Food/Grocery = rose-400; Event/Commuter = purple-400.
+- **Driver pin:** pulsing blue dot via `bg-blue-500 rounded-full animate-pulse ring-4 ring-blue-500/30`, anchored center.
+- **Tabs preserved:** map receives `filteredItinerary` so the Transit / Food tab still filters which pins render.
+- **Driver coord state:** new `coords` state in `app/page.js`; set after every dispatch click (with the Roessleville fallback included).
+- **Orphan cleanup (per CLAUDE.md):** unused `FlightCard / TrainCard / HotspotCard / EventCard` imports removed from `app/page.js`. The components file stays (anti-goal).
+
+### Build Steps
+- [x] 0. Append Sprint 37 plan to `tasks/todo.md`.
+- [x] 1. `app/api/dispatch/route.js`: add `AMTRAK_COORDS` constant beside `ALB_COORDS`.
+- [x] 2. `app/api/dispatch/route.js`: attach `lat`/`lng` (ALB) to every flight bucket pushed in `aggregateArrivalsByHour`.
+- [x] 3. `app/api/dispatch/route.js`: attach `lat`/`lng` (AMTRAK) to every train bucket pushed in `aggregateTrainArrivalsByHour`.
+- [x] 4. `app/api/dispatch/route.js`: lift `centroidLat`/`centroidLng` out of the food-only block in `computeHotspots` and attach them as `lat`/`lng` on every emitted hotspot (food + grocery).
+- [x] 5. `app/api/dispatch/route.js`: attach hardcoded Albany Med coords to the Hospital Injector event.
+- [x] 6. `app/api/dispatch/route.js`: attach `ESP_COORDS` to the State Commuter Injector event.
+- [x] 7. `npm install mapbox-gl react-map-gl`.
+- [x] 8. Create `components/DispatchMap.jsx`: dark Map centered on Albany, driver Marker (pulsing blue dot), itinerary Markers with type-based color, Popup on click showing type/location/volume/surgeScore/egress.
+- [x] 9. `app/page.js`: import DispatchMap, add `coords` state, set it after geolocation (real or fallback).
+- [x] 10. `app/page.js`: replace the `filteredItinerary.map(...)` card block with `<DispatchMap itinerary={filteredItinerary} driverCoords={coords} />`. Remove orphaned card imports.
+- [x] 11. Parse-check per L4: `node --check app/api/dispatch/route.js` returns `PARSE OK`.
+- [ ] 12. Manual verification: `npm run dev` → click button → grant GPS → confirm (a) dark Mapbox map renders, (b) pulsing blue dot sits over real coords, (c) color-coded surge pins appear, (d) clicking a pin opens a popup with type/location/volume.
+
+### Acceptance Criteria (Definition of Done)
+- Backend payload seeds `lat`/`lng` on flights, trains, hotspots (food + grocery), hospital event, state commuter event.
+- UI renders the dark-mode Mapbox map containing color-coded surge pins.
+- Driver location renders as a pulsing blue dot from the GPS coords captured by the yellow dispatch button.
+
+### Out of Scope (Anti-Goals)
+- Mapbox Navigation / routing lines (static pins only).
+- Deleting `components/DispatchCards.jsx` (kept for future popup reuse).
+- Geocoding Ticketmaster events (they sit without pins until a future sprint).
+
+## Sprint 37.1 — Mapbox Rendering Hotfix
+
+**Bug:** The Mapbox `<Map>` was mounting into a parent with no explicit height — the canvas collapsed to 0 px and rendered invisibly. Separately, Next.js was not guaranteed to bundle `mapbox-gl`'s CSS because the import lived only inside `DispatchMap.jsx`.
+
+**Fix:** Hoist the Mapbox CSS import to `app/page.js` so Next.js globally bundles it, and wrap `<DispatchMap />` in a strictly-sized 600px div so the canvas always has dimensions to measure against.
+
+### Build Steps
+- [x] 1. `app/page.js`: add `import "mapbox-gl/dist/mapbox-gl.css";` at the top of the file alongside the other top-level imports.
+- [x] 2. `app/page.js`: wrap `<DispatchMap />` in `<div className="w-full h-[600px] mt-4 rounded-xl overflow-hidden border border-neutral-700">` to lock the parent's height at 600px.
+- [x] 3. Append this Sprint 37.1 block to `tasks/todo.md`.
+
+### Acceptance Criteria (Definition of Done)
+- Mapbox canvas measures a non-zero height and renders visible tiles on the dispatch page.
+- The CSS import is bundled by Next.js even before any user interaction reaches `DispatchMap.jsx`.
+
+## Sprint 37.2 — Map Data Binding Hotfix
+
+**Bug:** Map tiles painted but zero pins rendered — neither itinerary surge pins nor the driver's pulsing blue dot. The itinerary array was populated (TopPickBanner confirmed), so the issue was downstream of the data: Mapbox's `<Marker>` and `<Popup>` require `latitude` / `longitude` props by name, never the backend's shorter `lat` / `lng` field names; and the driver coord state needed an unambiguous identifier so the page → component prop chain was easy to audit.
+
+**Fix:** Audited `components/DispatchMap.jsx` to confirm every `<Marker>` and `<Popup>` already maps backend `lat` / `lng` onto Mapbox's `latitude={item.lat}` / `longitude={item.lng}` props (no `lat=`/`lng=` shorthand on Mapbox components anywhere). Renamed the driver coord state in `app/page.js` from `coords` → `driverCoords` so state hydration and the prop pass are visibly identical names from `useState` → `setDriverCoords({ latitude, longitude })` → `<DispatchMap driverCoords={driverCoords} />`.
+
+### Build Steps
+- [x] 1. `components/DispatchMap.jsx`: verified Driver `<Marker>` uses `latitude={driverCoords.latitude}` + `longitude={driverCoords.longitude}`.
+- [x] 2. `components/DispatchMap.jsx`: verified itinerary `<Marker>` uses `latitude={item.lat}` + `longitude={item.lng}` (strict mapping from backend `lat`/`lng`).
+- [x] 3. `components/DispatchMap.jsx`: verified `<Popup>` uses `latitude={selectedItem.lat}` + `longitude={selectedItem.lng}`.
+- [x] 4. `app/page.js`: renamed `coords` / `setCoords` → `driverCoords` / `setDriverCoords` so state hydration is unambiguous.
+- [x] 5. `app/page.js`: confirmed `setDriverCoords({ latitude, longitude })` fires after `getGeolocation()` resolves (or after the Roessleville fallback assigns).
+- [x] 6. `app/page.js`: confirmed `<DispatchMap itinerary={filteredItinerary} driverCoords={driverCoords} />` passes the renamed state through.
+- [x] 7. Append this Sprint 37.2 block to `tasks/todo.md`.
+
+### Acceptance Criteria (Definition of Done)
+- Color-coded surge pins render on the Mapbox radar (any itinerary item carrying `lat`/`lng`).
+- Driver's pulsing blue dot renders at the GPS fix (or Roessleville fallback) returned by the dispatch button.
+- Mapbox `<Marker>` / `<Popup>` props are strictly named `latitude` / `longitude` — no `lat=` / `lng=` shorthand on Mapbox components anywhere in the file.
+
+### Out of Scope (Anti-Goals)
+- Geocoding raw Ticketmaster events (still skip silently when `lat`/`lng` are missing).
+- Refactoring backend coordinate field names (`lat` / `lng` stay — the React layer adapts).
+
+## Sprint 37.3 — Coordinate Payload Audit (no code change)
+
+**Brief asked to add `lat`/`lng` to five backend object literals because pins still aren't rendering.** Audit found the fields are **already present** in every literal — Sprint 37 Task 1 wired them correctly and no later sprint stripped them on default settings:
+
+| Site | Code | Location |
+|---|---|---|
+| Flight bucket | `lat: ALB_COORDS.lat, lng: ALB_COORDS.lng` | `route.js:459-460` |
+| Train bucket | `lat: AMTRAK_COORDS.lat, lng: AMTRAK_COORDS.lng` | `route.js:574-575` |
+| Hotspot (food + grocery) | `lat: centroidLat, lng: centroidLng` | `route.js:826-827` |
+| Hospital Injector | `lat: 42.6534, lng: -73.7933` | `route.js:1234-1235` |
+| State Commuter Injector | `lat: ESP_COORDS.lat, lng: ESP_COORDS.lng` | `route.js:1261-1262` |
+
+`buildItinerary` flattens via `[...flights, ...trains, ...food, ...grocery, ...events]` ([route.js:954](app/api/dispatch/route.js#L954)) — spread preserves all own properties, so coords survive into `mergedPayload.itinerary`.
+
+**The one downstream stripper:** the Sprint 15/17 Synthetic Data Swap ([route.js:1301-1321](app/api/dispatch/route.js#L1301-L1321)) rebuilds flight/train objects as `{ type: "flight_ripple", message }` / `{ type: "train_ripple", message }` — dropping lat/lng. This fires **only** when the driver unchecks the Airport or Amtrak filter. On default (both checked) it's inert.
+
+### What to check next (real diagnostic path)
+1. **DevTools → Network → POST `/api/dispatch` → Response**. Expand any flight/train/hotspot item in `itinerary[]`. If `lat`/`lng` are present numerically → the bug is in `DispatchMap.jsx` rendering, not the backend. If they're missing → the dev server is serving a stale bundle (Sprint 37 didn't hot-reload); kill the `next dev` process and restart.
+2. **Hub filters**: confirm Airport (ALB) and Amtrak (Rensselaer) checkboxes are checked. If unchecked, every flight/train in the payload becomes `flight_ripple` / `train_ripple` with no coords by design (Sprint 15/17 anti-LLM-routing intent).
+3. **Active tab vs. surge type**: the Transit tab filters to `flight | train | event | flight_ripple | train_ripple`; the Food tab filters to `food | grocery`. A blank map on Transit when the only surges are food hotspots is expected.
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: audited all five emission sites — `lat`/`lng` already present, no code change required.
+- [x] 2. `app/api/dispatch/route.js`: audited `buildItinerary` spread — fields preserved end-to-end.
+- [x] 3. `app/api/dispatch/route.js`: identified the Sprint 15/17 Synthetic Data Swap as the only conditional stripper (inactive on default settings).
+- [x] 4. Append this Sprint 37.3 audit block to `tasks/todo.md`.
+
+### Acceptance Criteria (Definition of Done)
+- Audit documents the present-state of coordinate plumbing with file:line evidence.
+- The real diagnostic path is recorded so the next sprint can act on actual measured data instead of a presumed bug.
+
+### Out of Scope (Anti-Goals)
+- Duplicating `lat` / `lng` keys inside object literals (syntax error in strict mode; no-op semantically).
+- Refactoring the Sprint 15/17 Synthetic Data Swap (intentional behavior gated on user toggle).
+
+## Sprint 37.4 — Mapbox Pin Renderer Hotfix
+
+**Bug:** Map canvas rendered, driver coords existed, backend payload carried numeric `lat`/`lng` (verified via DevTools), yet zero pins appeared — neither the driver dot nor any itinerary marker. The Mapbox-injected DOM subtree wasn't picking up Tailwind utility classes (Tailwind's JIT compiler had no static reference to colors composed via template strings, so `bg-emerald-400` etc. were never emitted into the bundle reaching that subtree).
+
+**Fix:** Replaced every Tailwind-class-driven pin with inline `style={{ … }}` literals that carry raw hex colors + explicit pixel dimensions. The hex palette lives in a new `PIN_HEX` map so `pinColor(type)` returns a real color string instead of a class name. Added defensive `Number()` coercion + a `console.log("Map rendering item:", item)` inside the marker loop so the next round of debugging can confirm the loop fires per item.
+
+### Build Steps
+- [x] 1. `components/DispatchMap.jsx`: replaced `PIN_COLORS` (Tailwind class names) with `PIN_HEX` (raw `#rrggbb` values); `pinColor()` returns hex.
+- [x] 2. `components/DispatchMap.jsx`: driver `<Marker>` child now uses inline `style` — 20px circle, `#3b82f6`, 3px white border.
+- [x] 3. `components/DispatchMap.jsx`: itinerary `<Marker>` child uses inline `style` — 16px circle, hex color via `pinColor(item.type)`, 2px black border, cursor pointer.
+- [x] 4. `components/DispatchMap.jsx`: coerced `item.lat` / `item.lng` through `Number()` before the `Number.isFinite` guard so silent string values can't drop the pin.
+- [x] 5. `components/DispatchMap.jsx`: added `console.log("Map rendering item:", item)` inside the marker loop to confirm iteration during browser debugging.
+- [x] 6. Append this Sprint 37.4 block to `tasks/todo.md`.
+
+### Acceptance Criteria (Definition of Done)
+- Driver dot renders as a visible 20px blue circle with a white ring at the GPS fix.
+- Every itinerary item with finite `lat`/`lng` renders a 16px colored dot at its coords (white for flight, emerald for train, rose for food/grocery, purple for event, yellow fallback otherwise).
+- DevTools console prints one `Map rendering item:` line per pin, confirming the render loop is reaching each entry.
+
+### Out of Scope (Anti-Goals)
+- Restoring Tailwind classes for these pins (until the Mapbox subtree reliably picks them up).
+- Refactoring the Popup body (unaffected — text rendering was never the issue).
+
+## Sprint 37.5 — Native SVG Marker Hotfix
+
+**Bug:** The Sprint 37.4 diagnostic confirmed the `<Marker>` loop fires per item with valid coords, but the custom `<div>` children of `<Marker>` were being clipped or stripped inside the Mapbox-injected DOM subtree — neither the driver dot nor the itinerary pins ever became visible.
+
+**Fix:** Stop trying to render our own DOM inside `<Marker>`. Let `react-map-gl` draw its built-in SVG teardrop pin and pass the color via the `color` prop. The driver pin uses `#3b82f6` directly; itinerary pins reuse the existing `pinColor(item.type)` helper which now returns hex via Sprint 37.4's `PIN_HEX` map.
+
+### Build Steps
+- [x] 1. `components/DispatchMap.jsx`: driver `<Marker>` — removed child `<div>`, switched to `<Marker color="#3b82f6" />`.
+- [x] 2. `components/DispatchMap.jsx`: itinerary `<Marker>` loop — removed child `<div>`, passed `color={pinColor(item.type)}` directly to the Marker.
+- [x] 3. `components/DispatchMap.jsx`: removed the `console.log("Map rendering item:", item)` diagnostic — its job is done.
+- [x] 4. Append this Sprint 37.5 block to `tasks/todo.md`.
+
+### Acceptance Criteria (Definition of Done)
+- Driver location renders as Mapbox's native blue teardrop pin at the GPS fix.
+- Every itinerary item with finite `lat`/`lng` renders as a native teardrop pin colored per its type (white / emerald / rose / purple / yellow fallback).
+- No custom DOM children remain inside `<Marker>` — clipping risk eliminated.
+
+### Out of Scope (Anti-Goals)
+- Returning to custom-HTML markers (pulsing animation, ring effects) — defer until we know which Mapbox/Next.js layer was clipping them.
+- Touching the `<Popup>` content (still uses the same inline children — it sits in a separate Mapbox DOM tree that worked fine).
+
+## Sprint 38 — The Hybrid View Toggle (QoL Epic)
+
+**Goal:** Give the driver a global Map/List toggle above the Transit/Food tabs, persisted in localStorage. Strict conditional render — never both at once — so unmounting the Mapbox component fully releases its WebGL context when the driver chooses List.
+
+### Decisions (locked before coding)
+- **State key:** `viewMode` with values `"map"` (default) or `"list"`. Stored in localStorage under `"dispatchViewMode"`.
+- **Hydration safety:** the read happens inside `useEffect` so the SSR pass uses the default `"map"` — guarded with `typeof window !== "undefined"` for belt-and-suspenders.
+- **Setter coupling:** `handleViewModeChange(mode)` is the single write path — updates React state AND `localStorage.setItem` together, so the two never drift.
+- **Placement:** segmented control sits inside the `status === "done"` block, strictly ABOVE the existing Transit/Food tabs. The toggle is "global" in the user-experience sense (it controls the entire plan view) — not a parallel concept to the tabs.
+- **Conditional render, not CSS hide:** `viewMode === "map"` renders `<DispatchMap />`; `viewMode === "list"` renders the classic card switch. No `display: none`. Unmounting destroys Mapbox's WebGL context — confirmed memory-relevant on mobile drivers.
+- **Card switch:** matches the pre-Sprint-25 pattern from `73c2665:app/page.js` — `flight`→`FlightCard`, `train`→`TrainCard`, `event`→`EventCard`, `food`/`grocery`→`HotspotCard`, `default`→`null` (so `flight_ripple` / `train_ripple` items silently skip — they have no card component and no `lat`/`lng` anyway).
+- **No backend changes.** No new env vars. No new dependencies. Strict frontend QoL only.
+- **No empty-state copy.** Brief doesn't ask for "no surges" messaging — the empty list just renders nothing, mirroring how the map already handles an empty itinerary.
+
+### Build Steps
+- [x] 0. Write Sprint 38 plan to `tasks/todo.md`.
+- [x] 1. `app/page.js`: re-import `FlightCard`, `TrainCard`, `HotspotCard`, `EventCard` from `../components/DispatchCards`.
+- [x] 2. `app/page.js`: add `viewMode` state defaulting to `"map"`.
+- [x] 3. `app/page.js`: add `useEffect` that hydrates `viewMode` from `localStorage.getItem("dispatchViewMode")` on mount, guarded by `typeof window !== "undefined"`. Console-logs the hydrated value per the brief's test-driven scaffolding rule.
+- [x] 4. `app/page.js`: add `handleViewModeChange(mode)` that calls `setViewMode(mode)` and `localStorage.setItem("dispatchViewMode", mode)` with a single console.log to confirm the persisted value.
+- [x] 5. `app/page.js`: render a pill-shaped segmented control (Map | List) strictly above the existing `border-b` tabs row. Active option = lighter background + bold text; inactive = muted neutral.
+- [x] 6. `app/page.js`: wrap the existing `<DispatchMap />` block in `viewMode === "map" && (...)`. Add a sibling `viewMode === "list" && (...)` block that maps `filteredItinerary` through the card switch.
+- [ ] 7. Manual verification: `npm run dev` → run dispatch → click List, confirm Map fully unmounts (Mapbox canvas element leaves the DOM). Refresh — choice persists. Toggle back to Map — pins re-render.
+
+### Acceptance Criteria (Definition of Done)
+- Segmented control sits above the Transit/Food tabs and toggles between Map and List.
+- Choice persists across reloads via `localStorage["dispatchViewMode"]`.
+- Strict unmount: List view contains zero Mapbox DOM nodes (verifiable in DevTools Elements panel).
+- List view renders the appropriate card per `item.type` for the active Transit/Food tab.
+
+### Out of Scope (Anti-Goals)
+- Modifying `app/api/dispatch/route.js` (backend strictly locked).
+- Modifying `components/DispatchMap.jsx` or `components/DispatchCards.jsx`.
+- Split-screen / side-by-side rendering (anti-goal — defeats the WebGL unmount purpose).
+- "No surges" empty-state copy (not requested).
