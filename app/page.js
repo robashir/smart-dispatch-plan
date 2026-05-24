@@ -106,6 +106,11 @@ export default function Home() {
   // Sprint 34: BYOD semester calendar. Persisted in localStorage so a driver
   // uploads once per semester and forgets it. Each entry is { date, eventType }.
   const [campusCalendar, setCampusCalendar] = useState([]);
+  // Sprint 39: BYOD Amtrak capacity calendar. Each entry is
+  // { date, trainNumber, status } — driver uploads a daily snapshot of
+  // sold-out / almost-full trains and the backend stacks a 2.0x / 1.5x
+  // multiplier on top of the live Amtraker bucket.
+  const [trainCalendar, setTrainCalendar] = useState([]);
   // Sprint 38: global Map/List toggle. Default "map" so the SSR pass renders
   // the radar; the useEffect below replaces it with the driver's prior choice
   // once the browser hydrates.
@@ -142,6 +147,17 @@ export default function Home() {
     } catch (e) {
       console.warn("campusCalendar hydrate failed:", e.message);
     }
+    // Sprint 39: hydrate the daily Amtrak capacity list alongside the
+    // campus calendar so both BYOD uploads survive a page reload.
+    try {
+      const rawTrain = localStorage.getItem("dispatchTrainCalendar");
+      if (rawTrain) {
+        const parsed = JSON.parse(rawTrain);
+        if (Array.isArray(parsed)) setTrainCalendar(parsed);
+      }
+    } catch (e) {
+      console.warn("dispatchTrainCalendar hydrate failed:", e.message);
+    }
   }, []);
 
   function todayLocalISO() {
@@ -173,6 +189,42 @@ export default function Home() {
         localStorage.setItem("campusCalendar", JSON.stringify(parsed));
       } catch (err) {
         console.warn("campusCalendar persist failed:", err.message);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // Sprint 39: parse a 3-column Amtrak capacity CSV (Date, TrainNumber, Status).
+  // Same defensive pattern as handleCsvUpload — drop header rows / malformed
+  // lines, require YYYY-MM-DD and a non-blank trainNumber + status. Persist
+  // under the dedicated localStorage key so the campus uploader is unaffected.
+  function handleTrainCsvUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const parsed = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [date, trainNumber, status] = line
+            .split(",")
+            .map((s) => (s || "").trim());
+          return { date, trainNumber, status };
+        })
+        .filter(
+          (row) =>
+            /^\d{4}-\d{2}-\d{2}$/.test(row.date) &&
+            row.trainNumber &&
+            row.status
+        );
+      setTrainCalendar(parsed);
+      try {
+        localStorage.setItem("dispatchTrainCalendar", JSON.stringify(parsed));
+      } catch (err) {
+        console.warn("dispatchTrainCalendar persist failed:", err.message);
       }
     };
     reader.readAsText(file);
@@ -219,6 +271,12 @@ export default function Home() {
       // a vanilla payload (back-compat).
       const today = todayLocalISO();
       const todaysEvent = campusCalendar.find((row) => row.date === today);
+      // Sprint 39: filter the uploaded Amtrak capacity list down to TODAY's
+      // local date and emit { trainNumber, status } rows for the backend.
+      // Empty list → backend sees [] and the multiplier no-ops everywhere.
+      const todaysTrainCapacity = trainCalendar
+        .filter((row) => row.date === today)
+        .map((row) => ({ trainNumber: row.trainNumber, status: row.status }));
       const body = {
         latitude,
         longitude,
@@ -228,6 +286,7 @@ export default function Home() {
         includeAirport,
         includeAmtrak,
         routingStrategy,
+        trainCapacity: todaysTrainCapacity,
       };
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
 
@@ -389,7 +448,7 @@ export default function Home() {
 
         <fieldset className="flex flex-col gap-2">
           <span className="text-sm uppercase tracking-wide text-neutral-400">
-            Institution Settings
+            BYOD Data Settings
           </span>
           <div className="flex flex-col gap-2 rounded-xl bg-neutral-900/60 border border-neutral-800 p-4">
             <label className="text-sm text-neutral-400">
@@ -410,6 +469,26 @@ export default function Home() {
             {calendarExpired && (
               <div className="text-sm text-red-400">
                 Calendar expired. Please upload a new CSV.
+              </div>
+            )}
+
+            {/* Sprint 39: second BYOD uploader for the Amtrak Capacity
+                Engine. 3-column CSV: Date, TrainNumber, Status. Lives in
+                the same panel so the driver's "data inputs" are all in
+                one place. */}
+            <label className="text-sm text-neutral-400 mt-3">
+              Upload Amtrak Capacity (CSV: Date, TrainNumber, Status)
+            </label>
+            <input
+              type="file"
+              accept=".csv"
+              onChange={handleTrainCsvUpload}
+              disabled={isBusy}
+              className="text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-neutral-800 file:text-neutral-200 file:cursor-pointer disabled:opacity-60"
+            />
+            {trainCalendar.length > 0 && (
+              <div className="text-xs text-neutral-500">
+                {trainCalendar.length} train capacity rows loaded.
               </div>
             )}
           </div>

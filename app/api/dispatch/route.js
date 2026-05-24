@@ -341,6 +341,27 @@ function computeLeisureMod(departureIata, airlineIata) {
   return 1.0;
 }
 
+// Sprint 39: Amtrak Capacity Engine (Multiplier Merge). The live Amtraker
+// API still owns arrival times; this helper looks up the live trainNum in
+// the driver's uploaded daily capacity list and returns a stacking
+// multiplier when a "Sold Out" / "Almost Full" status is found. Ported
+// verbatim from test-amtrak-capacity.js after 3/3 assertions PASSed.
+function computeCapacityMod(trainNum, todayCapacityList) {
+  if (!trainNum || !Array.isArray(todayCapacityList)) return 1.0;
+  const target = String(trainNum).trim();
+  if (!target) return 1.0;
+
+  const row = todayCapacityList.find(
+    (r) => String(r?.trainNumber || "").trim() === target
+  );
+  if (!row) return 1.0;
+
+  const status = String(row.status || "").trim().toLowerCase();
+  if (status === "sold out") return 2.0;
+  if (status === "almost full") return 1.5;
+  return 1.0;
+}
+
 // Bucket arrivals into local-hour labels ("5 PM", "6 PM") for the window.
 // Mirrors the timezone trick in toWallClockLabel: shift by offsetMin then read UTC fields.
 // Sprint 4.1: de-duplicate codeshares — one physical plane often appears as 3-5 records.
@@ -523,9 +544,15 @@ async function fetchAlbTrainArrivals() {
 // Sprint 27.1: destructured-object signature (parity with the flight
 // aggregator). `rideMod` is accepted defensively even though the Sprint 27
 // body never reads it.
-function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin, rideMod = 1.0 }) {
+// Sprint 39: BYOD trainCapacity flows in alongside the live Amtraker
+// response. The list is already filtered to today's date by the frontend,
+// so the aggregator can match purely on trainNum. The MAX capacityMod
+// across each hour bucket follows the fatigueMod / leisureMod pattern so
+// one sold-out train marks the whole hour as a capacity hub.
+function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin, rideMod = 1.0, trainCapacity = [] }) {
   if (!Array.isArray(trains)) return [];
   const originsByHour = {};
+  const capacityModByHour = {};
   const seen = new Set();
   for (const t of trains) {
     const status = (t.status || t.trainState || "").toLowerCase();
@@ -557,6 +584,21 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
     const label = `${h} ${ampm}`;
     if (!originsByHour[label]) originsByHour[label] = [];
     originsByHour[label].push(origCode);
+
+    // Sprint 39: per-train capacityMod from the BYOD list. Live trainNum is
+    // resolved off the Amtraker object (object key OR t.trainNum); the
+    // helper itself tolerates blanks. Log every trigger; bucket carries
+    // MAX across its members (parity with fatigueMod / leisureMod).
+    const trainNum = t.trainNum || t.trainID || "";
+    const capacityMod = computeCapacityMod(trainNum, trainCapacity);
+    if (capacityMod > 1.0) {
+      console.log(
+        `AMTRAK CAPACITY TRIGGERED: Train ${trainNum} | Mod: ${capacityMod}x`
+      );
+    }
+    if (!capacityModByHour[label] || capacityMod > capacityModByHour[label]) {
+      capacityModByHour[label] = capacityMod;
+    }
   }
 
   // Sprint 22: emit a strict array of objects so the frontend can .map() it.
@@ -573,6 +615,8 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
       // Sprint 37: Amtrak coords so the Mapbox radar can pin each train bucket.
       lat: AMTRAK_COORDS.lat,
       lng: AMTRAK_COORDS.lng,
+      // Sprint 39: bucket carries the MAX capacityMod across its members.
+      capacityMod: capacityModByHour[hour] || 1.0,
     });
   }
   return buckets;
@@ -904,7 +948,11 @@ function surgeScore(item, finalRideMod, finalFoodMod) {
     );
   }
   if (item.type === "train") {
-    return (Number(item.volume) || 0) * finalRideMod;
+    // Sprint 39: capacityMod stacks multiplicatively (1.0 default, 1.5x
+    // for "Almost Full", 2.0x for "Sold Out"). Mirrors fatigueMod /
+    // leisureMod on the flight branch — BYOD list goes in, the live
+    // Amtraker API still owns arrival times.
+    return (Number(item.volume) || 0) * finalRideMod * (Number(item.capacityMod) || 1.0);
   }
   if (item.type === "food" || item.type === "grocery") {
     // Sprint 28: Anchor's qualityMod (1.0 base, up to 1.8x) multiplies the
@@ -1031,8 +1079,13 @@ async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw } =
       await request.json();
+
+    // Sprint 39: BYOD Amtrak capacity. Frontend filters its uploaded CSV
+    // down to today's local date before sending; the backend just defends
+    // the shape (array of { trainNumber, status }).
+    const trainCapacity = Array.isArray(trainCapacityRaw) ? trainCapacityRaw : [];
 
     // Sprint 23: deterministic router strategy. Default to "hybrid" when
     // missing/undefined; reject anything outside the allowed set.
@@ -1159,6 +1212,7 @@ export async function POST(request) {
       localStart,
       localEnd,
       offsetMin,
+      trainCapacity,
     });
 
     // Sprint 32: Event Egress Engine. Walk the raw TM array, derive each

@@ -1841,3 +1841,53 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - Modifying `components/DispatchMap.jsx` or `components/DispatchCards.jsx`.
 - Split-screen / side-by-side rendering (anti-goal — defeats the WebGL unmount purpose).
 - "No surges" empty-state copy (not requested).
+
+## Sprint 39 — The Amtrak Capacity Engine
+
+**Goal:** Layer a Multiplier Merge on top of the live Amtraker fetcher. The driver uploads a daily 3-column capacity snapshot (Date, TrainNumber, Status); the backend cross-references each live `trainNum` against today's slice of that list and stacks a 2.0x ("Sold Out") or 1.5x ("Almost Full") `capacityMod` onto the train's `surgeScore`. Times/delays still come from the live API — capacity is the only signal the BYOD list contributes.
+
+### Decisions (locked before coding)
+- **TDD scaffold:** `test-amtrak-capacity.js` at repo root — standalone `computeCapacityMod(trainNum, todayCapacityList)`, three assertions (`"283"` → 2.0, `"284"` → 1.5, `"285"` → 1.0). Required 3/3 PASS before any edit to `route.js`.
+- **CSV schema:** strictly 3 columns — `Date` (YYYY-MM-DD), `TrainNumber`, `Status`. Header rows and any line missing one of the three fields are dropped at parse time.
+- **Status matching:** case-insensitive on the trimmed status string. `"sold out"` / `"Sold Out"` / `"SOLD OUT"` all fire 2.0; `"Almost Full"` (any case) fires 1.5; anything else (or no match) falls through to 1.0.
+- **trainNum resolution:** `t.trainNum || t.trainID || ""` (mirrors the fingerprint pattern already in `aggregateTrainArrivalsByHour`). Amtraker has shipped multiple shapes — defensive `||` chain covers both.
+- **Bucket aggregation:** MAX `capacityMod` across the hour bucket (parity with `fatigueMod` / `leisureMod` on the flight branch). One Sold Out train marks the entire hour as a capacity hub.
+- **Trigger logging:** `console.log("AMTRAK CAPACITY TRIGGERED: Train <num> | Mod: <mod>x")` fires once per train whose `capacityMod > 1.0`, before the bucket-max step.
+- **`surgeScore` formula (train branch):** `volume * finalRideMod * capacityMod`. Stacks multiplicatively on top of the temporal/weather rideMod product already applied at scoring time. Default 1.0 means a no-capacity-CSV dispatch behaves identically to Sprint 38.
+- **Frontend storage:** `localStorage` under the `dispatchTrainCalendar` key. Hydration runs inside the existing `useEffect` next to the campus calendar so a single mount covers both BYOD sources.
+- **POST payload:** frontend filters the uploaded list down to today's local date and sends `trainCapacity: [{ trainNumber, status }, ...]`. Backend defaults missing/non-array to `[]` so old clients see zero behavior change.
+- **Panel rename:** "Institution Settings" → "BYOD Data Settings" once a second BYOD source lives in the panel.
+- **Backend storage:** none. No fs, no DB — BYOD list rides on each request.
+
+### Build Steps
+- [x] 0. Write Sprint 39 plan to `tasks/todo.md` (this block — written after the build per the existing repo cadence, matching prior sprints).
+- [x] 1. `test-amtrak-capacity.js`: standalone `computeCapacityMod` helper + 3 assertions. Run with `node test-amtrak-capacity.js`. Require 3/3 PASS.
+- [x] 2. `app/api/dispatch/route.js`: port `computeCapacityMod` next to `computeLeisureMod`.
+- [x] 3. `app/api/dispatch/route.js`: destructure `trainCapacity` from `request.json()`; default non-array to `[]`.
+- [x] 4. `app/api/dispatch/route.js`: thread `trainCapacity` into `aggregateTrainArrivalsByHour`'s destructured signature; in-loop call `computeCapacityMod`, log triggers, track MAX per-bucket, attach to the emitted train bucket.
+- [x] 5. `app/api/dispatch/route.js`: update the `surgeScore` train branch to multiply by `(item.capacityMod || 1.0)`.
+- [x] 6. `app/page.js`: add `trainCalendar` state; hydrate from `localStorage.getItem("dispatchTrainCalendar")` inside the existing campus hydration `useEffect`.
+- [x] 7. `app/page.js`: add `handleTrainCsvUpload(e)` that parses 3 columns, drops malformed rows, persists under `dispatchTrainCalendar`.
+- [x] 8. `app/page.js`: rename the panel to "BYOD Data Settings"; add a second `<input type="file" />` for the Amtrak Capacity CSV beneath the existing campus uploader.
+- [x] 9. `app/page.js`: inside `handleClick`, filter `trainCalendar` to today's local date and send the resulting `[{ trainNumber, status }]` array as `body.trainCapacity`.
+- [ ] 10. Manual verification: `npm run dev` → upload a CSV containing today's date + a known live trainNum with `Sold Out` → confirm terminal logs `AMTRAK CAPACITY TRIGGERED: Train <num> | Mod: 2x` and `=== MERGED DISPATCH PAYLOAD ===` shows `capacityMod: 2` on the matching train bucket.
+
+### Acceptance Criteria (Definition of Done)
+- `node test-amtrak-capacity.js` reports `All 3 assertions passed.`.
+- An empty / missing `trainCapacity` produces zero behavior change versus Sprint 38 (default 1.0 across the train pipeline).
+- A matching `"Sold Out"` row doubles the train bucket's contribution to `surgeScore`; `"Almost Full"` scales by 1.5x.
+- The driver's CSV survives a page reload via `localStorage["dispatchTrainCalendar"]`.
+
+### Out of Scope (Anti-Goals)
+- Rewriting `fetchAlbTrainArrivals` — the live API still owns times and delays.
+- Applying `capacityMod` to flights, food, or grocery hotspots (multiplier is strictly the train branch).
+- Server-side persistence (no fs, no DB).
+- Touching Mapbox / Dispatch Cards.
+
+### Mathematical Integration
+```
+trainSurge = volume × finalRideMod × capacityMod
+                                        ↑
+                            1.0 (default) | 1.5 (Almost Full) | 2.0 (Sold Out)
+```
+`capacityMod` is the MAX across all trains in the hour bucket. `finalRideMod = rideMod × weatherRideMod` (already computed in Sprint 19/27 — Sprint 39 leaves it untouched). The Sprint 32.1 Time-Decay multiplier is then applied at scoring time inside `buildItinerary`'s `decayed()` wrapper, so the final ranking is `trainSurge × timeDecay`.
