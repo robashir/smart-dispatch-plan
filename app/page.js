@@ -95,6 +95,10 @@ export default function Home() {
   });
   const [includeAirport, setIncludeAirport] = useState(true);
   const [includeAmtrak, setIncludeAmtrak] = useState(true);
+  // Sprint 40: X-Ray Vision Toggle. Off by default — the standard
+  // dashboard stays uncluttered. When on, the backend bypasses the
+  // strict <1.0 filter and ghosted weak items render in the UI.
+  const [showRawData, setShowRawData] = useState(false);
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
   const [activeTab, setActiveTab] = useState("transit");
   const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
@@ -287,6 +291,7 @@ export default function Home() {
         includeAmtrak,
         routingStrategy,
         trainCapacity: todaysTrainCapacity,
+        showRawData,
       };
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
 
@@ -491,6 +496,20 @@ export default function Home() {
                 {trainCalendar.length} train capacity rows loaded.
               </div>
             )}
+
+            {/* Sprint 40: X-Ray Vision Toggle. Reveals dead zones and
+                sub-1.0 surges as ghosted items so power users can audit
+                the grid during slow shifts. */}
+            <label className="flex items-center gap-3 text-lg mt-3">
+              <input
+                type="checkbox"
+                checked={showRawData}
+                onChange={(e) => setShowRawData(e.target.checked)}
+                disabled={isBusy}
+                className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
+              />
+              <span>Show Raw Data (Ghost Mode)</span>
+            </label>
           </div>
         </fieldset>
 

@@ -1891,3 +1891,36 @@ trainSurge = volume × finalRideMod × capacityMod
                             1.0 (default) | 1.5 (Almost Full) | 2.0 (Sold Out)
 ```
 `capacityMod` is the MAX across all trains in the hour bucket. `finalRideMod = rideMod × weatherRideMod` (already computed in Sprint 19/27 — Sprint 39 leaves it untouched). The Sprint 32.1 Time-Decay multiplier is then applied at scoring time inside `buildItinerary`'s `decayed()` wrapper, so the final ranking is `trainSurge × timeDecay`.
+
+## Sprint 40 — The X-Ray Vision Toggle
+
+**Problem:** Sprint 27's strict `<1.0` filter inside `buildItinerary` drops every dead-zone / low-volume surge so the default dashboard stays clean — but power users have no way to audit the grid during extremely slow shifts. Sprint 40 adds a backend bypass and a frontend "Ghosting Effect" that exposes the raw data on demand without polluting the default experience.
+
+### Decisions (locked before coding)
+- **Single endpoint, no `/api/dispatch-raw` clone.** Bypass behavior is one extra boolean in the existing POST body.
+- **Default off.** `showRawData` defaults to `false`; the Sprint 27 strict cutoff stays the standard experience.
+- **`isWeak` always stamped.** Even with the bypass off, every scoreable item that survives the cutoff is tagged `isWeak: false`. With the bypass on, weak items keep flowing AND carry `isWeak: true`. The frontend reads one boolean, the backend does the math.
+- **Ghost via Tailwind on cards (`opacity-40 grayscale`)** and via raw color override + inline `opacity: 0.5` on Mapbox markers (Tailwind classes don't reach the Mapbox-injected DOM, per Sprint 37.4).
+- **Muted-gray teardrop:** `#737373` (`neutral-500`). Distinct from every active `PIN_HEX` color so a strong food/event pin never accidentally reads as ghosted.
+- **No prompt rewrite, no aggregator changes.** The raw volumes were already there; Sprint 27 was the gate. Lifting the gate is a one-liner inside `buildItinerary`.
+
+### Build Steps
+- [x] 0. Write Sprint 40 plan to `tasks/todo.md` (this block).
+- [x] 1. Phase 1 — TDD: `test-xray-filter.js` mocks the filter + `isWeak` tagging; asserts (a) `showRawData=false` drops sub-1.0 items, (b) `showRawData=true` returns both with `isWeak` true/false. Run prints `PASS` before touching `route.js`.
+- [x] 2. Phase 2 — Backend: destructure `showRawData` (default `false`) from `request.json()` in `POST`; pass it as the new 4th arg to `buildItinerary`. Inside `buildItinerary`, stamp `isWeak = decayed(it) < 1.0` on every scoreable item, then either bypass the `<1.0` filter (when `showRawData`) or apply it (default).
+- [x] 3. Phase 3 — Frontend: add `const [showRawData, setShowRawData] = useState(false)` in `app/page.js`; render a "Show Raw Data (Ghost Mode)" checkbox inside the existing BYOD Data Settings panel; include `showRawData` in the POST body.
+- [x] 4. Phase 4 — Ghosting Effect (Cards): in `components/DispatchCards.jsx`, `FlightCard` / `TrainCard` / `EventCard` / `HotspotCard` append `opacity-40 grayscale` to their root `className` when `data.isWeak === true`.
+- [x] 5. Phase 4 — Ghosting Effect (Map): in `components/DispatchMap.jsx`, when `item.isWeak`, override the teardrop `color` to `#737373` AND apply inline `style={{ opacity: 0.5 }}` on the `<Marker>`.
+- [ ] 6. Manual verification: leave Ghost Mode off → dashboard identical to Sprint 39 (no sub-1.0 items). Flip Ghost Mode on during a slow window → weak items appear ghosted on Map and List; items with `surgeScore >= 1.0` are completely unchanged.
+
+### Acceptance Criteria
+- Default experience unchanged: with `showRawData = false`, `mergedPayload.itinerary` contains no items where `surgeScore < 1.0`.
+- With `showRawData = true`, all scoreable items reach the frontend; weak items carry `isWeak: true`, strong items carry `isWeak: false`.
+- Ghosted cards visibly mute (40% opacity + grayscale). Ghosted markers render `#737373` at 50% opacity.
+- No item with `surgeScore >= 1.0` ever renders ghosted — `isWeak` is computed strictly from `decayed(it) < 1.0`.
+
+### Out of Scope (Anti-Goals)
+- Removing the strict `<1.0` filter by default — the standard dashboard stays uncluttered.
+- A separate `/api/dispatch-raw` endpoint — single POST handler owns both modes.
+- Ghosting items with `surgeScore >= 1.0`.
+- Prompt rewrites, new aggregator branches, persisting the toggle across sessions.

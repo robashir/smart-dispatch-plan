@@ -984,7 +984,7 @@ function surgeScore(item, finalRideMod, finalFoodMod) {
 //   hybrid        — group by hourBucket (chronological), within group by
 //                   surgeScore desc; no-hourBucket items go to a
 //                   "Current/Ongoing" group at the top.
-function buildItinerary(payload, strategy, currentLocalStart) {
+function buildItinerary(payload, strategy, currentLocalStart, showRawData = false) {
   const flights = Array.isArray(payload?.flightsByHour) ? payload.flightsByHour : [];
   const trains = Array.isArray(payload?.trainsByHour) ? payload.trainsByHour : [];
   const food =
@@ -1018,16 +1018,32 @@ function buildItinerary(payload, strategy, currentLocalStart) {
   // on the synthetic shape would otherwise wipe them — they're informational).
   // Sprint 32.1: decay is applied BEFORE the cutoff so a 0.4x-decayed item
   // can fall below 1.0 and get pruned alongside the natively-weak items.
-  const items = rawItems.filter((it) => {
-    const scoreable =
-      it.type === "flight" ||
-      it.type === "train" ||
-      it.type === "food" ||
-      it.type === "grocery" ||
-      it.type === "event";
-    if (!scoreable) return true;
-    return decayed(it) >= 1.0;
-  });
+  // Sprint 40: stamp isWeak on every scoreable item BEFORE the strict
+  // cutoff so ghosted (<1.0) items still carry the flag downstream.
+  // When showRawData is true the cutoff is bypassed; when false the
+  // default Sprint 27 behavior holds and weak items are dropped.
+  const items = rawItems
+    .map((it) => {
+      const scoreable =
+        it.type === "flight" ||
+        it.type === "train" ||
+        it.type === "food" ||
+        it.type === "grocery" ||
+        it.type === "event";
+      if (!scoreable) return it;
+      return { ...it, isWeak: decayed(it) < 1.0 };
+    })
+    .filter((it) => {
+      const scoreable =
+        it.type === "flight" ||
+        it.type === "train" ||
+        it.type === "food" ||
+        it.type === "grocery" ||
+        it.type === "event";
+      if (!scoreable) return true;
+      if (showRawData) return true;
+      return decayed(it) >= 1.0;
+    });
 
   if (strategy === "profitability") {
     return [...items].sort((a, b) => decayed(b) - decayed(a));
@@ -1079,8 +1095,13 @@ async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw } =
       await request.json();
+
+    // Sprint 40: X-Ray Vision Toggle. Default false so the standard
+    // experience keeps Sprint 27's strict <1.0 filter intact; explicit
+    // true bypasses the cutoff and ghosts weak items in the UI.
+    const showRawData = showRawDataRaw === true;
 
     // Sprint 39: BYOD Amtrak capacity. Frontend filters its uploaded CSV
     // down to today's local date before sending; the backend just defends
@@ -1398,7 +1419,7 @@ export async function POST(request) {
     // finalFoodMod — it computes the hidden surgeScore for sorting and the
     // strict <1.0 filter, so the volumes in flightsByHour / trainsByHour /
     // gigDemand stay raw and physical for the frontend.
-    mergedPayload.itinerary = buildItinerary(mergedPayload, routingStrategy, localStart);
+    mergedPayload.itinerary = buildItinerary(mergedPayload, routingStrategy, localStart, showRawData);
 
     // Acceptance Criteria: log the fully merged payload BEFORE the LLM call.
     console.log(

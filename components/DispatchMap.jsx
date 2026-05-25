@@ -53,12 +53,17 @@ export default function DispatchMap({ itinerary = [], driverCoords }) {
           if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
           // Sprint 37.5: native SVG marker via the color prop — children were
           // being clipped, so we let Mapbox draw its own teardrop pin.
+          // Sprint 40: Ghosting Effect. Weak items (sub-1.0 surge revealed
+          // via the X-Ray toggle) drop to a muted gray teardrop at 50%
+          // opacity so the eye filters them from the strong picks.
+          const color = item.isWeak ? "#737373" : pinColor(item.type);
           return (
             <Marker
               key={i}
               longitude={lng}
               latitude={lat}
-              color={pinColor(item.type)}
+              color={color}
+              style={item.isWeak ? { opacity: 0.5 } : undefined}
               onClick={(e) => {
                 e.originalEvent.stopPropagation();
                 setSelectedItem(item);
