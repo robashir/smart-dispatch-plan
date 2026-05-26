@@ -47,6 +47,33 @@ const AMTRAK_COORDS = { lat: 42.6463, lng: -73.7392 };
 const ESP_COORDS = { lat: 42.6514, lng: -73.7608 };
 const HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 };
 
+// Sprint 44: Expanded Institutional Engine. Time Matrix Array — replaces
+// the Sprint 34 hardcoded two-window if statement. Decouples the schedule
+// from the execution logic so future 8-hour clinic/admin overlaps can be
+// added by editing this array alone. Morning row's 4.0x stacks the
+// 12-hour nursing changeover with the 8-hour clinic open; afternoon and
+// night rows are single 8-hour shifts (2.0x); evening row is the single
+// 12-hour nursing changeover (3.0x). Boundaries validated in isolation
+// by test-hospital-engine.js before being ported here.
+const HOSPITAL_SHIFTS = [
+  { start: 390, end: 450, mod: 4.0, label: "Morning Shift Overlap" },     // 6:30 AM - 7:30 AM
+  { start: 900, end: 960, mod: 2.0, label: "Afternoon Clinic Shift" },    // 3:00 PM - 4:00 PM
+  { start: 1110, end: 1170, mod: 3.0, label: "Evening Nursing Shift" },   // 6:30 PM - 7:30 PM
+  { start: 1350, end: 1410, mod: 2.0, label: "Night Admin Shift" },       // 10:30 PM - 11:30 PM
+];
+
+// Sprint 43: Ticketmaster Geocoding. Hardcoded venue dictionary keyed by
+// the lowercase/trimmed venue name. Used as a strict whitelist — events
+// whose venue is not present are dropped before reaching the frontend.
+// No external geocoding APIs; mirror normalization (.toLowerCase().trim())
+// on both the keys and the raw payload values to survive minor formatting.
+const VENUE_DICTIONARY = {
+  "mvp arena": { lat: 42.6483, lng: -73.7547 },
+  "palace theatre": { lat: 42.6542, lng: -73.7485 },
+  "the egg": { lat: 42.6514, lng: -73.7593 },
+  "empire live": { lat: 42.6510, lng: -73.7495 },
+};
+
 // Sprint 42: Nightlife Density Engine. Yelp price tier proxies wealth and
 // nighttime demand density. Clone qualifying foodHotspots into structuredEvents
 // (synthetic event clone) so rideshare-only drivers get the surge pin without
@@ -1354,6 +1381,14 @@ export async function POST(request) {
       for (const e of events) {
         const segmentName = e?.classifications?.[0]?.segment?.name || "";
         const venueName = e?._embedded?.venues?.[0]?.name || "";
+
+        // Sprint 43: Ticketmaster Geocoding — strict whitelist. Normalize
+        // the raw venue name and look it up in VENUE_DICTIONARY. Unknown
+        // venues are dropped before the egress math so they cannot reach
+        // the frontend without a Mapbox pin.
+        const venueCoords = VENUE_DICTIONARY[venueName.toLowerCase().trim()];
+        if (!venueCoords) continue;
+
         const localDate = e?.dates?.start?.localDate;
         const localTime = e?.dates?.start?.localTime;
         let startTime = null;
@@ -1382,6 +1417,8 @@ export async function POST(request) {
           volume: 1,
           egressMod,
           categories: [segmentName || "Music"],
+          lat: venueCoords.lat,
+          lng: venueCoords.lng,
         });
       }
     }
@@ -1395,27 +1432,29 @@ export async function POST(request) {
     // object missing its required paths (crash) or drop the synthetic events on the
     // egressMod <= 1.0 floor when their numbers happen to fall there.
 
-    // Sprint 34: Hospital Shift Injector. Albany Med + St. Peter's run
-    // 7-to-7 nursing shifts; the 30-minute changeover dump is statistically
-    // the densest predictable rideshare event in the city. Time gate reads
-    // wall-clock-as-UTC off localStart (Sprint 3.1) — two windows, 06:30-
-    // 07:30 and 18:30-19:30. egressMod 3.0 outranks Mega-Venue (2.5x) so the
-    // event floats to the top of Profitability sort naturally.
+    // Sprint 44: Hospital Shift Injector — driven by the HOSPITAL_SHIFTS
+    // Time Matrix (replaces the Sprint 34 two-window hardcoded if). Time
+    // gate reads wall-clock-as-UTC off localStart (Sprint 3.1). The matched
+    // row's `mod` and `label` flow straight onto egressMod and the leading
+    // category so the UI EventCard renders the exact shift name natively.
     const wallMinutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
-    const inAmShift = wallMinutes >= 390 && wallMinutes <= 450;
-    const inPmShift = wallMinutes >= 1110 && wallMinutes <= 1170;
-    if (activePlatforms.rideshare && (inAmShift || inPmShift)) {
+    const activeShift = HOSPITAL_SHIFTS.find(
+      s => wallMinutes >= s.start && wallMinutes <= s.end
+    );
+    if (activePlatforms.rideshare && activeShift) {
       structuredEvents.push({
         type: "event",
         location: "Albany Med & St. Peter's Hospitals",
         volume: 1,
-        egressMod: 3.0,
-        categories: ["Nursing Shift Change"],
+        egressMod: activeShift.mod,
+        categories: [activeShift.label, "High Demand"],
         // Sprint 37: Albany Med area coords for the Mapbox radar pin.
         lat: 42.6534,
         lng: -73.7933,
       });
-      console.log("HOSPITAL SHIFT INJECTED: Albany Med & St. Peter's Hospitals | egressMod 3.0x");
+      console.log(
+        `HOSPITAL SHIFT INJECTED: ${activeShift.label} | egressMod ${activeShift.mod}x`
+      );
     }
 
     // Sprint 36: State Commuter Injector. Mon-Fri 15:30-17:00 wall-clock

@@ -2015,3 +2015,64 @@ Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), 
 - With the daylight mock + `if (true)` gate active: dispatch terminal logs at least one `NIGHTLIFE EGRESS INJECTED` line for the `TEST: Elite Steakhouse` entry at `Mod: 4x`.
 - With the mock removed + real time gate restored: between 8 PM and 3 AM local, real `$$`/`$$$` foodHotspots clone into `structuredEvents`; between 4 AM and 7 PM they do not.
 - Sprint 11 sanitizer behavior unchanged: untoggling Food Delivery still wipes `gigDemand.foodHotspots`, but `structuredEvents` retains the cloned surges.
+
+## Sprint 43 — Ticketmaster Geocoding (Map Completeness)
+
+### Decisions (locked before coding)
+- **Static Local Dictionary:** Hardcoded `VENUE_DICTIONARY` (lat/lng keyed by `lowercase + trim` venue name) lives at module scope alongside the other spatial anchors (`ALB_COORDS`, `ESP_COORDS`, etc.). NO external geocoding APIs (Google Maps, Mapbox Geocoding) are permitted.
+- **Strict Whitelist:** If an event's normalized venue name is NOT a key in `VENUE_DICTIONARY`, the event is dropped from the final `structuredEvents` payload. Only validated, mapped mega-events reach the frontend.
+- **Normalization:** Raw `e?._embedded?.venues?.[0]?.name` is passed through `.toLowerCase().trim()` before lookup, so " The Egg " matches `"the egg"` without manual cleanup.
+- **Initial venues (4):** MVP Arena, Palace Theatre, The Egg, Empire Live.
+- **No frontend changes.** The existing DispatchMap natively renders any `type: "event"` object that carries `lat` / `lng` (Sprint 37 wiring).
+
+### Build Steps
+- [x] 0. Write `test-ticketmaster-geocoder.js` TDD scaffold (3 mock events: MVP Arena, " The Egg ", Unknown Local Pub). All assertions PASS.
+- [x] 1. Add `VENUE_DICTIONARY` constant to `app/api/dispatch/route.js` near the other spatial anchors.
+- [x] 2. Inject the whitelist filter inside the existing Sprint 32 `structuredEvents` loop (immediately after `venueName` extraction, before the egress math).
+- [x] 3. Attach `lat` / `lng` from the dictionary hit onto the pushed `structuredEvents` object.
+- [x] 4. Documentation: this block.
+
+### Out of Scope (Anti-Goals)
+- External geocoding API calls (Google Maps / Mapbox Geocoding) — forbidden by PO.
+- Frontend UI changes (`app/page.js`, `EventCard.jsx`, `DispatchMap.jsx`) — pins render natively off `lat`/`lng`.
+- Dynamic `&include=venues` payload restructuring — the hardcoded dictionary is the MVP.
+
+### Acceptance Criteria
+- Dispatch terminal: when Ticketmaster returns an event at MVP Arena / Palace Theatre / The Egg / Empire Live AND its `egressMod > 1.0`, the structured event carries `lat` + `lng` from `VENUE_DICTIONARY`.
+- Mapbox radar: matching events surface as purple pins.
+- Any Ticketmaster event whose venue is not whitelisted is silently dropped — never reaches the frontend.
+
+## Sprint 44 — The Expanded Institutional Engine
+
+### Decisions (locked before coding)
+- **Time Matrix Array:** A module-scope `HOSPITAL_SHIFTS` config array replaces the Sprint 34 hardcoded two-window `if` statement. Decouples the schedule from the execution logic — adding a new clinic/admin shift is now a one-line edit, not a control-flow change.
+- **Dynamic Modifier Scale (overlap math):** Single 8-hour clinic/admin shifts = `2.0x`. Single 12-hour nursing shift = `3.0x`. The 6:30-7:30 AM window stacks the 12-hour nursing changeover with the 8-hour clinic open → `4.0x` (the largest synthetic surge in the engine, outranking Mega-Venue 2.5x and Nightlife `$$$$` 4.0x parity).
+- **Dynamic Category Injection:** The matched row's `label` is injected directly as the leading entry in the synthetic event's `categories` array (`[shift.label, "High Demand"]`) so the existing EventCard renders the exact shift name without frontend changes.
+- **No frontend changes.** UI surfaces the new label + modifier natively.
+
+### Time Matrix
+```
+{ start: 390,  end: 450,  mod: 4.0, label: "Morning Shift Overlap"  }  // 6:30 AM - 7:30 AM
+{ start: 900,  end: 960,  mod: 2.0, label: "Afternoon Clinic Shift" }  // 3:00 PM - 4:00 PM
+{ start: 1110, end: 1170, mod: 3.0, label: "Evening Nursing Shift"  }  // 6:30 PM - 7:30 PM
+{ start: 1350, end: 1410, mod: 2.0, label: "Night Admin Shift"      }  // 10:30 PM - 11:30 PM
+```
+
+### Build Steps
+- [x] 0. Write `test-hospital-engine.js` TDD scaffold. 5 boundary assertions (405 / 915 / 1125 / 1365 / 720 mins) all PASS.
+- [x] 1. Add `HOSPITAL_SHIFTS` constant near the other spatial anchors in `app/api/dispatch/route.js`.
+- [x] 2. Replace the Sprint 34 hardcoded `inAmShift || inPmShift` block with a `HOSPITAL_SHIFTS.find()` against `wallMinutes`.
+- [x] 3. Wire `activeShift.mod` → `egressMod` and `activeShift.label` → leading `categories` entry on the pushed synthetic event.
+- [x] 4. `node --check app/api/dispatch/route.js` → PARSE_OK.
+- [x] 5. Documentation: this block.
+
+### Out of Scope (Anti-Goals)
+- Frontend UI changes (`app/page.js`, `EventCard.jsx`, `DispatchMap.jsx`) — the existing UI renders the dynamic categories + modifiers natively.
+- Applying the modifiers to flights, trains, or food hotspots — this is the synthetic Hospital injection only.
+- Adding a new Mapbox pin color or `type` — stays as `type: "event"`.
+
+### Acceptance Criteria
+- Dispatch terminal: between any of the 4 windows (and `activePlatforms.rideshare === true`), logs `HOSPITAL SHIFT INJECTED: <label> | egressMod <mod>x`.
+- Mapbox radar: still drops a single pin at `42.6534, -73.7933` (Albany Med area).
+- EventCard: the surfaced event's category chip reads the exact shift label (`"Morning Shift Overlap"`, `"Afternoon Clinic Shift"`, `"Evening Nursing Shift"`, or `"Night Admin Shift"`).
+- Dead time (e.g. 12:00 PM): no synthetic Hospital event is injected.
