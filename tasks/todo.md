@@ -2076,3 +2076,35 @@ Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), 
 - Mapbox radar: still drops a single pin at `42.6534, -73.7933` (Albany Med area).
 - EventCard: the surfaced event's category chip reads the exact shift label (`"Morning Shift Overlap"`, `"Afternoon Clinic Shift"`, `"Evening Nursing Shift"`, or `"Night Admin Shift"`).
 - Dead time (e.g. 12:00 PM): no synthetic Hospital event is injected.
+
+## Sprint 45 — The Mathematical ROI Filter (Profitability Auditor V2)
+
+### Decisions (locked before coding)
+- **`DOLLAR_PER_SURGE_POINT = 1.50`** — module-scope constant near `TIER_MOD_MAP`. Single conversion knob between the dimensionless `surgeScore` and the dollar expected-value the ROI gate compares against.
+- **Default `costPerMile = 0.65`** ("Safe Sedan"). Defended at the route boundary: non-numeric / negative payloads silently fall back to the default rather than disabling the filter.
+- **Filter site: `buildItinerary`, immediately AFTER the Sprint 27 strict `<1.0` cutoff.** Only items that already cleared the score floor pay the ROI math; weak items have already been ghosted/dropped upstream so the filter never wastes work on them.
+- **Skip when geometry is incomplete.** Missing `driverLat` / `driverLng` or item `lat` / `lng` → item passes the ROI gate untouched. Synthetic, non-scoreable rows (flight/train ripple instructions, etc.) bypass the gate entirely.
+- **UI sits in the existing BYOD Data Settings panel** as an `<input type="range" min="0" max="2" step="0.05">` so EV / Sedan / SUV defaults snap cleanly. Hydrated from `localStorage["dispatchCostPerMile"]` on mount; persisted on every change.
+- **Equality is kept.** Filter uses `deadheadCost > expectedValue` (strict) so the boundary case (`cost == value`) survives — matches `test-roi-filter.js` assert 4.
+
+### Build Steps
+- [x] 0. Write Sprint 45 plan to `tasks/todo.md` (this block).
+- [x] 1. Phase 1 — TDD: `test-roi-filter.js` mocks `haversineMiles` + the candidate filter; asserts (a) profitable close surge kept, (b) money-losing far surge dropped, (c) expensive vehicle erodes weak surge → dropped, (d) boundary `cost == value` kept. 4/4 PASS before touching `route.js`.
+- [x] 2. Phase 2 — Backend constant + destructure: add `DOLLAR_PER_SURGE_POINT = 1.50` near `TIER_MOD_MAP`; destructure `costPerMile: costPerMileRaw` in the POST handler with the `>= 0` numeric fallback to `0.65`.
+- [x] 3. Phase 3 — Backend filter: extend `buildItinerary` signature with `driverLat`, `driverLng`, `costPerMile`; chain a `.filter` after the Sprint 27 cutoff that computes `haversineMiles → deadheadCost → expectedValue` and fires `ROI FILTER DROPPED: <label> | Cost: $X.XX | Value: $X.XX` on every drop. Pipe driver coords + `costPerMile` into the existing `buildItinerary` call.
+- [x] 4. Phase 4 — Frontend state + hydration: `const [costPerMile, setCostPerMile] = useState(0.65)`; hydrate from `localStorage["dispatchCostPerMile"]` inside the existing BYOD `useEffect`; `handleCostPerMileChange` persists on every change.
+- [x] 5. Phase 5 — Frontend UI + payload: add `<input type="range" min="0" max="2" step="0.05">` slider in the BYOD Data Settings panel; include `costPerMile` in the POST body.
+- [x] 6. `node --check` on both `app/api/dispatch/route.js` and `app/page.js` → PARSE_OK.
+- [ ] 7. Manual verification (PO): `npm run dev`, slide the cost-per-mile control between $0.05 and $2.00, dispatch. Confirm (a) terminal prints `ROI FILTER DROPPED:` for items where the deadhead cost exceeds the value, (b) those items DO NOT appear on the Mapbox radar or in the List view, (c) reloading the page restores the slider's prior value from localStorage.
+
+### Acceptance Criteria
+- Frontend UI: BYOD Data Settings panel contains a `$0.00`–`$2.00` slider labeled "Vehicle Cost Per Mile". Adjusting it updates `localStorage["dispatchCostPerMile"]` and persists across page reloads.
+- Backend math: `buildItinerary` computes `distanceMiles = haversineMiles(driverLat, driverLng, item.lat, item.lng)` and drops the item iff `distanceMiles * costPerMile > decayed(item) * 1.50`.
+- Diagnostic visibility: terminal explicitly prints `ROI FILTER DROPPED: <label> | Cost: $X.XX | Value: $X.XX` for each dropped item, proving the math fires without polluting the frontend UI.
+- Frontend purity: dropped items do NOT appear on the Mapbox radar or in the List view.
+
+### Out of Scope (Anti-Goals)
+- Visual profitability badges / ghosting on the Mapbox UI or the Dispatch Cards. Items must be strictly dropped — not annotated.
+- Mutating `surgeScore` logic or upstream multipliers (Weather, Fatigue, Campus, Corporate, Hospital, Nightlife, Holiday/Iftar, etc.). The ROI filter sits at the very end of the line.
+- External routing-distance APIs (Google Maps / Mapbox Geocoding). Strictly point-to-point `haversineMiles` math only.
+- Asymmetric thresholds per item type. One constant (`DOLLAR_PER_SURGE_POINT`) and one driver-configurable knob (`costPerMile`) govern every scoreable type.

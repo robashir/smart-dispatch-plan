@@ -74,6 +74,12 @@ const VENUE_DICTIONARY = {
   "empire live": { lat: 42.6510, lng: -73.7495 },
 };
 
+// Sprint 45: Mathematical ROI Filter. Converts a scoreable item's
+// surgeScore into dollars-of-expected-value so it can be compared against
+// the driver's haversine deadhead cost (distance × costPerMile). Items
+// where the cost exceeds the value are dropped inside buildItinerary.
+const DOLLAR_PER_SURGE_POINT = 1.50;
+
 // Sprint 42: Nightlife Density Engine. Yelp price tier proxies wealth and
 // nighttime demand density. Clone qualifying foodHotspots into structuredEvents
 // (synthetic event clone) so rideshare-only drivers get the surge pin without
@@ -1097,7 +1103,15 @@ function surgeScore(item, finalRideMod, finalFoodMod) {
 //   hybrid        — group by hourBucket (chronological), within group by
 //                   surgeScore desc; no-hourBucket items go to a
 //                   "Current/Ongoing" group at the top.
-function buildItinerary(payload, strategy, currentLocalStart, showRawData = false) {
+function buildItinerary(
+  payload,
+  strategy,
+  currentLocalStart,
+  showRawData = false,
+  driverLat = null,
+  driverLng = null,
+  costPerMile = 0.65
+) {
   const flights = Array.isArray(payload?.flightsByHour) ? payload.flightsByHour : [];
   const trains = Array.isArray(payload?.trainsByHour) ? payload.trainsByHour : [];
   const food =
@@ -1156,6 +1170,39 @@ function buildItinerary(payload, strategy, currentLocalStart, showRawData = fals
       if (!scoreable) return true;
       if (showRawData) return true;
       return decayed(it) >= 1.0;
+    })
+    // Sprint 45: Mathematical ROI Filter. After the Sprint 27 strict <1.0
+    // cutoff, compute haversine distance from driver → each scoreable item
+    // and drop anything whose deadhead cost (distance × costPerMile) exceeds
+    // its expected value (surgeScore × DOLLAR_PER_SURGE_POINT). Skipped when
+    // driver coords are missing or the item itself has no lat/lng so legacy
+    // shapes can't accidentally get pruned.
+    .filter((it) => {
+      const scoreable =
+        it.type === "flight" ||
+        it.type === "train" ||
+        it.type === "food" ||
+        it.type === "grocery" ||
+        it.type === "event";
+      if (!scoreable) return true;
+      if (
+        !Number.isFinite(driverLat) ||
+        !Number.isFinite(driverLng) ||
+        !Number.isFinite(it.lat) ||
+        !Number.isFinite(it.lng)
+      ) {
+        return true;
+      }
+      const distanceMiles = haversineMiles(driverLat, driverLng, it.lat, it.lng);
+      const deadheadCost = distanceMiles * costPerMile;
+      const expectedValue = decayed(it) * DOLLAR_PER_SURGE_POINT;
+      if (deadheadCost > expectedValue) {
+        console.log(
+          `ROI FILTER DROPPED: ${it.location || it.hourBucket || it.type} | Cost: $${deadheadCost.toFixed(2)} | Value: $${expectedValue.toFixed(2)}`
+        );
+        return false;
+      }
+      return true;
     });
 
   if (strategy === "profitability") {
@@ -1208,8 +1255,17 @@ async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw, costPerMile: costPerMileRaw } =
       await request.json();
+
+    // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
+    // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
+    // boundary — non-numeric / negative values fall back to the default so a
+    // malformed payload can't disable the filter by accident.
+    const costPerMile =
+      Number.isFinite(Number(costPerMileRaw)) && Number(costPerMileRaw) >= 0
+        ? Number(costPerMileRaw)
+        : 0.65;
 
     // Sprint 40: X-Ray Vision Toggle. Default false so the standard
     // experience keeps Sprint 27's strict <1.0 filter intact; explicit
@@ -1604,7 +1660,15 @@ export async function POST(request) {
     // finalFoodMod — it computes the hidden surgeScore for sorting and the
     // strict <1.0 filter, so the volumes in flightsByHour / trainsByHour /
     // gigDemand stay raw and physical for the frontend.
-    mergedPayload.itinerary = buildItinerary(mergedPayload, routingStrategy, localStart, showRawData);
+    mergedPayload.itinerary = buildItinerary(
+      mergedPayload,
+      routingStrategy,
+      localStart,
+      showRawData,
+      latitude,
+      longitude,
+      costPerMile
+    );
 
     // Acceptance Criteria: log the fully merged payload BEFORE the LLM call.
     console.log(

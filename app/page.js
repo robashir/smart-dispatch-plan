@@ -99,6 +99,10 @@ export default function Home() {
   // dashboard stays uncluttered. When on, the backend bypasses the
   // strict <1.0 filter and ghosted weak items render in the UI.
   const [showRawData, setShowRawData] = useState(false);
+  // Sprint 45: Mathematical ROI Filter. Driver's vehicle cost per mile
+  // (fuel + depreciation + wear). Default 0.65 = the "Safe Sedan" baseline;
+  // hydrated from localStorage so the driver only configures it once.
+  const [costPerMile, setCostPerMile] = useState(0.65);
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
   const [activeTab, setActiveTab] = useState("transit");
   const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
@@ -162,7 +166,30 @@ export default function Home() {
     } catch (e) {
       console.warn("dispatchTrainCalendar hydrate failed:", e.message);
     }
+    // Sprint 45: hydrate the driver's cost-per-mile preference. Default
+    // 0.65 already sits in state, so a missing/invalid value is a no-op.
+    try {
+      const rawCpm = localStorage.getItem("dispatchCostPerMile");
+      if (rawCpm !== null) {
+        const parsed = Number(rawCpm);
+        if (Number.isFinite(parsed) && parsed >= 0) setCostPerMile(parsed);
+      }
+    } catch (e) {
+      console.warn("dispatchCostPerMile hydrate failed:", e.message);
+    }
   }, []);
+
+  // Sprint 45: persist costPerMile on every change so the driver configures
+  // it once. Mirrors handleViewModeChange — the setter + persistence stay
+  // colocated to avoid drift between state and storage.
+  function handleCostPerMileChange(value) {
+    setCostPerMile(value);
+    try {
+      localStorage.setItem("dispatchCostPerMile", String(value));
+    } catch (e) {
+      console.warn("dispatchCostPerMile persist failed:", e.message);
+    }
+  }
 
   function todayLocalISO() {
     const d = new Date();
@@ -292,6 +319,9 @@ export default function Home() {
         routingStrategy,
         trainCapacity: todaysTrainCapacity,
         showRawData,
+        // Sprint 45: backend uses this with haversineMiles to compute
+        // each item's deadhead cost and drop unprofitable surges.
+        costPerMile,
       };
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
 
@@ -510,6 +540,26 @@ export default function Home() {
               />
               <span>Show Raw Data (Ghost Mode)</span>
             </label>
+
+            {/* Sprint 45: Mathematical ROI Filter — driver's vehicle cost
+                per mile. Range slider 0.00–2.00 in $0.05 steps so EV /
+                Sedan / SUV defaults all snap cleanly. Persisted to
+                localStorage on every change. */}
+            <div className="flex flex-col gap-2 mt-3">
+              <label className="text-sm text-neutral-400">
+                Vehicle Cost Per Mile (${costPerMile.toFixed(2)})
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={costPerMile}
+                onChange={(e) => handleCostPerMileChange(Number(e.target.value))}
+                disabled={isBusy}
+                className="w-full accent-yellow-400 disabled:opacity-60"
+              />
+            </div>
           </div>
         </fieldset>
 
