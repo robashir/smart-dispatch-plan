@@ -131,6 +131,64 @@ function toTicketmasterDateTime(date) {
   return date.toISOString().split(".")[0] + "Z";
 }
 
+// Sprint 41: Holiday & Iftar Supply Engine. Hardcoded 5-year matrix covering
+// Eid al-Fitr / Eid al-Adha (Eve + Day) and Ramadan windows 2026-2030. Used
+// by computeSupplyDropMod to mathematically inflate the surge map-wide when
+// a massive supply-side drop is expected. Ported verbatim from
+// test-iftar-engine.js after all 4 assertions PASSed.
+const ISLAMIC_HOLIDAYS = [
+  "2026-03-19", "2026-03-20",
+  "2026-05-26", "2026-05-27",
+  "2027-03-08", "2027-03-09",
+  "2027-05-16", "2027-05-17",
+  "2028-02-25", "2028-02-26",
+  "2028-05-04", "2028-05-05",
+  "2029-02-13", "2029-02-14",
+  "2029-04-23", "2029-04-24",
+  "2030-02-03", "2030-02-04",
+  "2030-04-13", "2030-04-14",
+];
+
+const RAMADAN_MONTHS = [
+  { start: "2026-02-18", end: "2026-03-19" },
+  { start: "2027-02-08", end: "2027-03-08" },
+  { start: "2028-01-28", end: "2028-02-26" },
+  { start: "2029-01-16", end: "2029-02-14" },
+  { start: "2030-01-05", end: "2030-02-03" },
+];
+
+function toYmd(dateObj) {
+  const y = dateObj.getUTCFullYear();
+  const m = String(dateObj.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dateObj.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function isInRamadan(ymd) {
+  for (const { start, end } of RAMADAN_MONTHS) {
+    if (ymd >= start && ymd <= end) return true;
+  }
+  return false;
+}
+
+function computeSupplyDropMod(localStart, sunsetTimeStr) {
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return 1.0;
+  const ymd = toYmd(localStart);
+
+  if (ISLAMIC_HOLIDAYS.includes(ymd)) return 1.5;
+
+  if (isInRamadan(ymd)) {
+    if (typeof sunsetTimeStr !== "string") return 1.0;
+    const match = sunsetTimeStr.match(/T(\d{2}):(\d{2})/);
+    if (!match) return 1.0;
+    const sunsetMin = Number(match[1]) * 60 + Number(match[2]);
+    const nowMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+    if (Math.abs(nowMin - sunsetMin) <= 30) return 1.5;
+  }
+
+  return 1.0;
+}
+
 // Sprint 19: Predictive Weather Engine. 1-hour-lookahead state machine over
 // the existing Open-Meteo array — reads only weatherArray[0] (current hour)
 // and weatherArray[1] (next hour). Output stacks multiplicatively onto the
@@ -226,6 +284,10 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
       "hourly",
       "temperature_2m,precipitation_probability,precipitation,weathercode"
     );
+    // Sprint 41: append &daily=sunset so the existing Open-Meteo call also
+    // returns today's local sunset time. Reused by computeSupplyDropMod for
+    // the Ramadan Iftar ±30 min window — NO new network request.
+    url.searchParams.set("daily", "sunset");
     // Open-Meteo aligns to whole hours; request hours+1 so windowing always covers the user's full block.
     url.searchParams.set("forecast_hours", String(hours + 1));
     url.searchParams.set("temperature_unit", "fahrenheit");
@@ -262,7 +324,11 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
           precipInches: precip[i],
         }));
 
-        return windowed;
+        // Sprint 41: extract today's sunset (daily.sunset[0]) alongside the
+        // hourly array so the Iftar engine can read it without a new fetch.
+        const sunsetTime = data.daily?.sunset?.[0] ?? null;
+
+        return { weatherWindowed: windowed, sunsetTime };
       } catch (err) {
         clearTimeout(timeoutId);
         lastErr = err;
@@ -276,7 +342,11 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
       `Weather fetch failed after ${MAX_ATTEMPTS} attempts:`,
       lastErr?.message
     );
-    return null;
+    // Sprint 41: return the object shape even on failure so destructuring
+    // in the POST handler stays safe — both fields stay null/undefined and
+    // downstream code (computeWeatherModifiers / computeSupplyDropMod)
+    // already tolerates that.
+    return { weatherWindowed: null, sunsetTime: null };
   });
 }
 
@@ -1167,7 +1237,7 @@ export async function POST(request) {
       console.warn("YELP_API_KEY not set — skipping Yelp density fetch");
     }
 
-    const [events, weatherWindowed, rawFlights, rawTrains, gigDemand] = await Promise.all([
+    const [events, weatherResult, rawFlights, rawTrains, gigDemand] = await Promise.all([
       fetchTicketmasterEvents({
         latitude,
         longitude,
@@ -1181,6 +1251,13 @@ export async function POST(request) {
       getLocalDensityData(latitude, longitude, yelpApiKey, localStart),
     ]);
 
+    // Sprint 41: fetchWeatherWindowed now returns { weatherWindowed, sunsetTime }
+    // off the same Open-Meteo call. Unpack here so the rest of the pipeline
+    // (computeWeatherModifiers, mergedPayload.weather, computeSupplyDropMod)
+    // keeps its existing shape.
+    const weatherWindowed = weatherResult?.weatherWindowed ?? null;
+    const sunsetTime = weatherResult?.sunsetTime ?? null;
+
     // Sprint 18: compute temporal multipliers off the driver's wall-clock
     // (localStart's UTC fields == wall-clock per Sprint 3.1). These scale
     // raw data volumes BEFORE the payload is built.
@@ -1192,8 +1269,21 @@ export async function POST(request) {
     // rush + thunderstorm) must compound naturally.
     const weatherModifiers = computeWeatherModifiers(weatherWindowed);
     const { weatherFoodMod, weatherRideMod } = weatherModifiers;
-    const finalFoodMod = foodMod * weatherFoodMod;
+    let finalFoodMod = foodMod * weatherFoodMod;
     let finalRideMod = rideMod * weatherRideMod;
+
+    // Sprint 41: Holiday & Iftar Supply Engine. Universal map-wide multiplier
+    // — stacks on BOTH finalRideMod and finalFoodMod (flat 1.5x supply drop
+    // on Eid / Eid Eve, or within ±30 min of sunset during Ramadan). Default
+    // 1.0 is a no-op on any other day.
+    const supplyDropMod = computeSupplyDropMod(localStart, sunsetTime);
+    if (supplyDropMod > 1.0) {
+      const ymd = toYmd(localStart);
+      const reason = ISLAMIC_HOLIDAYS.includes(ymd) ? "Eid / Eid Eve" : "Ramadan Iftar window";
+      console.log(`HOLIDAY/IFTAR SUPPLY DROP ACTIVE: ${reason} | Mod: ${supplyDropMod}x`);
+    }
+    finalRideMod = finalRideMod * supplyDropMod;
+    finalFoodMod = finalFoodMod * supplyDropMod;
 
     // Sprint 34: BYOD Campus Calendar — Move-In / Break days surge transit
     // demand (departing students, arriving families) before flights/trains
@@ -1403,6 +1493,10 @@ export async function POST(request) {
       routingStrategy,
       temporalModifiers,
       weatherModifiers,
+      // Sprint 41: surface the universal map-wide supply-drop multiplier so
+      // the terminal log makes it obvious why finalRideMod / finalFoodMod
+      // are inflated on Eid / Iftar days.
+      supplyDropMod,
       finalRideMod,
       finalFoodMod,
       events: structuredEvents,

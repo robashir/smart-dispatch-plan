@@ -1924,3 +1924,46 @@ trainSurge = volume × finalRideMod × capacityMod
 - A separate `/api/dispatch-raw` endpoint — single POST handler owns both modes.
 - Ghosting items with `surgeScore >= 1.0`.
 - Prompt rewrites, new aggregator branches, persisting the toggle across sessions.
+
+## Sprint 41 — The Holiday & Iftar Supply Engine
+
+**Problem:** Major Muslim holidays (Eid al-Fitr, Eid al-Adha) and the daily Iftar window during Ramadan trigger a massive, predictable map-wide drop in active driver supply. The deterministic engine had no way to express this — `finalRideMod` / `finalFoodMod` only react to temporal blocks + active weather. Sprint 41 adds a universal `supplyDropMod` that stacks on BOTH multipliers so the surge math reflects the supply shock without any LLM intervention.
+
+### Decisions (locked before coding)
+- **Hardcoded 5-year matrix.** `ISLAMIC_HOLIDAYS` (Eid + Eid Eve / Chaand Raat) and `RAMADAN_MONTHS` (start/end pairs) for 2026-2030. No new fetch — these dates are deterministic enough to ship as constants.
+- **Live Weather Hack for sunset.** Append `&daily=sunset` to the existing Open-Meteo URL inside `fetchWeatherWindowed`. The function's return shape changes from `windowed` (array) to `{ weatherWindowed, sunsetTime }`. ZERO new network requests — Open-Meteo bundles `daily.sunset` into the same response.
+- **Flat 1.5x universal drop modifier.** Same value for rides AND food. PO anti-goal: NEVER asymmetric.
+- **Multiplicative stacking.** `finalRideMod *= supplyDropMod` and `finalFoodMod *= supplyDropMod` AFTER temporal + weather are combined, BEFORE the aggregators / `surgeScore` consume them.
+- **Iftar window: ±30 min around sunset.** Sunset string is parsed off `daily.sunset[0]` (Open-Meteo's local-time ISO, e.g., `"2026-03-10T18:00"`). Comparison is wall-clock-as-UTC against `localStart` (matches Sprint 3.1 + the temporal engine).
+- **Trigger log on activation.** `console.log("HOLIDAY/IFTAR SUPPLY DROP ACTIVE: [Reason] | Mod: 1.5x")` fires whenever `supplyDropMod > 1.0`.
+
+### Build Steps
+- [x] 0. Write Sprint 41 plan to `tasks/todo.md` (this block).
+- [x] 1. Phase 1 — TDD: `test-iftar-engine.js` mocks `computeSupplyDropMod(localStart, sunsetTimeStr)` + the 2026-2030 matrices. Asserts (a) normal day → 1.0, (b) Eid Eve (2026-05-26) → 1.5, (c) Ramadan 15 min pre-sunset → 1.5, (d) Ramadan 3 hr pre-sunset → 1.0. 4/4 PASS before touching `route.js`.
+- [x] 2. Phase 2 — API Payload Expansion: append `&daily=sunset` to the Open-Meteo URL in `fetchWeatherWindowed`. Return `{ weatherWindowed, sunsetTime }` (object) instead of the raw windowed array. Failure path returns `{ weatherWindowed: null, sunsetTime: null }` so the destructure in POST stays safe.
+- [x] 3. Phase 3 — Engine Logic: add `ISLAMIC_HOLIDAYS`, `RAMADAN_MONTHS`, `toYmd`, `isInRamadan`, and `computeSupplyDropMod` near the top of `route.js` (next to `toTicketmasterDateTime`). Inside POST: unpack `weatherResult` into `weatherWindowed` + `sunsetTime`; compute `supplyDropMod`; fire the trigger log when `> 1.0`.
+- [x] 4. Phase 4 — Integration: `let finalFoodMod = foodMod * weatherFoodMod` (was `const`), then `finalRideMod *= supplyDropMod` and `finalFoodMod *= supplyDropMod`. Inject `supplyDropMod` into `mergedPayload` (sits next to `weatherModifiers` / `finalRideMod` / `finalFoodMod`) so the `=== MERGED DISPATCH PAYLOAD ===` terminal log surfaces it.
+- [ ] 5. Manual verification: change the system clock to 2026-05-26 (Eid Eve) — confirm terminal logs `HOLIDAY/IFTAR SUPPLY DROP ACTIVE: Eid / Eid Eve | Mod: 1.5x` and that `mergedPayload.finalRideMod` / `finalFoodMod` are exactly 1.5x their default-day values. On any other day, `supplyDropMod: 1` shows in the payload and no trigger fires.
+
+### Acceptance Criteria
+- On Eid / Eid Eve dates (`ISLAMIC_HOLIDAYS`), `supplyDropMod === 1.5` regardless of time-of-day or sunset.
+- During Ramadan (`RAMADAN_MONTHS`), `supplyDropMod === 1.5` ONLY when `|localStart - sunsetTime| <= 30 min`; otherwise `1.0`.
+- Outside both windows, `supplyDropMod === 1.0` (no-op).
+- `finalRideMod` and `finalFoodMod` both receive the SAME `supplyDropMod` multiplier (flat universal drop).
+- Trigger log `HOLIDAY/IFTAR SUPPLY DROP ACTIVE: ...` fires iff `supplyDropMod > 1.0`.
+- ZERO new API calls. Open-Meteo continues to be the only weather/sunset source.
+
+### Out of Scope (Anti-Goals)
+- A separate sunset/lunar API (Sunrise-Sunset.org, AlAdhan, etc.). The PO locked the Live Weather Hack — Open-Meteo's `daily=sunset` is the only allowed source.
+- Asymmetric multipliers (e.g., 2.0x food, 1.5x rides). Flat 1.5x universal drop only.
+- Frontend UI changes (`app/page.js`, `DispatchCards.jsx`, `DispatchMap.jsx`). Existing React cards / Mapbox pins natively render inflated volumes.
+- New aggregator branches or `surgeScore` modifications. `supplyDropMod` lives entirely upstream — once it folds into `finalRideMod` / `finalFoodMod`, the rest of the pipeline can't tell the difference.
+
+### Mathematical Integration
+```
+supplyDropMod = 1.0 (default) | 1.5 (Eid/Eid Eve OR Ramadan ±30min of sunset)
+
+finalRideMod = rideMod × weatherRideMod × supplyDropMod
+finalFoodMod = foodMod × weatherFoodMod × supplyDropMod
+```
+Both modifiers then feed `buildItinerary` exactly as before; `surgeScore` keeps its existing per-type formulas. The Sprint 32.1 Time-Decay multiplier still applies at scoring time, so a 1.5x supply drop on a 2-hours-out surge still gets the 0.4x decay penalty.
