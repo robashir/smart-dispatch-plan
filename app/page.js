@@ -3,6 +3,7 @@
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useEffect, useState } from "react";
 import { TopPickBanner } from "../components/TopPickBanner";
+import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
 import DispatchMap from "../components/DispatchMap";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 
@@ -106,6 +107,10 @@ export default function Home() {
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
   const [activeTab, setActiveTab] = useState("transit");
   const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
+  // Sprint 46: live weather modifiers from the backend's predictive engine.
+  // null until the first dispatch; GlobalWeatherBanner returns null on null
+  // or on any combo that isn't a known Storm / Pre-Surge / Heatwave.
+  const [weatherModifiers, setWeatherModifiers] = useState(null);
   // Sprint 37: live driver coords for the pulsing blue dot on the radar.
   // Reset on each dispatch so a stale fix never floats over the new plan.
   // Sprint 37.2: renamed coords → driverCoords for an unambiguous prop chain
@@ -342,6 +347,7 @@ export default function Home() {
         ride: Number(data.finalRideMod) || 1.0,
         food: Number(data.finalFoodMod) || 1.0,
       });
+      setWeatherModifiers(data.weatherModifiers || null);
       setStatus("done");
     } catch (err) {
       console.error(err);
@@ -594,6 +600,10 @@ export default function Home() {
         )}
 
         {status === "done" && topPick && <TopPickBanner data={topPick} />}
+
+        {status === "done" && (
+          <GlobalWeatherBanner weatherModifiers={weatherModifiers} />
+        )}
 
         {status === "done" && (
           <div className="flex flex-col gap-3">

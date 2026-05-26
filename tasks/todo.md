@@ -2108,3 +2108,31 @@ Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), 
 - Mutating `surgeScore` logic or upstream multipliers (Weather, Fatigue, Campus, Corporate, Hospital, Nightlife, Holiday/Iftar, etc.). The ROI filter sits at the very end of the line.
 - External routing-distance APIs (Google Maps / Mapbox Geocoding). Strictly point-to-point `haversineMiles` math only.
 - Asymmetric thresholds per item type. One constant (`DOLLAR_PER_SURGE_POINT`) and one driver-configurable knob (`costPerMile`) govern every scoreable type.
+
+## Sprint 46 — The Weather UI Surfacing (Global Weather Banner)
+
+### Decisions (locked before coding)
+- **Stateless Frontend Decoder.** Component reads `weatherFoodMod` / `weatherRideMod` only; no `useState`, no dismiss button, no fuzzy matching.
+- **Strict equality on three states only:** Storm (`1.5 / 0.75`), Pre-Surge (`1.0 / 1.5`), Heatwave (`1.25 / 0.9`). Anything else → `return null`.
+- **Static Dark Theme via Tailwind:** high-contrast blue band against the dark app shell.
+- **Placement:** rendered in `app/page.js` directly under `<TopPickBanner>` inside the `status === "done"` block.
+- **Live data source:** `data.weatherModifiers` (already present on `mergedPayload`). New `weatherModifiers` state hydrated alongside `finalMods` after dispatch.
+- **TDD pause point:** the hardcoded mock cycle is committed FIRST, the user verifies all 4 states (Storm / Pre-Surge / Heatwave / Clear) in the browser, then the live wiring is restored.
+
+### Build Steps
+- [x] 0. Append Sprint 46 plan to `tasks/todo.md` (this block).
+- [x] 1. Create `components/GlobalWeatherBanner.jsx` — stateless functional component, strict number matching, returns `null` outside the three known states.
+- [x] 2. `app/page.js`: import the banner; render it under `<TopPickBanner>` inside `status === "done"` with a **temporary hardcoded** `weatherModifiers` prop. Cycle Storm → Pre-Surge → Heatwave → Clear by flipping one constant.
+- [x] 3. PAUSE → user runs `npm run dev`, dispatches, confirms each of the 4 states renders the correct copy + styling and Clear renders nothing.
+- [x] 4. After confirmation: add `const [weatherModifiers, setWeatherModifiers] = useState(null)`, populate it from `data.weatherModifiers` in `handleClick`, and replace the hardcoded prop with the live value.
+
+### Acceptance Criteria
+- `components/GlobalWeatherBanner.jsx` exists, is stateless, and renders ONLY for the three exact numeric combinations specified.
+- The banner appears beneath `TopPickBanner` and above the Map/List toggle when active.
+- During verification, manually toggling the hardcoded modifiers cycles through Storm / Pre-Surge / Heatwave copy and disappears on `1.0 / 1.0`.
+- After restoration, dispatching surfaces the banner only when the backend's `weatherModifiers` matches a known state.
+
+### Out of Scope (Anti-Goals)
+- ANY change to `app/api/dispatch/route.js` — backend math + payload contract locked.
+- `useState`, dismiss/close button, fuzzy/range matching, or fallback copy for unknown numbers.
+- Visual changes to `TopPickBanner`, Map, List, or the BYOD panel.
