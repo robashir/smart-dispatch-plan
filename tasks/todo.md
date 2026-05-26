@@ -1967,3 +1967,51 @@ finalRideMod = rideMod × weatherRideMod × supplyDropMod
 finalFoodMod = foodMod × weatherFoodMod × supplyDropMod
 ```
 Both modifiers then feed `buildItinerary` exactly as before; `surgeScore` keeps its existing per-type formulas. The Sprint 32.1 Time-Decay multiplier still applies at scoring time, so a 1.5x supply drop on a 2-hours-out surge still gets the 0.4x decay penalty.
+
+## Sprint 42 — The Nightlife Density Engine
+
+### Goal
+Recognize the high-density Downtown / Midtown Albany corridors late at night and surface them as rideshare surge pins, so UberX-only drivers stay positioned in the urban core instead of chasing dead miles in the suburbs.
+
+### The Yelp Proxy Strategy
+Yelp's `price` tier is the cheapest live signal we already pay for. `$`/`$$`/`$$$`/`$$$$` proxies (a) disposable income of the patrons and (b) nighttime population density of the corridor. We re-use the existing `foodHotspots` array — **no new API fetch** — and pair it with the time-of-day gate to fire only during the 20:00–03:00 nightlife egress window.
+
+### Synthetic Event Clone Architecture
+Sprint 11's food sanitizer wipes `foodHotspots` whenever rideshare drivers untoggle Food Delivery. A pure-rideshare driver would therefore never see the nightlife signal. The fix is the **Synthetic Event Clone**: iterate `foodHotspots` BEFORE the sanitizer fires, and for each qualifier push a fresh object into `structuredEvents` with `type: "event"`. Once the sanitizer runs and erases food, the rideshare branch still has the cloned events — the data has been promoted to a survivable lane.
+
+Cloned object shape:
+- `type: "event"`
+- `location: \`Surge: ${anchorName||location} Corridor\``
+- `volume: 1` (locked — rendering signal, not magnitude)
+- `egressMod: TIER_MOD_MAP[priceKey]`
+- `categories: ["Nightlife Egress", "High Demand"]`
+- `lat`/`lng` (carried through for the Mapbox radar pin)
+
+### Dynamic Tier Multiplier
+A flat boost would over-reward `$` corridors and under-reward `$$$$` ones. Lookup map:
+```
+$    -> 2.5  (2 AM Egress / Volume)
+$$   -> 3.0  (Casual Nightlife)
+$$$  -> 3.5  (Premium Surge / Executive)
+$$$$ -> 4.0  (Elite Dining)
+```
+Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), we regex-extract the parenthesized `$+` substring as the lookup key. `computeHotspots` was extended this sprint to emit `"Elite ($$$$)"` when any business in the cluster has a 4-char price, so the 4.0x tier can actually fire on real data (previously the function capped at `$$$`).
+
+### Build Steps
+- [x] 1. Add `TIER_MOD_MAP` constant near the file head (next to `ESP_COORDS` / `HARRIMAN_COORDS`).
+- [x] 2. Extend `computeHotspots` so a `$$$$` cluster emits `"Elite ($$$$)"` (preserves existing `surgeScore` math; only `Elite` is new).
+- [x] 3. Inject the Nightlife Density loop immediately BEFORE the Sprint 11 sanitizer (so the synthetic events survive the wipe). Gate on `activePlatforms.rideshare` + time window + valid tier match.
+- [x] 4. Add the daylight mock (`TEST: Elite Steakhouse`, `$$$$`) and replace the time gate with `if (true)` (`inNightlifeWindow = true`) so PO QA fires the clone regardless of wall time.
+- [x] 5. `node --check app/api/dispatch/route.js` → PARSE_OK.
+- [ ] 6. Manual verification (PO): `npm run dev`, click dispatch, confirm terminal logs `NIGHTLIFE EGRESS INJECTED: TEST: Elite Steakhouse | Tier: $$$$ | Mod: 4x` AND the Mapbox radar drops a pin at `42.6526, -73.7562`.
+- [ ] 7. QA sign-off cleanup: remove the test mock push, restore the real time gate (`const inNightlifeWindow = localHour >= 20 || localHour <= 3;`).
+
+### Out of Scope (Anti-Goals)
+- Frontend changes (`app/page.js`, `EventCard.jsx`, `DispatchMap.jsx`). The existing UI renders `type: "event"` natively.
+- Flat global `finalRideMod` boost. This is hyper-local pin-based routing only — `egressMod` per cloned event, nothing global.
+- Census / demographic APIs, GeoJSON boundary math, or a separate Yelp call. The existing `foodHotspots` array is the only input.
+
+### Acceptance Criteria
+- With the daylight mock + `if (true)` gate active: dispatch terminal logs at least one `NIGHTLIFE EGRESS INJECTED` line for the `TEST: Elite Steakhouse` entry at `Mod: 4x`.
+- With the mock removed + real time gate restored: between 8 PM and 3 AM local, real `$$`/`$$$` foodHotspots clone into `structuredEvents`; between 4 AM and 7 PM they do not.
+- Sprint 11 sanitizer behavior unchanged: untoggling Food Delivery still wipes `gigDemand.foodHotspots`, but `structuredEvents` retains the cloned surges.

@@ -47,6 +47,17 @@ const AMTRAK_COORDS = { lat: 42.6463, lng: -73.7392 };
 const ESP_COORDS = { lat: 42.6514, lng: -73.7608 };
 const HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 };
 
+// Sprint 42: Nightlife Density Engine. Yelp price tier proxies wealth and
+// nighttime demand density. Clone qualifying foodHotspots into structuredEvents
+// (synthetic event clone) so rideshare-only drivers get the surge pin without
+// the Sprint 11 food sanitizer wiping the signal. Mod scales with tier.
+const TIER_MOD_MAP = {
+  "$": 2.5,    // 2:00 AM Egress / Volume
+  "$$": 3.0,   // Casual Nightlife
+  "$$$": 3.5,  // Premium Surge / Executive
+  "$$$$": 4.0, // Elite Dining
+};
+
 // Sprint 31: Campus Synergy Engine. Late-night (11 PM / 12 AM / 1 AM) food
 // hotspots whose cluster centroid lands within 1.5 miles of a known campus
 // earn a 1.5x campusMod. Validated in isolation by test-campus-engine.js
@@ -832,10 +843,15 @@ function computeHotspots(businesses, type, localStart) {
     if (topStreets.length === 2) location = `${topStreets[0]} & ${topStreets[1]}`;
     else if (topStreets.length === 1) location = `near ${topStreets[0]}`;
 
+    // Sprint 42: track the 4-char ($$$$) tier separately so the Nightlife
+    // Density Engine can map it to the 4.0x Elite Dining mod. Anything 3-char
+    // still falls under "High-Value ($$$)" to preserve existing surgeScore math.
+    const hasElite = bestCluster.some((b) => (b.price || "").length === 4);
     const hasHighEnd = bestCluster.some((b) => (b.price || "").length >= 3);
     const midCount = bestCluster.filter((b) => b.price === "$$").length;
     let tier;
-    if (hasHighEnd) tier = "High-Value ($$$)";
+    if (hasElite) tier = "Elite ($$$$)";
+    else if (hasHighEnd) tier = "High-Value ($$$)";
     else if (midCount > bestCluster.length / 2) tier = "Mid-Tier ($$)";
     else tier = "Quick-Turn ($)";
 
@@ -1429,6 +1445,42 @@ export async function POST(request) {
       console.log(
         "STATE COMMUTER INJECTED: Empire State Plaza & Harriman Campus | egressMod 2.5x"
       );
+    }
+
+    // Sprint 42: Nightlife Density Engine. Yelp's price tier is the cheapest
+    // available proxy for nighttime population density + disposable income.
+    // We clone qualifying foodHotspots into structuredEvents as type="event"
+    // so the signal survives the Sprint 11 food sanitizer that fires next.
+    // Gated on rideshare (the audience) + the local-hour window 20:00-03:00
+    // + a tier whose extracted price key hits TIER_MOD_MAP.
+    const localHour = localStart.getUTCHours();
+    const inNightlifeWindow = localHour >= 20 || localHour <= 3;
+    if (
+      activePlatforms.rideshare &&
+      inNightlifeWindow &&
+      gigDemand &&
+      Array.isArray(gigDemand.foodHotspots)
+    ) {
+      for (const hotspot of gigDemand.foodHotspots) {
+        const priceMatch = typeof hotspot.tier === "string"
+          ? hotspot.tier.match(/\((\$+)\)/)
+          : null;
+        const priceKey = priceMatch ? priceMatch[1] : null;
+        if (!priceKey || !(priceKey in TIER_MOD_MAP)) continue;
+        const corridorName = hotspot.anchorName || hotspot.location || "Unnamed";
+        structuredEvents.push({
+          type: "event",
+          location: `Surge: ${corridorName} Corridor`,
+          volume: 1,
+          egressMod: TIER_MOD_MAP[priceKey] || 2.5,
+          categories: ["Nightlife Egress", "High Demand"],
+          lat: hotspot.lat,
+          lng: hotspot.lng,
+        });
+        console.log(
+          `NIGHTLIFE EGRESS INJECTED: ${corridorName} | Tier: ${priceKey} | Mod: ${TIER_MOD_MAP[priceKey]}x`
+        );
+      }
     }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept
