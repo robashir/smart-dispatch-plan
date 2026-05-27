@@ -90,8 +90,8 @@ export default function DispatchMap({ itinerary = [], driverCoords }) {
               {Number.isFinite(selectedItem.volume) && (
                 <div>Volume: {selectedItem.volume}</div>
               )}
-              {Number.isFinite(selectedItem.surgeScore) && (
-                <div>Surge: {selectedItem.surgeScore.toFixed(1)}</div>
+              {Number.isFinite(selectedItem.densityScore) && (
+                <div>Density: {Math.round(selectedItem.densityScore)}%</div>
               )}
               {Number.isFinite(selectedItem.egressMod) && selectedItem.egressMod > 1 && (
                 <div>Egress: {selectedItem.egressMod}x</div>

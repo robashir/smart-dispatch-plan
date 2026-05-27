@@ -45,43 +45,13 @@ function parseTimeLabel(label) {
   return h * 60 + min;
 }
 
-function computeDecayMod(itemTimeLabel) {
-  if (!itemTimeLabel) return 1.0;
-  const now = new Date();
-  const offsetMin = now.getTimezoneOffset();
-  const local = new Date(now.getTime() - offsetMin * 60 * 1000);
-  const currentMin = local.getUTCHours() * 60 + local.getUTCMinutes();
-  const itemMin = parseTimeLabel(itemTimeLabel);
-  if (!Number.isFinite(itemMin)) return 1.0;
-  let delta = itemMin - currentMin;
-  if (delta < -360) delta += 1440;
-  if (delta < 45) return 1.0;
-  if (delta <= 90) return 0.7;
-  return 0.4;
-}
-
-function computeSurgeScore(item, finalRideMod, finalFoodMod) {
-  let base = 0;
-  if (item.type === "event") {
-    base = (Number(item.volume) || 0) * finalRideMod * (Number(item.egressMod) || 1.0);
-  } else if (item.type === "flight") {
-    base =
-      (Number(item.volume) || 0) *
-      finalRideMod *
-      (Number(item.fatigueMod) || 1.0) *
-      (Number(item.leisureMod) || 1.0);
-  } else if (item.type === "train") {
-    base = (Number(item.volume) || 0) * finalRideMod;
-  } else if (item.type === "food" || item.type === "grocery") {
-    const qualityMod = Number(item.qualityMod) || 1.0;
-    const campusMod = Number(item.campusMod) || 1.0;
-    base =
-      (Number(item.volume) || 0) * finalFoodMod * qualityMod * campusMod +
-      (item.tier === "High-Value ($$$)" ? 2 : 0);
-  } else {
-    return 0;
-  }
-  return base * computeDecayMod(item.leaveBy || item.hourBucket);
+// Sprint 48: Normalized Density Engine. The backend already stamps
+// `densityScore` (decayed) onto every scoreable itinerary item, so the
+// banner just reads that field instead of re-running the old multiplicative
+// surgeScore math. Non-scoreable rows (ripples) carry no densityScore and
+// resolve to 0 naturally via the Number() coerce in the reduce.
+function readDensityScore(item) {
+  return Number(item.densityScore) || 0;
 }
 
 export default function Home() {
@@ -106,7 +76,6 @@ export default function Home() {
   const [costPerMile, setCostPerMile] = useState(0.65);
   const [routingStrategy, setRoutingStrategy] = useState("hybrid");
   const [activeTab, setActiveTab] = useState("transit");
-  const [finalMods, setFinalMods] = useState({ ride: 1.0, food: 1.0 });
   // Sprint 46: live weather modifiers from the backend's predictive engine.
   // null until the first dispatch; GlobalWeatherBanner returns null on null
   // or on any combo that isn't a known Storm / Pre-Surge / Heatwave.
@@ -343,10 +312,6 @@ export default function Home() {
       }
 
       setItinerary(data.itinerary || []);
-      setFinalMods({
-        ride: Number(data.finalRideMod) || 1.0,
-        food: Number(data.finalFoodMod) || 1.0,
-      });
       setWeatherModifiers(data.weatherModifiers || null);
       setStatus("done");
     } catch (err) {
@@ -365,13 +330,12 @@ export default function Home() {
 
   const isBusy = status === "locating" || status === "dispatching";
 
-  // Sprint 33: global Top Pick. Run BEFORE the tab filter so the banner
-  // can name a winner in the inactive tab if it deserves the crown.
-  // .flat() is a defensive no-op against any future nested-group payload.
-  const flatItinerary = itinerary.flat().map((item) => ({
-    ...item,
-    surgeScore: computeSurgeScore(item, finalMods.ride, finalMods.food),
-  }));
+  // Sprint 33 + Sprint 48: global Top Pick. Run BEFORE the tab filter so
+  // the banner can name a winner in the inactive tab if it deserves the
+  // crown. .flat() is a defensive no-op against any future nested-group
+  // payload. The backend now stamps densityScore on each item — read it
+  // directly instead of recomputing the old surgeScore client-side.
+  const flatItinerary = itinerary.flat();
   // Sprint 33.1: Actionable Time-Gate. The backend's decay tiers don't fully
   // suppress massive transit multipliers 3h+ out, so the banner ignores any
   // future item past 90 minutes. Items with no/invalid time label (ongoing
@@ -393,7 +357,8 @@ export default function Home() {
       return delta <= 90;
     })
     .reduce(
-      (max, item) => (item.surgeScore > (max?.surgeScore || 0) ? item : max),
+      (max, item) =>
+        readDensityScore(item) > readDensityScore(max || {}) ? item : max,
       null
     );
 

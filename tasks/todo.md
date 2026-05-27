@@ -2168,3 +2168,58 @@ Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), 
 - NO new API calls. Reuses the existing AviationStack + Ticketmaster streams already in `Promise.all`.
 - NO duplicate spam. One synergy event per target venue, regardless of how many planes match.
 - NO new env vars, no new constants beyond reusing `LEISURE_HUBS`.
+
+## Sprint 48 — The Normalized Density Engine
+
+**Problem:** The pre-Sprint-48 `surgeScore` was an unbounded multiplicative stack (`volume × finalRideMod × fatigueMod × leisureMod × ...`). It created a "Volume vs. Value Paradox" — a small crowd at an elite restaurant could mathematically overpower a massive airport surge because the multiplier ladder kept growing without a denominator.
+
+**Fix:** Convert every surge into a universal "Expected Rideshare Yield" (raw volume × per-type yield rate) and divide by "Venue Capacity" (per-hub or per-`categories[0]` lookup, fallback 80). The resulting ratio scales 0-100+ as a percent-of-capacity score the driver can read directly. All scoreable item types now compete apples-to-apples.
+
+### Decisions (locked before coding)
+- **TDD scaffold:** `test-density-engine.js` at repo root validates Yield × Capacity math + `categories[0]` fallback to 80 across 10 scenarios (flight/train/food/event with mega/standard/hospital overrides + sub-floor / super-floor sanity checks). Required 10/10 PASS before any edit to `route.js`.
+- **`YIELD_RATES` dictionary:** `flight: 15`, `train: 10`, `food: 5`, `grocery: 5`, `event: 50`, `mega_event: 450`, `hospital: 30`. Per-type expected rideshare passengers — same shape the PO brief locked.
+- **`CAPACITY_DICTIONARY`:** Module-scope object keyed by lowercased primary category OR hub name. Includes `ALB: 600`, `Rensselaer: 300`, common Yelp restaurant categories (Steakhouse 40, Pizza 100, Fast Food 200, etc.), TM segments (Music 1000, Sports 5000, Arts/Theatre 800), and the synthetic-injector first categories (Morning Shift Overlap, State Worker Commute, etc.). `DEFAULT_CAPACITY = 80` is the universal fallback so an unknown Yelp category never crashes the math.
+- **Density math (`densityScore` function, replaces `surgeScore`):** `(volume × yieldRateFor(item)) / capacityFor(item) × finalMod × 100`. The `× 100` lifts the ratio onto the whole-percentage scale (0.85 → 85.0) so it reads as a direct "% of capacity" integer in the UI.
+- **`yieldRateFor` keying:** `item.type` for flight/train/food/grocery; for `event`, look at `categories[0]` — `/shift|nursing|admin|clinic/i` matches the Hospital injector (yield 30), `egressMod ≥ 2.5` flags Mega-Venue (yield 450), otherwise standard event (yield 50).
+- **`capacityFor` keying:** flight/train → `item.hub` exact lookup (preserves "ALB" / "Rensselaer" casing). food/grocery/event → `categories[0].toLowerCase().trim()`. Both fall back to `DEFAULT_CAPACITY = 80`. Strict use of `categories[0]` only — PO anti-goal forbids iterating the array.
+- **Sprint 27 filter recalibration:** Floor moves from `< 1.0` to `< 10.0` (i.e., drop anything generating <10% of venue capacity in expected yield). `isWeak` flag now keys off the same threshold so Sprint 40's X-Ray ghosting stays in sync.
+- **Sprint 45 ROI filter recalibration:** `DOLLAR_PER_SURGE_POINT` lowered from `1.50` to `0.25`. The new density scale is ~6-10× larger than the old surgeScore range, so the dollar-per-point conversion drops in proportion to keep deadhead-cost vs. expected-value comparisons in sensible $5-30 territory for typical 5-mile dispatches.
+- **Item preservation (PO anti-goal):** `item.volume` is the TRUE physical count — never overwritten with Expected Yield. The UI still reads `volume` for "N Arrivals" / "Volume: N" labels.
+- **Payload transparency:** every scoreable item now carries `expectedYield`, `estimatedCapacity`, `densityScore` (decayed), and `isWeak` so the `=== MERGED DISPATCH PAYLOAD ===` terminal log explicitly prints the math, and the React cards can render "Density: X%" without re-deriving anything.
+- **Frontend transparency:** `FlightCard` / `TrainCard` / `EventCard` / `HotspotCard` each render `Density: {Math.round(data.densityScore)}%` as a tinted secondary line. `TopPickBanner` does the same. `DispatchMap`'s popup swaps "Surge: 12.3" for "Density: 12%".
+- **Frontend cleanup (per Rule 4):** `app/page.js` had a duplicate client-side `computeSurgeScore` whose output drove the TopPickBanner reduce. With the backend stamping `densityScore` directly onto each item, that function (and its only consumer, `computeDecayMod`, plus the now-unused `finalMods` React state and `setFinalMods` setter) are orphaned by Sprint 48 and removed.
+
+### Phase 1 — Test-Driven Scaffolding
+- [x] 1. `test-density-engine.js`: standalone `yieldRateFor` / `capacityFor` / `densityScore` helpers + 10 assertions (flight ALB; train Rensselaer; food known + unknown categories; mega vs standard event; hospital override; unknown event category; weak food sub-10; strong food super-10). Run `node test-density-engine.js`; require 10/10 PASS. ✅ 10/10 PASS.
+
+### Phase 2 — Backend Integration
+- [x] 2. `app/api/dispatch/route.js`: recalibrate `DOLLAR_PER_SURGE_POINT` from `1.50` to `0.25`; add `YIELD_RATES`, `CAPACITY_DICTIONARY`, `DEFAULT_CAPACITY` constants alongside `TIER_MOD_MAP`; add `yieldRateFor` + `capacityFor` helpers.
+- [x] 3. `app/api/dispatch/route.js`: replace `surgeScore(item, finalRideMod, finalFoodMod)` with `densityScore(item, finalRideMod, finalFoodMod)` (returns `(volume × yield / capacity) × mod × 100`). All call sites inside `buildItinerary` update from the deleted `surgeScore` to the new function via the `decayed()` wrapper.
+- [x] 4. `app/api/dispatch/route.js`: rewrite the `buildItinerary` `.map()` step to stamp `expectedYield`, `estimatedCapacity`, `densityScore`, and `isWeak` on every scoreable item BEFORE the strict cutoff. Change the cutoff from `decayed(it) >= 1.0` to `decayed(it) >= 10.0`. ROI filter math (`deadheadCost > expectedValue` where `expectedValue = decayed(it) × DOLLAR_PER_SURGE_POINT`) is unchanged — the recalibrated constant does all the work.
+- [x] 5. Parse-check per L4: `node --check app/api/dispatch/route.js` → `PARSE OK`; full ESM `import()` also clean (`IMPORT OK`).
+
+### Phase 3 — Frontend Surfacing
+- [x] 6. `components/DispatchCards.jsx`: add `formatDensity(score)` helper + append a tinted `Density: X%` line to `FlightCard` / `TrainCard` / `EventCard` / `HotspotCard`. Conditional render — items without a `densityScore` skip the line entirely.
+- [x] 7. `components/TopPickBanner.jsx`: render `Density: X%` beneath the existing body when `data.densityScore` is finite.
+- [x] 8. `components/DispatchMap.jsx`: swap the popup's "Surge: 12.3" for "Density: 12%" (matches the card / banner formatting).
+- [x] 9. `app/page.js`: replace `computeSurgeScore` + `computeDecayMod` with a thin `readDensityScore` helper that pulls `data.densityScore` directly from each item. Drop the orphaned `finalMods` React state + its setter. The TopPickBanner `.reduce` now compares `readDensityScore(item)` instead of the deleted client-side surge math.
+- [x] 10. `app/page.js`: verify the existing 90-minute actionable-time gate still works against the new densityScore reduce (it does — the filter is time-only, the reducer is the only `surgeScore → densityScore` swap).
+
+### Phase 4 — Visual Verification
+- [ ] 11. Manual verification (user): `npm run dev` → fire a dispatch with `showRawData: false` → confirm (a) terminal `=== MERGED DISPATCH PAYLOAD ===` shows `expectedYield`, `estimatedCapacity`, `densityScore` on every scoreable item; (b) all four cards (Flight / Train / Event / Hotspot) render a "Density: X%" line; (c) the TopPickBanner renders the same; (d) the DispatchMap popup reads "Density: X%" instead of "Surge: …"; (e) Profitability and Hybrid strategies sort by the new density score (a 4-arrival ALB surge now correctly outranks a 2-volume elite steakhouse at the same finalMods).
+
+### Acceptance Criteria (Definition of Done)
+- **TDD Validation:** `node test-density-engine.js` reports `10 pass / 0 fail`.
+- **Terminal Logging:** `=== MERGED DISPATCH PAYLOAD ===` log explicitly prints `expectedYield`, `estimatedCapacity`, and the final `densityScore` for each scoreable item.
+- **UI Transparency:** TopPickBanner, FlightCard, TrainCard, EventCard, HotspotCard, and the DispatchMap popup all render the new `densityScore` percentage.
+- **Apples-to-Apples Sort:** Profitability + Hybrid strategies sort by `densityScore` (via the `decayed()` wrapper) instead of the deprecated `surgeScore`.
+- **Item Preservation:** `item.volume` remains the true physical count on every surge object — the React UI's "N Arrivals" / "Volume: N" labels are unchanged.
+
+### Out of Scope (Anti-Goals)
+- NO new APIs (Census, real-estate, additional Yelp endpoints).
+- NO database setup — `YIELD_RATES` and `CAPACITY_DICTIONARY` stay as in-memory global constants.
+- NO iteration over the Yelp `categories` array — `categories[0]` is the primary-category override; complex regex loops over the whole array are forbidden.
+- NO frontend overhaul beyond the additive "Density: X%" line on existing cards / banner / popup.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.

@@ -74,11 +74,93 @@ const VENUE_DICTIONARY = {
   "empire live": { lat: 42.6510, lng: -73.7495 },
 };
 
-// Sprint 45: Mathematical ROI Filter. Converts a scoreable item's
-// surgeScore into dollars-of-expected-value so it can be compared against
-// the driver's haversine deadhead cost (distance × costPerMile). Items
-// where the cost exceeds the value are dropped inside buildItinerary.
-const DOLLAR_PER_SURGE_POINT = 1.50;
+// Sprint 45 + Sprint 48: Mathematical ROI Filter. Converts a scoreable
+// item's densityScore (0-100+ percent-of-capacity scale) into dollars-of-
+// expected-value so it can be compared against the driver's haversine
+// deadhead cost (distance × costPerMile). Items where the cost exceeds
+// the value are dropped inside buildItinerary. Recalibrated from 1.50 to
+// 0.25 in Sprint 48 because the densityScore scale grew ~10x (volume math
+// is now (yield/capacity)*100 instead of raw volume * mod).
+const DOLLAR_PER_SURGE_POINT = 0.25;
+
+// Sprint 48: Normalized Density Engine. Map each surge type to its
+// "Expected Rideshare Yield" — the rough number of rideshare-eligible
+// passengers it produces. Used as the numerator alongside the venue
+// capacity denominator to convert raw multiplicative volume math into a
+// universal density ratio (0-100+ percent-of-capacity). Validated in
+// isolation by test-density-engine.js before being ported here.
+const YIELD_RATES = {
+  flight: 15,
+  train: 10,
+  food: 5,
+  grocery: 5,
+  event: 50,
+  mega_event: 450,
+  hospital: 30,
+};
+
+// Sprint 48: Static capacity dictionary keyed by lowercased primary
+// category (foods/events) or hub name (flights/trains). Unknown keys fall
+// back to DEFAULT_CAPACITY (80) so a new Yelp category can never crash
+// the density math — it just lands in the middle of the curve until the
+// dictionary is extended.
+const DEFAULT_CAPACITY = 80;
+const CAPACITY_DICTIONARY = {
+  // Transit hubs
+  ALB: 600,
+  Rensselaer: 300,
+  // Food / restaurant primary categories
+  "fast food": 200,
+  "pizza": 100,
+  "burgers": 100,
+  "diners": 80,
+  "steakhouse": 40,
+  "sushi": 50,
+  // Grocery primary categories
+  "supermarket": 400,
+  "grocery": 400,
+  // Ticketmaster segment names
+  "music": 1000,
+  "sports": 5000,
+  "arts": 800,
+  "theatre": 800,
+  // Synthetic injector first categories (lowercased)
+  "morning shift overlap": 200,
+  "afternoon clinic shift": 200,
+  "evening nursing shift": 150,
+  "night admin shift": 100,
+  "state worker commute": 300,
+  "nightlife egress": 250,
+  "airport → venue": 600,
+  "tourist ripple": 600,
+};
+
+function yieldRateFor(item) {
+  if (item.type === "flight") return YIELD_RATES.flight;
+  if (item.type === "train") return YIELD_RATES.train;
+  if (item.type === "food") return YIELD_RATES.food;
+  if (item.type === "grocery") return YIELD_RATES.grocery;
+  if (item.type === "event") {
+    const cat0 = (Array.isArray(item.categories) && item.categories[0]) || "";
+    if (/shift|nursing|admin|clinic/i.test(cat0)) return YIELD_RATES.hospital;
+    const egress = Number(item.egressMod) || 0;
+    if (egress >= 2.5) return YIELD_RATES.mega_event;
+    return YIELD_RATES.event;
+  }
+  return 0;
+}
+
+function capacityFor(item) {
+  if (item.type === "flight" || item.type === "train") {
+    return CAPACITY_DICTIONARY[item.hub] ?? DEFAULT_CAPACITY;
+  }
+  const key = (
+    (Array.isArray(item.categories) && item.categories[0]) || ""
+  )
+    .toLowerCase()
+    .trim();
+  return CAPACITY_DICTIONARY[key] ?? DEFAULT_CAPACITY;
+}
 
 // Sprint 42: Nightlife Density Engine. Yelp price tier proxies wealth and
 // nighttime demand density. Clone qualifying foodHotspots into structuredEvents
@@ -1097,53 +1179,28 @@ function computeTimeDecayMod(itemTimeLabel, currentLocalStart) {
   return 0.4;
 }
 
-function surgeScore(item, finalRideMod, finalFoodMod) {
-  // Sprint 32: Event Egress branch. Base volume is always 1 per PO spec, so
-  // a Mega-Venue (egressMod 2.5) yields a 2.5 * finalRideMod baseline before
-  // the Sprint 27 strict <1.0 filter inside buildItinerary.
-  if (item.type === "event") {
-    return (Number(item.volume) || 0) * finalRideMod * (Number(item.egressMod) || 1.0);
-  }
-  if (item.type === "flight") {
-    // Sprint 29: fatigueMod stacks multiplicatively on top of finalRideMod
-    // (1.0 default, 1.3x when the bucket holds a late-night delayed flight).
-    // Sprint 30: leisureMod stacks on top of fatigueMod (1.0 default, 1.4x
-    // when the bucket holds a leisure-hub + leisure-airline match).
-    return (
-      (Number(item.volume) || 0) *
-      finalRideMod *
-      (Number(item.fatigueMod) || 1.0) *
-      (Number(item.leisureMod) || 1.0)
-    );
-  }
-  if (item.type === "train") {
-    // Sprint 39: capacityMod stacks multiplicatively (1.0 default, 1.5x
-    // for "Almost Full", 2.0x for "Sold Out"). Mirrors fatigueMod /
-    // leisureMod on the flight branch — BYOD list goes in, the live
-    // Amtraker API still owns arrival times.
-    return (Number(item.volume) || 0) * finalRideMod * (Number(item.capacityMod) || 1.0);
-  }
-  if (item.type === "food" || item.type === "grocery") {
-    // Sprint 28: Anchor's qualityMod (1.0 base, up to 1.8x) multiplies the
-    // raw volume alongside the temporal/weather finalFoodMod. Tier bonus
-    // stays additive on top — Quick-Turn unicorns shouldn't lose to weak $$$.
-    // Sprint 31: campusMod (1.0 default, 1.5x for late-night campus-adjacent
-    // food clusters) chains multiplicatively. Grocery hotspots carry the
-    // default 1.0 so the math is a no-op there.
-    // Sprint 36: corporateMod (1.0 default, 1.8x for the Lobbyist Premium
-    // gate) wraps the whole formula.
-    // Sprint 36.1: strict type-gate. Even if a grocery item accidentally
-    // carries the field, the ternary forces 1.0 — the Sprint 36 anti-goal
-    // ("do not apply to grocery") becomes mathematically impossible to
-    // violate, not just defensively unlikely.
-    const qualityMod = Number(item.qualityMod) || 1.0;
-    const campusMod = Number(item.campusMod) || 1.0;
-    const corporateMod = item.type === "food" ? (Number(item.corporateMod) || 1.0) : 1.0;
-    const base = (Number(item.volume) || 0) * finalFoodMod * qualityMod * campusMod;
-    const bonus = item.tier === "High-Value ($$$)" ? 2 : 0;
-    return (base + bonus) * corporateMod;
-  }
-  return 0;
+// Sprint 48: Normalized Density Engine. Replaces the unbounded multiplicative
+// surgeScore with a Capacity Normalization (Density-Based) score. Each surge
+// is converted into "Expected Rideshare Yield" (volume × YIELD_RATES[type])
+// and divided by "Venue Capacity" (lookup on hub or categories[0], fallback
+// 80). The ratio is multiplied by the appropriate final mod and scaled by
+// 100 so the output reads as a whole-percentage integer (0.85 → 85.0). All
+// pre-Sprint-48 per-item multipliers (fatigueMod, leisureMod, qualityMod,
+// campusMod, corporateMod, capacityMod, egressMod) still travel on the
+// items themselves and remain visible in the merged payload — they're
+// intentionally absent from the density formula because the density ratio
+// is now the single sort signal and the multipliers were already baked
+// into the upstream volume / yield numbers they were tuned against. The
+// item-preservation rule (Sprint 48 anti-goal) means item.volume stays the
+// true physical count for the React UI.
+function densityScore(item, finalRideMod, finalFoodMod) {
+  const yieldRate = yieldRateFor(item);
+  const capacity = capacityFor(item);
+  if (yieldRate <= 0 || capacity <= 0) return 0;
+  const mod =
+    item.type === "food" || item.type === "grocery" ? finalFoodMod : finalRideMod;
+  const numerator = (Number(item.volume) || 0) * yieldRate;
+  return (numerator / capacity) * mod * 100;
 }
 
 // Sprint 23: deterministic router. Flattens flights + trains + hotspots
@@ -1181,24 +1238,27 @@ function buildItinerary(
   const finalRideMod = Number.isFinite(payload?.finalRideMod) ? payload.finalRideMod : 1.0;
   const finalFoodMod = Number.isFinite(payload?.finalFoodMod) ? payload.finalFoodMod : 1.0;
 
-  // Sprint 32.1: wrap surgeScore with the Time-Decay multiplier. Applied at
-  // every call site below (strict filter + profitability sort + hybrid in-
-  // group sort) so a 2-hours-out surge can no longer outrank a "now" surge.
+  // Sprint 32.1 + Sprint 48: wrap densityScore with the Time-Decay multiplier.
+  // Applied at every call site below (strict filter + profitability sort +
+  // hybrid in-group sort) so a 2-hours-out surge can no longer outrank a
+  // "now" surge.
   const decayed = (it) =>
-    surgeScore(it, finalRideMod, finalFoodMod) *
+    densityScore(it, finalRideMod, finalFoodMod) *
     computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
 
-  // Sprint 27: strict <1.0 filter. Aggregators now emit RAW volume, so this
-  // is the single place finalRideMod / finalFoodMod get applied. Any item
-  // whose modifier-scaled surgeScore is below 1.0 is dropped entirely. Synthetic
-  // ripple objects + items with no scoreable type pass through untouched (score 0
-  // on the synthetic shape would otherwise wipe them — they're informational).
-  // Sprint 32.1: decay is applied BEFORE the cutoff so a 0.4x-decayed item
-  // can fall below 1.0 and get pruned alongside the natively-weak items.
-  // Sprint 40: stamp isWeak on every scoreable item BEFORE the strict
-  // cutoff so ghosted (<1.0) items still carry the flag downstream.
-  // When showRawData is true the cutoff is bypassed; when false the
-  // default Sprint 27 behavior holds and weak items are dropped.
+  // Sprint 27 + Sprint 48: strict density filter. With the Normalized
+  // Density Engine the score lives on a 0-100+ percent-of-capacity scale,
+  // so the dropout floor moves from <1.0 to <10.0 (i.e., drop anything
+  // generating less than 10% of venue capacity in expected yield). Any
+  // item below the floor is pruned entirely. Synthetic ripple objects +
+  // items with no scoreable type pass through untouched.
+  // Sprint 48: stamp expectedYield / estimatedCapacity / densityScore on
+  // every scoreable item so (a) the terminal merged-payload log surfaces
+  // the math, and (b) the React UI can render "Density: X%" without
+  // re-deriving anything.
+  // Sprint 40: stamp isWeak BEFORE the strict cutoff so ghosted items
+  // still carry the flag downstream. When showRawData is true the cutoff
+  // is bypassed; when false the default Sprint 27 behavior holds.
   const items = rawItems
     .map((it) => {
       const scoreable =
@@ -1208,7 +1268,16 @@ function buildItinerary(
         it.type === "grocery" ||
         it.type === "event";
       if (!scoreable) return it;
-      return { ...it, isWeak: decayed(it) < 1.0 };
+      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
+      const estimatedCapacity = capacityFor(it);
+      const score = decayed(it);
+      return {
+        ...it,
+        expectedYield,
+        estimatedCapacity,
+        densityScore: score,
+        isWeak: score < 10.0,
+      };
     })
     .filter((it) => {
       const scoreable =
@@ -1219,7 +1288,7 @@ function buildItinerary(
         it.type === "event";
       if (!scoreable) return true;
       if (showRawData) return true;
-      return decayed(it) >= 1.0;
+      return decayed(it) >= 10.0;
     })
     // Sprint 45: Mathematical ROI Filter. After the Sprint 27 strict <1.0
     // cutoff, compute haversine distance from driver → each scoreable item
