@@ -162,6 +162,56 @@ function computeEventEgress(event, currentLocalTime) {
   return 1.0;
 }
 
+// Sprint 47: Tourist Event Clustering Engine. Pure helper — returns a single
+// synthetic `type: "event"` object (or null) when a non-cancelled flight in
+// LEISURE_HUBS lands 1-4 hours BEFORE the target event's start time. One
+// match is sufficient; the loop short-circuits so multiple matching planes
+// collapse to ONE injection. egressMod stacks 5.0 + the target event's mod
+// so the injected route dominates the Profitability sort. Ported verbatim
+// from test-tourist-cluster.js after all 19 assertions PASSed.
+function computeTouristCluster({
+  eventStartTime,
+  eventLat,
+  eventLng,
+  venueName,
+  eventEgressMod,
+  flights,
+  includeAirport,
+}) {
+  if (!(eventStartTime instanceof Date) || Number.isNaN(eventStartTime.getTime())) return null;
+  if (!Array.isArray(flights)) return null;
+
+  const eventStartMs = eventStartTime.getTime();
+  let matched = false;
+  for (const f of flights) {
+    const depIata = f?.departure?.iata;
+    if (!depIata || !LEISURE_HUBS.includes(depIata)) continue;
+    if ((f.flight_status || "").toLowerCase() === "cancelled") continue;
+    const scheduled = f?.arrival?.scheduled;
+    if (typeof scheduled !== "string") continue;
+    const arrivalMs = new Date(scheduled).getTime();
+    if (Number.isNaN(arrivalMs)) continue;
+    const hoursBefore = (eventStartMs - arrivalMs) / (1000 * 60 * 60);
+    if (hoursBefore >= 1 && hoursBefore <= 4) {
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) return null;
+
+  return {
+    type: "event",
+    volume: 1,
+    location: includeAirport ? `ALB → ${venueName}` : venueName,
+    categories: includeAirport
+      ? ["Airport → Venue", "Tourist Surge"]
+      : ["Tourist Ripple", "Venue Staging"],
+    lat: eventLat,
+    lng: eventLng,
+    egressMod: 5.0 + (Number(eventEgressMod) || 0),
+  };
+}
+
 // Sprint 32: shared with the trigger-log so the projected end time stays
 // in lockstep with the duration table used inside computeEventEgress.
 function eventDurationHours(segmentName) {
@@ -1457,25 +1507,50 @@ export async function POST(request) {
           { segmentName, venueName, startTime },
           localStart
         );
-        if (egressMod <= 1.0) continue;
 
-        const duration = eventDurationHours(segmentName);
-        const projectedEnd = startTime
-          ? formatLeaveBy(new Date(startTime.getTime() + duration * 60 * 60 * 1000))
-          : "Unknown";
-        console.log(
-          `EVENT EGRESS TRIGGERED: ${venueName || "Unknown Venue"} | Mod: ${egressMod}x | Projected End: ${projectedEnd}`
-        );
+        // Sprint 47: the egress filter is no longer a hard `continue` — events
+        // that haven't entered their egress window can still trigger Tourist
+        // Clustering below (the tourist signal hinges on flights 1-4h before
+        // event START, not on proximity to event END).
+        if (egressMod > 1.0) {
+          const duration = eventDurationHours(segmentName);
+          const projectedEnd = startTime
+            ? formatLeaveBy(new Date(startTime.getTime() + duration * 60 * 60 * 1000))
+            : "Unknown";
+          console.log(
+            `EVENT EGRESS TRIGGERED: ${venueName || "Unknown Venue"} | Mod: ${egressMod}x | Projected End: ${projectedEnd}`
+          );
 
-        structuredEvents.push({
-          type: "event",
-          location: venueName || "Unknown Venue",
-          volume: 1,
-          egressMod,
-          categories: [segmentName || "Music"],
-          lat: venueCoords.lat,
-          lng: venueCoords.lng,
+          structuredEvents.push({
+            type: "event",
+            location: venueName || "Unknown Venue",
+            volume: 1,
+            egressMod,
+            categories: [segmentName || "Music"],
+            lat: venueCoords.lat,
+            lng: venueCoords.lng,
+          });
+        }
+
+        // Sprint 47: Tourist Event Clustering. Inject ONE synthetic event per
+        // target venue when a non-cancelled leisure-hub flight lands 1-4h
+        // before this event's start time. egressMod stacks 5.0 + the target
+        // event's mod so the injected route dominates the Profitability sort.
+        const touristCluster = computeTouristCluster({
+          eventStartTime: startTime,
+          eventLat: venueCoords.lat,
+          eventLng: venueCoords.lng,
+          venueName: venueName || "Unknown Venue",
+          eventEgressMod: egressMod,
+          flights: rawFlights,
+          includeAirport,
         });
+        if (touristCluster) {
+          structuredEvents.push(touristCluster);
+          console.log(
+            `TOURIST CLUSTER INJECTED: ${touristCluster.location} | egressMod ${touristCluster.egressMod}x`
+          );
+        }
       }
     }
 

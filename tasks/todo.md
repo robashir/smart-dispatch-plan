@@ -2136,3 +2136,35 @@ Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), 
 - ANY change to `app/api/dispatch/route.js` — backend math + payload contract locked.
 - `useState`, dismiss/close button, fuzzy/range matching, or fallback copy for unknown numbers.
 - Visual changes to `TopPickBanner`, Map, List, or the BYOD panel.
+
+## Sprint 47 — Tourist Event Clustering Engine (AviationStack × Ticketmaster)
+
+### Decisions (locked before coding)
+- **Trigger:** Any non-cancelled flight whose `departure.iata` is in `LEISURE_HUBS` AND whose `arrival.scheduled` lands 1-4 hours BEFORE the target event's projected start time (both bounds inclusive — validated by test-tourist-cluster.js asserts G1 + G2).
+- **One synthetic per event.** The helper returns at most ONE object per call. Multiple matching leisure flights collapse to a single injection — the caller pushes the returned object once, period.
+- **Shape:** Re-uses the existing `type: "event"` EventCard via the `categories` array. NO new component, NO change to `DispatchCards.jsx`. `volume: 1`. `lat`/`lng` copied from the target event's venueCoords (Mapbox pins on the venue).
+- **egressMod stacking:** `5.0 + targetEvent.egressMod` — the additive `5.0` base guarantees this dominates the Profitability sort even when the target event hasn't entered its own egress window (egressMod 1.0 → injected 6.0).
+- **Geographic Ripple toggle:** `includeAirport === true` → `"ALB → <venue>"` + `["Airport → Venue", "Tourist Surge"]`. `includeAirport === false` → `"<venue>"` + `["Tourist Ripple", "Venue Staging"]`.
+- **Integration point:** Inside the existing TM events loop in `app/api/dispatch/route.js` — single iteration handles BOTH the egress push AND the tourist cluster injection. The egress filter is no longer a `continue` (it's now a non-blocking branch) so events that haven't entered their egress window can still trigger tourist clustering.
+- **Whitelist gate stays:** unchanged. Events whose venue is not in `VENUE_DICTIONARY` still get dropped before either signal fires — both engines need the lat/lng pin to be useful.
+- **No new API calls. No new env vars. No new UI components.**
+
+### Build Steps
+- [x] 0. Append Sprint 47 plan to `tasks/todo.md` (this block).
+- [x] 1. Phase 1 — TDD: `test-tourist-cluster.js` mocks events + flights and validates `computeTouristCluster` in isolation. 19/19 assertions PASS (Golden Path, Ripple Edge Case, no-spam, non-leisure-hub reject, time-window boundary, cancelled-flight skip, inclusive `1h` and `4h` bounds) BEFORE editing `route.js`.
+- [x] 2. Phase 2 — Port: copy `computeTouristCluster` verbatim into `route.js` (near the other event helpers). Inside the existing TM events loop, rebuild the egress push as an `if (egressMod > 1.0)` branch (drop the `continue`) and call `computeTouristCluster` immediately after, pushing the returned object onto `structuredEvents` when non-null. Log `TOURIST CLUSTER INJECTED: <location> | egressMod <X>x` per match.
+- [x] 3. Phase 3 — Parse-check: `node --check app/api/dispatch/route.js` → PARSE_OK.
+- [x] 4. Phase 4 — Regression: re-run `node test-tourist-cluster.js` → 19/19 PASS unchanged.
+- [ ] 5. Manual verification (PO): `npm run dev`, dispatch with a mocked leisure-hub flight landing 1-4h before a known MVP Arena / Palace Theatre event. Confirm (a) terminal logs `TOURIST CLUSTER INJECTED:`, (b) EventCard at top of Profitability reads "ALB → MVP Arena" with categories `["Airport → Venue", "Tourist Surge"]`, (c) unchecking the Airport (ALB) toggle drops the prefix → "MVP Arena" and swaps categories to `["Tourist Ripple", "Venue Staging"]`.
+
+### Acceptance Criteria
+- **Golden Path:** Leisure flight 1-4h before mapped TM event → exactly ONE synthetic `type: "event"` injected reading `"ALB → <Venue Name>"`.
+- **Ripple Edge Case:** `includeAirport === false` → location drops `"ALB →"` prefix and categories switch to `["Tourist Ripple", "Venue Staging"]`.
+- **Profitability Dominance:** stacked `5.0 + egressMod` reliably floats the injected route to the top of the Profitability tab.
+- **De-dup:** Multiple matching leisure flights still produce a SINGLE synthetic per target event (no clone-per-plane spam).
+
+### Out of Scope (Anti-Goals)
+- NO new UI components. No `<TouristRouteCard>`. No edits to `components/DispatchCards.jsx`. Existing `<EventCard>` must render this natively via the `categories` array.
+- NO new API calls. Reuses the existing AviationStack + Ticketmaster streams already in `Promise.all`.
+- NO duplicate spam. One synergy event per target venue, regardless of how many planes match.
+- NO new env vars, no new constants beyond reusing `LEISURE_HUBS`.
