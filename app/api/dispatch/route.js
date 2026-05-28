@@ -53,6 +53,25 @@ const AMTRAK_COORDS = { lat: 42.6463, lng: -73.7392 };
 const ESP_COORDS = { lat: 42.6514, lng: -73.7608 };
 const HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 };
 
+// Sprint 52: spatial anchor for Crossgates Mall (largest indoor regional
+// shopping center in the Capital District). Paired with CROSSGATES_HOURS
+// below to fire a ±30 min retail egress event at posted close. Validated
+// in isolation by test-crossgates-engine.js (30/30 assertions) before
+// being ported here.
+const CROSSGATES_COORDS = { lat: 42.6895, lng: -73.8504 };
+
+// Sprint 52: Crossgates 7-Day Closing Matrix. JS getUTCDay() index → close
+// minute-of-day (wall-clock). Sun 6 PM / Mon-Thu 8 PM / Fri-Sat 9 PM.
+const CROSSGATES_HOURS = {
+  0: 1080, // Sun  6:00 PM
+  1: 1200, // Mon  8:00 PM
+  2: 1200, // Tue  8:00 PM
+  3: 1200, // Wed  8:00 PM
+  4: 1200, // Thu  8:00 PM
+  5: 1260, // Fri  9:00 PM
+  6: 1260, // Sat  9:00 PM
+};
+
 // Sprint 44: Expanded Institutional Engine. Time Matrix Array — replaces
 // the Sprint 34 hardcoded two-window if statement. Decouples the schedule
 // from the execution logic so future 8-hour clinic/admin overlaps can be
@@ -175,6 +194,8 @@ const CAPACITY_DICTIONARY = {
   "nightlife egress": 250,
   "airport → venue": 600,
   "tourist ripple": 600,
+  // Sprint 52: Crossgates Mall active occupancy at close.
+  "retail egress": 3000,
 };
 
 function yieldRateFor(item) {
@@ -185,6 +206,10 @@ function yieldRateFor(item) {
   if (item.type === "event") {
     const cat0 = (Array.isArray(item.categories) && item.categories[0]) || "";
     if (/shift|nursing|admin|clinic/i.test(cat0)) return YIELD_RATES.hospital;
+    // Sprint 52: Crossgates Retail Egress — 150 expected rideshare yield.
+    // Checked BEFORE the egress >= 2.5 mega-event branch so the 3.0x
+    // egressMod doesn't fall through to the 450 stadium-scale rate.
+    if (/retail egress/i.test(cat0)) return 150;
     const egress = Number(item.egressMod) || 0;
     if (egress >= 2.5) return YIELD_RATES.mega_event;
     return YIELD_RATES.event;
@@ -1836,6 +1861,31 @@ export async function POST(request) {
     const lastCallEvents = computeLastCallEgressEvents(localStart, ALBANY_NIGHTLIFE_HOURS);
     for (const ev of lastCallEvents) {
       structuredEvents.push(ev);
+    }
+
+    // Sprint 52: Crossgates Retail Egress Engine. Synthetic event when the
+    // driver's wall-clock falls inside the ±30 minute window centered on
+    // the day's posted close (CROSSGATES_HOURS lookup by getUTCDay()).
+    // `wallMinutes` and `currentDay` are already in scope from Sprints 44/36.
+    // Gated on rideshare so untoggling Rideshare fully disables the injection.
+    // Math validated in isolation by test-crossgates-engine.js (30/30 PASS).
+    const crossgatesCloseMinute = CROSSGATES_HOURS[currentDay];
+    if (
+      activePlatforms.rideshare &&
+      typeof crossgatesCloseMinute === "number" &&
+      wallMinutes >= crossgatesCloseMinute - 30 &&
+      wallMinutes <= crossgatesCloseMinute + 30
+    ) {
+      structuredEvents.push({
+        type: "event",
+        location: "Crossgates Mall",
+        volume: 1,
+        egressMod: 3.0,
+        categories: ["Retail Egress", "Closing Surge"],
+        lat: CROSSGATES_COORDS.lat,
+        lng: CROSSGATES_COORDS.lng,
+      });
+      console.log("CROSSGATES EGRESS INJECTED: Retail Egress | egressMod 3.0x");
     }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept

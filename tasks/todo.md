@@ -2339,3 +2339,44 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 
 ### Status: CLOSED 2026-05-28
 - All Sprint 42 code paths removed. Sprint 50 Last Call Engine remains the sole emitter of any `"Nightlife Egress"` tag, and that emission is deterministic + driver-curated.
+
+## Sprint 52: Crossgates Retail Egress Engine — Plan
+
+### Decisions (locked before coding)
+- **Trigger:** Driver opens dispatch within ±30 min of Crossgates Mall's posted close → inject a single synthetic `type: "event"` so the existing UI renders it natively.
+- **Coords:** `CROSSGATES_COORDS = { lat: 42.6895, lng: -73.8504 }` — slotted next to the other spatial anchors (ALB / AMTRAK / ESP / HARRIMAN).
+- **Schedule (7-Day Matrix, minute-of-day close):**
+  - Sun (0): 1080 (6:00 PM)
+  - Mon-Thu (1-4): 1200 (8:00 PM)
+  - Fri-Sat (5-6): 1260 (9:00 PM)
+- **Density alignment (Sprint 48):** capacity = 3000 ("retail egress"), yield = 150 — slots between `event` (50) and `mega_event` (450), reflecting 1 active mall vs. a stadium.
+- **Egress mod:** 3.0x. Stacks above mega-venue events (2.5) but below holiday surge (3.5) and Last Call (3.5).
+- **Gate order:** `activePlatforms.rideshare === true` AND `wallMinutes` in `[closeMinute - 30, closeMinute + 30]`.
+- **Placement:** Inside `POST`, right after Sprint 50 Last Call block, BEFORE Sprint 11 platform sanitization and BEFORE `buildItinerary`.
+- **No frontend changes. No live APIs. No holiday overrides.**
+
+### Build Steps
+- [x] 0. Write Sprint 52 plan to `tasks/todo.md`.
+- [x] 1. `test-crossgates-engine.js`: prove the day-lookup + ±30 minute window math in isolation. Covers all 7 days, both inclusive bounds, just-outside bounds, and platform gating. **30/30 PASS.**
+- [x] 2. `node test-crossgates-engine.js` → all assertions PASS.
+- [x] 3. `route.js`: added `CROSSGATES_COORDS` and `CROSSGATES_HOURS` next to existing spatial anchors (right under `ESP_COORDS` / `HARRIMAN_COORDS`).
+- [x] 4. `route.js`: added `"retail egress": 3000` to `CAPACITY_DICTIONARY` (under the synthetic injector group).
+- [x] 5. `route.js`: extended `yieldRateFor` with `if (/retail egress/i.test(cat0)) return 150;` BEFORE the `egressMod >= 2.5 → mega_event` branch — the 3.0x mod no longer mis-routes to the 450 stadium rate.
+- [x] 6. `route.js`: inside `POST`, immediately after the Sprint 50 Last Call loop, gates on `activePlatforms.rideshare`, reuses existing `currentDay` + `wallMinutes` (declared upstream for Sprints 44/36), looks up `crossgatesCloseMinute = CROSSGATES_HOURS[currentDay]`, fires when `wallMinutes >= closeMinute - 30 && wallMinutes <= closeMinute + 30`.
+- [x] 7. Payload: pushes exactly the spec object (`location: "Crossgates Mall"`, `volume: 1`, `egressMod: 3.0`, `categories: ["Retail Egress", "Closing Surge"]`, lat/lng from `CROSSGATES_COORDS`). Emits `console.log("CROSSGATES EGRESS INJECTED: Retail Egress | egressMod 3.0x");`.
+- [x] 8. Verification: `node --check app/api/dispatch/route.js` → **PARSE OK**. `node test-crossgates-engine.js` re-run after the port → **30/30 PASS** (math identical to scaffolding).
+
+### Status: CLOSED 2026-05-28
+- Crossgates static dictionary live, density math aligned (yield 150 / capacity 3000), synthetic event injects with the exact spec payload, platform gate verified.
+
+### Acceptance Criteria
+- `CROSSGATES_HOURS` accurately maps the 7-day closing schedule (lookup by `getUTCDay()`).
+- `test-crossgates-engine.js` exits 0 — the ±30 min window only fires for the day's exact close.
+- The injected event flows into `buildItinerary`, yields a non-NaN `densityScore` (volume 1 × yield 150 ÷ capacity 3000 = 0.05 → 5% before rideMod, ×100 scale), and stamps the standard `expectedYield` / `estimatedCapacity` / `densityScore` fields.
+- Toggling rideshare OFF → no Crossgates injection (terminal log silent on this branch).
+
+### Out of Scope (Anti-Goals)
+- NO frontend changes (`app/page.js`, `DispatchCards.jsx`, `DispatchMap.jsx`).
+- NO Yelp / Google Places live hours lookup. Static 7-day matrix is the sole source.
+- NO holiday overrides for V1 (Thanksgiving/Christmas closures explicitly deferred).
+- NO new component or pin color — reuse `type: "event"`.
