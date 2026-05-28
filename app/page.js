@@ -363,7 +363,7 @@ export default function Home() {
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
       if (todaysHoliday?.holiday) body.activeHoliday = todaysHoliday.holiday;
 
-      const res = await fetch("/api/dispatch", {
+      const res = await fetch("https://beamish-salamander-98efb1.netlify.app/api/dispatch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
