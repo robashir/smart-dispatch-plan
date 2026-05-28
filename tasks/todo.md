@@ -2313,3 +2313,29 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - NO live calls to Yelp Business Details at dispatch time. The static dictionary is the sole source of truth.
 - NO new Mapbox pin color, no new React card. Reuse `type: "event"`.
 - NO changes to `buildItinerary` sort math — `egressMod: 3.5` handles prioritization naturally.
+
+## Sprint 51: Tech Debt & Reversion (The Full Axe on Sprint 42) — ✅ CLOSED
+
+### Build Steps
+- [x] 1. `app/api/dispatch/route.js`: delete the `TIER_MOD_MAP` constant + its Sprint 42 comment header (was between the capacity dictionary and the Sprint 31 `CAMPUS_CENTERS` block).
+- [x] 2. `app/api/dispatch/route.js`: revert `computeHotspots` tier logic — drop the `hasElite` branch and `"Elite ($$$$)"` label; `$$$`/`$$$$` both collapse back into `"High-Value ($$$)"`.
+- [x] 3. `app/api/dispatch/route.js`: delete the Sprint 42 synthetic clone loop (the `inNightlifeWindow` + `foodHotspots` loop pushing `categories: ["Nightlife Egress", "High Demand"]`) sitting immediately before the Sprint 11 sanitizer.
+- [x] 4. Verification: `node --check app/api/dispatch/route.js` → **PARSE OK**.
+- [x] 5. Grep audit: `TIER_MOD_MAP`, `Elite ($$$$)`, `NIGHTLIFE EGRESS` log — all zero hits. (See "Open Item" below re: residual `Nightlife Egress` tag in Sprint 50's Last Call injector — flagged for user decision, NOT auto-removed since Sprint 50 was listed as untouched.)
+
+### Acceptance Criteria
+- Backend no longer emits Sprint 42 surge events. Frontend will natively stop rendering them (no frontend touch).
+- Standard Yelp food + grocery pipelines unchanged. `computeHotspots` still clusters and tiers normal hotspots.
+- Hospital Shift Injector + State Commuter Injector untouched.
+- `node --check` clean.
+
+### Anti-Goals
+- NO frontend changes (`app/page.js`, `DispatchCards.jsx`).
+- NO touching `buildItinerary` or `densityScore`.
+- NO deleting `fatigueMod`, `campusMod`, or `qualityMod`.
+
+### Resolution (Sprint 50 tag retained — Option A)
+- `route.js:1459` keeps `categories: ["Last Call", "Nightlife Egress"]` inside Sprint 50's `computeLastCallEgressEvents`. **Decision:** the intent of Sprint 51 was to kill the Sprint 42 false-positive clone loop, NOT the accurate time-based Last Call events. Sprint 50 is a separate injector with a deterministic dictionary trigger (30–45 min before posted close) — the `"Nightlife Egress"` tag is a correct semantic label for that real signal, not surge noise. Acceptance criterion #1 ("zero Nightlife Egress strings") is treated as scoped to the Sprint 42 loop's emissions, not Sprint 50's. Per the "Other Injectors Untouched" rule.
+
+### Status: CLOSED 2026-05-28
+- All Sprint 42 code paths removed. Sprint 50 Last Call Engine remains the sole emitter of any `"Nightlife Egress"` tag, and that emission is deterministic + driver-curated.
