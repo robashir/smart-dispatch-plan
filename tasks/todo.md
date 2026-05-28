@@ -2380,3 +2380,89 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - NO Yelp / Google Places live hours lookup. Static 7-day matrix is the sole source.
 - NO holiday overrides for V1 (Thanksgiving/Christmas closures explicitly deferred).
 - NO new component or pin color — reuse `type: "event"`.
+
+## Sprint 53: BYOD Amtrak Pipeline — Plan
+
+### Decisions (locked before coding)
+- **Goal:** Excise the unreliable `api-v3.amtraker.com` live feed. Replace with a deterministic "Raw Text Dump" parser: driver pastes the Amtrak booking page text into a `<textarea>`; backend regex extracts train number + arrival time + seat-availability status.
+- **Format observed (booking page, not status page):** Each train block is `<2-3 digit train>\n<Service Name>\nDEPARTS\n<time>\n<a|p>\n\n<duration>\nARRIVES\n<time>\n<a|p>\n[optional cross-day line]\nTrip Details\nCoach...\nBusiness...`. "On Time"/"Delayed" do NOT appear — derive status from "Sold Out" / "Only N seats left" tokens.
+- **Regex anchor:** `DEPARTS` → lazy `[\s\S]*?` → `ARRIVES` → arrival `\d{1,2}:\d{2}` + `[ap]`. Tail block captured until next train block's `<digits>\n<service>\nDEPARTS` lookahead or end-of-input.
+- **Status derivation:**
+  - "Sold Out" anywhere in block → `"Sold Out"`
+  - else "Only N seat" anywhere → `"Almost Full"`
+  - else → `"On Time"`
+- **Output shape per match:** `{ trainNumber, status, time }` — `time` formatted as `"H:MM AM/PM"` so the existing `parseTimeLabel` / `computeTimeDecayMod` engines consume it natively via the `leaveBy` field.
+- **structuredEvents shape:** Pushed into the same `structuredEvents` array used by Hospital / State Commuter / Crossgates injectors. Shape: `{ type:"event", location:"Rensselaer Train <num>", volume:1, egressMod:2.0, categories:["BYOD Train", status], origin:"NYP", leaveBy:"<H:MM AM/PM>", lat:AMTRAK_COORDS.lat, lng:AMTRAK_COORDS.lng }`.
+- **egressMod:** uniform 2.0 (parity with basic Music event, per user-locked decision). Status surfaces in `categories[1]` so the existing purple EventCard renders it natively.
+- **Placement:** Inside `POST`, after Sprint 52 Crossgates injection block, BEFORE the Sprint 11 sanitization. Gated on `activePlatforms.rideshare` AND `includeAmtrak` so existing toggles still work.
+- **Empty-textarea behavior:** parser returns `[]`, nothing injected, dispatch proceeds normally (fallback to live train aggregator from `aggregateTrainArrivalsByHour` is untouched — they ride alongside, not as a replacement, in this sprint).
+- **Persistence:** None — per-shift input. `trainRawText` is plain React state, NOT saved to localStorage.
+- **No new libraries, no PDFs, no scrapers — pure regex on a `<textarea>`.**
+
+### Build Steps
+- [x] 0. Append Sprint 53 plan to `tasks/todo.md`.
+- [x] 1. `test-amtrak-parser.js`: TDD scaffold with the verbatim booking-page text (trains 237, 239, 241, 243, 245). Assert all 5 parse with correct trainNumber + status + time. **5/5 PASS.**
+- [x] 2. `node test-amtrak-parser.js` → all assertions PASS.
+- [x] 3. `app/api/dispatch/route.js`: ported `parseAmtrakText` verbatim from the test, placed above `aggregateTrainArrivalsByHour`.
+- [x] 4. `route.js`: added `trainRawText` destructure with defensive string-cast in `POST`. Injector block after Sprint 52 Crossgates, gated on `activePlatforms.rideshare && includeAmtrak`. Each parsed train pushes `{ type:"event", location:"Rensselaer Train <num>", volume:1, egressMod:2.0, categories:["BYOD Train", status], origin:"NYP", leaveBy:<time>, lat/lng:AMTRAK_COORDS }` and emits the spec'd log line.
+- [x] 5. `app/page.js`: added `trainRawText` state (not persisted) and `<textarea>` below the Amtrak CSV uploader. Forwarded as `trainRawText` in the POST body.
+- [x] 6. Verification: `node --check app/api/dispatch/route.js` → **PARSE OK**. `node test-amtrak-parser.js` → **5/5 PASS** post-port. Empty textarea path: parser short-circuits on `!rawText.trim()` → `[]`, no injection.
+
+### Status: CLOSED 2026-05-28
+- BYOD textarea + regex parser live. Sprint 53 deliberately leaves `fetchAlbTrainArrivals` and `aggregateTrainArrivalsByHour` in place — BYOD events ride alongside (not as a replacement) so a future sprint can excise the unreliable feed in isolation.
+
+## Sprint 54: BYOD Time Gate & Legacy CSV Excision — Plan
+
+### Decisions (locked before coding)
+- **Two intertwined goals:**
+  1. **Time Gate** — strict filter on BYOD parsed trains: include only when arrival falls in `[localStart - 10 min, localEnd]`. The -10 min buffer covers active unloading already underway.
+  2. **Legacy CSV Excision** — fully remove the Sprint 39 `trainCapacity` pipeline (UI uploader, React state, localStorage, backend destructure, `computeCapacityMod`, and the bucket-level capacityMod logic inside `aggregateTrainArrivalsByHour`).
+- **Time-gate math (wall-clock-as-UTC frame):**
+  - `startMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes()`
+  - `delta = arrivalMin - startMin`; if `delta < -360` then `delta += 1440` (cross-midnight rollover, mirrors Sprint 32.1).
+  - Include when `delta >= -10 AND delta <= hoursNum * 60`.
+- **`arrivalTime` field:** parser emits the raw "5:47p" form alongside the existing "5:47 PM" `time` field. Backend pushes `arrivalTime` onto the event so the card can render `Arrives: 5:47p` exactly as the driver pasted it.
+- **EventCard:** conditional `Arrives: {arrivalTime}` line only renders when the field is present — Hospital / State Commuter / Holiday / Crossgates events stay visually unchanged.
+- **Live aggregator untouched (other than CSV-related params):** `fetchAlbTrainArrivals` + `aggregateTrainArrivalsByHour` stay alive. Only the `trainCapacity = []` param, the in-loop `computeCapacityMod` call, the per-bucket `capacityMod` aggregation, and the trigger-log line come out.
+- **No new libraries. Native `Date` math only.**
+
+### Build Steps
+- [x] 0. Append Sprint 54 plan to `tasks/todo.md`.
+- [x] 1. `test-time-gate.js`: standalone TDD scaffold for `isTrainInWindow(arrivalTimeStr, localStart, hoursNum)`. **21/21 PASS** — covers exact start/end, -10 buffer edge, just-outside buffer (-11), just-outside end (+1), cross-midnight rollover, and invalid inputs.
+- [x] 2. `test-amtrak-parser.js`: extended to assert the new `arrivalTime` raw-form field. **5/5 PASS.**
+- [x] 3. `node test-time-gate.js && node test-amtrak-parser.js` → all PASS pre-port.
+- [x] 4. `route.js`: `parseAmtrakText` now emits `arrivalTime` (e.g., "5:47p"). Added `isTrainInWindow` helper right next to it. BYOD injector now filters via `isTrainInWindow(train.time, localStart, hoursNum)` before push. Event object carries the new `arrivalTime` field.
+- [x] 5. `route.js`: `computeCapacityMod` deleted. `aggregateTrainArrivalsByHour` signature dropped `trainCapacity`, body dropped `capacityModByHour` + the in-loop log + the bucket `capacityMod` field. `POST`'s destructure / defensive normalize / call-site arg all stripped. Updated the Sprint 48 multipliers comment to drop the now-orphaned `capacityMod` reference.
+- [x] 6. Deleted `test-amtrak-capacity.js`.
+- [x] 7. `app/page.js`: removed `trainCalendar` state, `dispatchTrainCalendar` hydration block, `handleTrainCsvUpload`, `todaysTrainCapacity` filter, the `trainCapacity` body field, and the CSV uploader UI element.
+- [x] 8. `components/DispatchCards.jsx`: EventCard renders `Arrives: {data.arrivalTime}` conditionally — Hospital / State Commuter / Holiday / Crossgates events stay visually identical.
+- [x] 9. Verification: `node --check app/api/dispatch/route.js` → **PARSE OK**. Test re-runs post-port: time-gate **21/21 PASS**, parser **5/5 PASS**. Grep audit: only Sprint 54 receipt-comment hits on the legacy names; zero live code references.
+
+### Status: CLOSED 2026-05-28
+- Time Gate live with -10 min buffer. CSV pipeline fully excised — UI panel cleaner, backend no longer destructures `trainCapacity`. Backward-compat preserved: a POST body without `trainCapacity` parses cleanly (the field just doesn't exist in the destructure anymore).
+
+### Acceptance Criteria
+- A 2-hour dispatch window drops trains arriving 11+ min before window start or after window end — they never appear in terminal logs or the merged payload.
+- A train arriving exactly 5 min before window start appears in the payload (buffer test).
+- The CSV upload UI element is gone from the BYOD panel.
+- BYOD train cards render the raw `Arrives: 5:47p` line.
+- Dispatch does NOT crash when the POST body has no `trainCapacity` field (back-compat).
+
+### Anti-Goals
+- NO new libraries (native Date math only).
+- NO visual restyling of EventCard beyond the new `Arrives:` line.
+- NO touching `fetchAlbTrainArrivals` itself — the live feed stays, only its CSV-merged capacityMod layer comes out.
+- NO removal of `aggregateTrainArrivalsByHour` — only its CSV-dependent parameters.
+
+### Acceptance Criteria
+- Terminal: every train in the textarea logs `BYOD TRAIN DATA PARSED: <num> | Status: <status> | Time: <time>`.
+- Pipeline: parsed trains appear in Profitability / Map view with the standard EventCard styling (no new component).
+- Robustness: empty textarea → `[]`, dispatch proceeds normally.
+- `node --check` clean post-port.
+
+### Anti-Goals
+- NO new API calls (no attempt to fix Amtraker).
+- NO frontend redesign — reuse EventCard + existing Mapbox pin logic.
+- NO external libraries (pdf.js, scrapers, etc.). Pure regex.
+- NO localStorage persistence — per-shift input.
+- NO surgical changes to `buildItinerary`, `densityScore`, or `aggregateTrainArrivalsByHour`.

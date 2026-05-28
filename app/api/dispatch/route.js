@@ -643,27 +643,6 @@ function computeLeisureMod(departureIata, airlineIata) {
   return 1.0;
 }
 
-// Sprint 39: Amtrak Capacity Engine (Multiplier Merge). The live Amtraker
-// API still owns arrival times; this helper looks up the live trainNum in
-// the driver's uploaded daily capacity list and returns a stacking
-// multiplier when a "Sold Out" / "Almost Full" status is found. Ported
-// verbatim from test-amtrak-capacity.js after 3/3 assertions PASSed.
-function computeCapacityMod(trainNum, todayCapacityList) {
-  if (!trainNum || !Array.isArray(todayCapacityList)) return 1.0;
-  const target = String(trainNum).trim();
-  if (!target) return 1.0;
-
-  const row = todayCapacityList.find(
-    (r) => String(r?.trainNumber || "").trim() === target
-  );
-  if (!row) return 1.0;
-
-  const status = String(row.status || "").trim().toLowerCase();
-  if (status === "sold out") return 2.0;
-  if (status === "almost full") return 1.5;
-  return 1.0;
-}
-
 // Bucket arrivals into local-hour labels ("5 PM", "6 PM") for the window.
 // Mirrors the timezone trick in toWallClockLabel: shift by offsetMin then read UTC fields.
 // Sprint 4.1: de-duplicate codeshares — one physical plane often appears as 3-5 records.
@@ -836,6 +815,59 @@ async function fetchAlbTrainArrivals() {
   });
 }
 
+// Sprint 53: BYOD Amtrak Pipeline. Pure regex parser over the driver's
+// pasted-in Amtrak booking page. Status is derived from seat-availability
+// tokens ("Sold Out" / "Only N seat") since the booking view has no
+// "On Time"/"Delayed" string. `time` is formatted "H:MM AM/PM" for the
+// existing parseTimeLabel / computeTimeDecayMod engines; Sprint 54 adds
+// `arrivalTime` in the raw "H:MMp" form so the EventCard can echo what
+// the driver pasted. Validated in isolation by test-amtrak-parser.js.
+function parseAmtrakText(rawText) {
+  if (typeof rawText !== "string" || !rawText.trim()) return [];
+  const text = rawText.replace(/\r\n/g, "\n");
+  const pattern =
+    /(?:^|\n)\s*(\d{2,3})\s*\n[^\n]+\n\s*DEPARTS[\s\S]*?ARRIVES\s*\n\s*(\d{1,2}:\d{2})\s*\n\s*([ap])([\s\S]*?)(?=\n\s*\d{2,3}\s*\n[^\n]+\n\s*DEPARTS|$)/g;
+
+  const results = [];
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const trainNumber = match[1];
+    const arrivalRaw = match[2];
+    const ampmLetter = match[3].toUpperCase();
+    const tail = match[4] || "";
+
+    const time = `${arrivalRaw} ${ampmLetter}M`;
+    const arrivalTime = `${arrivalRaw}${ampmLetter.toLowerCase()}`;
+
+    let status;
+    if (/Sold Out/i.test(tail)) status = "Sold Out";
+    else if (/Only\s+\d+\s+seat/i.test(tail)) status = "Almost Full";
+    else status = "On Time";
+
+    results.push({ trainNumber, status, time, arrivalTime });
+  }
+  return results;
+}
+
+// Sprint 54: BYOD Time Gate. Returns true when a BYOD-parsed train's
+// arrival falls in [localStart - 10 min, localEnd]. The -10 min buffer
+// covers active unloading already underway when the driver hits
+// dispatch. Cross-midnight rollover mirrors Sprint 32.1's time-decay
+// convention. Validated in isolation by test-time-gate.js (21/21).
+function isTrainInWindow(arrivalTimeStr, localStart, hoursNum) {
+  const arrivalMin = parseTimeLabel(arrivalTimeStr);
+  if (!Number.isFinite(arrivalMin)) return false;
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return false;
+  const hours = Number(hoursNum);
+  if (!Number.isFinite(hours) || hours <= 0) return false;
+
+  const startMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  let delta = arrivalMin - startMin;
+  if (delta < -360) delta += 1440;
+
+  return delta >= -10 && delta <= hours * 60;
+}
+
 // Bucket train arrivals at ALB into local-hour labels for the window.
 // Use estimated/actual arrival (`arr`) when present; fall back to scheduled (`schArr`).
 // Sprint 16: drop cancelled trains AND drop trains whose origCode isn't in
@@ -846,15 +878,13 @@ async function fetchAlbTrainArrivals() {
 // Sprint 27.1: destructured-object signature (parity with the flight
 // aggregator). `rideMod` is accepted defensively even though the Sprint 27
 // body never reads it.
-// Sprint 39: BYOD trainCapacity flows in alongside the live Amtraker
-// response. The list is already filtered to today's date by the frontend,
-// so the aggregator can match purely on trainNum. The MAX capacityMod
-// across each hour bucket follows the fatigueMod / leisureMod pattern so
-// one sold-out train marks the whole hour as a capacity hub.
-function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin, rideMod = 1.0, trainCapacity = [] }) {
+// Sprint 54: the Sprint 39 BYOD trainCapacity merge has been excised — the
+// CSV uploader, its localStorage hydration, and computeCapacityMod are
+// all gone. The live Amtraker bucket no longer carries a capacityMod
+// field; downstream densityScore math reads the raw `volume` count.
+function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin, rideMod = 1.0 }) {
   if (!Array.isArray(trains)) return [];
   const originsByHour = {};
-  const capacityModByHour = {};
   const seen = new Set();
   for (const t of trains) {
     const status = (t.status || t.trainState || "").toLowerCase();
@@ -886,21 +916,6 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
     const label = `${h} ${ampm}`;
     if (!originsByHour[label]) originsByHour[label] = [];
     originsByHour[label].push(origCode);
-
-    // Sprint 39: per-train capacityMod from the BYOD list. Live trainNum is
-    // resolved off the Amtraker object (object key OR t.trainNum); the
-    // helper itself tolerates blanks. Log every trigger; bucket carries
-    // MAX across its members (parity with fatigueMod / leisureMod).
-    const trainNum = t.trainNum || t.trainID || "";
-    const capacityMod = computeCapacityMod(trainNum, trainCapacity);
-    if (capacityMod > 1.0) {
-      console.log(
-        `AMTRAK CAPACITY TRIGGERED: Train ${trainNum} | Mod: ${capacityMod}x`
-      );
-    }
-    if (!capacityModByHour[label] || capacityMod > capacityModByHour[label]) {
-      capacityModByHour[label] = capacityMod;
-    }
   }
 
   // Sprint 22: emit a strict array of objects so the frontend can .map() it.
@@ -917,8 +932,6 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
       // Sprint 37: Amtrak coords so the Mapbox radar can pin each train bucket.
       lat: AMTRAK_COORDS.lat,
       lng: AMTRAK_COORDS.lng,
-      // Sprint 39: bucket carries the MAX capacityMod across its members.
-      capacityMod: capacityModByHour[hour] || 1.0,
     });
   }
   return buckets;
@@ -1237,7 +1250,7 @@ function computeTimeDecayMod(itemTimeLabel, currentLocalStart) {
 // 80). The ratio is multiplied by the appropriate final mod and scaled by
 // 100 so the output reads as a whole-percentage integer (0.85 → 85.0). All
 // pre-Sprint-48 per-item multipliers (fatigueMod, leisureMod, qualityMod,
-// campusMod, corporateMod, capacityMod, egressMod) still travel on the
+// campusMod, corporateMod, egressMod) still travel on the
 // items themselves and remain visible in the merged payload — they're
 // intentionally absent from the density formula because the density ratio
 // is now the single sort signal and the multipliers were already baked
@@ -1494,8 +1507,16 @@ function computeLastCallEgressEvents(localStart, dictionary) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, activeHoliday: activeHolidayRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, activeHoliday: activeHolidayRaw, trainRawText: trainRawTextRaw } =
       await request.json();
+
+    // Sprint 53: BYOD Amtrak Pipeline. Driver pastes the Amtrak booking
+    // page text into a textarea; we keep the string here and run the
+    // regex parser inside PHASE 2 alongside the other synthetic
+    // injectors. Defensive string-cast at the boundary so a malformed
+    // payload can't blow up the parser regex.
+    const trainRawText =
+      typeof trainRawTextRaw === "string" ? trainRawTextRaw : "";
 
     // Sprint 49: Localized BYOD Holiday Engine. The frontend filters its
     // saved holiday calendar against today's local date and forwards the
@@ -1519,11 +1540,6 @@ export async function POST(request) {
     // experience keeps Sprint 27's strict <1.0 filter intact; explicit
     // true bypasses the cutoff and ghosts weak items in the UI.
     const showRawData = showRawDataRaw === true;
-
-    // Sprint 39: BYOD Amtrak capacity. Frontend filters its uploaded CSV
-    // down to today's local date before sending; the backend just defends
-    // the shape (array of { trainNumber, status }).
-    const trainCapacity = Array.isArray(trainCapacityRaw) ? trainCapacityRaw : [];
 
     // Sprint 23: deterministic router strategy. Default to "hybrid" when
     // missing/undefined; reject anything outside the allowed set.
@@ -1688,7 +1704,6 @@ export async function POST(request) {
       localStart,
       localEnd,
       offsetMin,
-      trainCapacity,
     });
 
     // Sprint 32: Event Egress Engine. Walk the raw TM array, derive each
@@ -1886,6 +1901,37 @@ export async function POST(request) {
         lng: CROSSGATES_COORDS.lng,
       });
       console.log("CROSSGATES EGRESS INJECTED: Retail Egress | egressMod 3.0x");
+    }
+
+    // Sprint 53: BYOD Amtrak Pipeline. Run the regex parser over the
+    // driver-pasted booking text and push one synthetic event per train
+    // into structuredEvents (origin hardcoded NYP per spec). Reuses the
+    // same purple EventCard + Mapbox pin path as Hospital / State
+    // Commuter / Crossgates — no new UI component.
+    // Sprint 54: Time Gate. Each parsed train passes through
+    // isTrainInWindow before injection — only trains arriving in
+    // [localStart - 10 min, localEnd] survive. Out-of-window trains
+    // never reach the merged payload or the log.
+    if (activePlatforms.rideshare && includeAmtrak) {
+      const parsedTrains = parseAmtrakText(trainRawText);
+      for (const train of parsedTrains) {
+        if (!isTrainInWindow(train.time, localStart, hoursNum)) continue;
+        structuredEvents.push({
+          type: "event",
+          location: `Rensselaer Train ${train.trainNumber}`,
+          volume: 1,
+          egressMod: 2.0,
+          categories: ["BYOD Train", train.status],
+          origin: "NYP",
+          leaveBy: train.time,
+          arrivalTime: train.arrivalTime,
+          lat: AMTRAK_COORDS.lat,
+          lng: AMTRAK_COORDS.lng,
+        });
+        console.log(
+          `BYOD TRAIN DATA PARSED: ${train.trainNumber} | Status: ${train.status} | Time: ${train.time}`
+        );
+      }
     }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept

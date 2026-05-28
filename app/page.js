@@ -104,11 +104,13 @@ export default function Home() {
   // Sprint 34: BYOD semester calendar. Persisted in localStorage so a driver
   // uploads once per semester and forgets it. Each entry is { date, eventType }.
   const [campusCalendar, setCampusCalendar] = useState([]);
-  // Sprint 39: BYOD Amtrak capacity calendar. Each entry is
-  // { date, trainNumber, status } — driver uploads a daily snapshot of
-  // sold-out / almost-full trains and the backend stacks a 2.0x / 1.5x
-  // multiplier on top of the live Amtraker bucket.
-  const [trainCalendar, setTrainCalendar] = useState([]);
+  // Sprint 53: BYOD Amtrak Pipeline. Per-shift raw text dump from the
+  // Amtrak booking page. NOT persisted to localStorage — the spec
+  // explicitly calls this a per-shift input.
+  // Sprint 54: the Sprint 39 CSV capacity calendar (trainCalendar +
+  // dispatchTrainCalendar localStorage) has been fully excised; this
+  // textarea is the sole BYOD train-data input.
+  const [trainRawText, setTrainRawText] = useState("");
   // Sprint 49: BYOD holiday calendar. Each entry is { holiday, date }.
   // Form-side scratch state (holidaySelect / holidayDate) is separate
   // from the persisted array so an unsaved selection never accidentally
@@ -151,17 +153,6 @@ export default function Home() {
       }
     } catch (e) {
       console.warn("campusCalendar hydrate failed:", e.message);
-    }
-    // Sprint 39: hydrate the daily Amtrak capacity list alongside the
-    // campus calendar so both BYOD uploads survive a page reload.
-    try {
-      const rawTrain = localStorage.getItem("dispatchTrainCalendar");
-      if (rawTrain) {
-        const parsed = JSON.parse(rawTrain);
-        if (Array.isArray(parsed)) setTrainCalendar(parsed);
-      }
-    } catch (e) {
-      console.warn("dispatchTrainCalendar hydrate failed:", e.message);
     }
     // Sprint 45: hydrate the driver's cost-per-mile preference. Default
     // 0.65 already sits in state, so a missing/invalid value is a no-op.
@@ -252,42 +243,6 @@ export default function Home() {
     reader.readAsText(file);
   }
 
-  // Sprint 39: parse a 3-column Amtrak capacity CSV (Date, TrainNumber, Status).
-  // Same defensive pattern as handleCsvUpload — drop header rows / malformed
-  // lines, require YYYY-MM-DD and a non-blank trainNumber + status. Persist
-  // under the dedicated localStorage key so the campus uploader is unaffected.
-  function handleTrainCsvUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "");
-      const parsed = text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [date, trainNumber, status] = line
-            .split(",")
-            .map((s) => (s || "").trim());
-          return { date, trainNumber, status };
-        })
-        .filter(
-          (row) =>
-            /^\d{4}-\d{2}-\d{2}$/.test(row.date) &&
-            row.trainNumber &&
-            row.status
-        );
-      setTrainCalendar(parsed);
-      try {
-        localStorage.setItem("dispatchTrainCalendar", JSON.stringify(parsed));
-      } catch (err) {
-        console.warn("dispatchTrainCalendar persist failed:", err.message);
-      }
-    };
-    reader.readAsText(file);
-  }
-
   // Expiration check — latest stored date is in the past.
   const calendarExpired =
     campusCalendar.length > 0 &&
@@ -335,12 +290,6 @@ export default function Home() {
       // a vanilla payload (back-compat).
       const today = todayLocalISO();
       const todaysEvent = campusCalendar.find((row) => row.date === today);
-      // Sprint 39: filter the uploaded Amtrak capacity list down to TODAY's
-      // local date and emit { trainNumber, status } rows for the backend.
-      // Empty list → backend sees [] and the multiplier no-ops everywhere.
-      const todaysTrainCapacity = trainCalendar
-        .filter((row) => row.date === today)
-        .map((row) => ({ trainNumber: row.trainNumber, status: row.status }));
       // Sprint 49: forward the BYOD holiday name only when today's local
       // date matches a saved entry. The backend matrix gates on the
       // wall-clock hour; missing key = vanilla payload (back-compat).
@@ -354,16 +303,19 @@ export default function Home() {
         includeAirport,
         includeAmtrak,
         routingStrategy,
-        trainCapacity: todaysTrainCapacity,
         showRawData,
         // Sprint 45: backend uses this with haversineMiles to compute
         // each item's deadhead cost and drop unprofitable surges.
         costPerMile,
+        // Sprint 53: BYOD Amtrak Pipeline. Raw textarea string —
+        // backend regex parses it into synthetic events. Empty string
+        // is a no-op (parser returns []).
+        trainRawText,
       };
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
       if (todaysHoliday?.holiday) body.activeHoliday = todaysHoliday.holiday;
 
-      const res = await fetch("https://beamish-salamander-98efb1.netlify.app/api/dispatch", {
+      const res = await fetch("/api/dispatch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -542,25 +494,21 @@ export default function Home() {
               </div>
             )}
 
-            {/* Sprint 39: second BYOD uploader for the Amtrak Capacity
-                Engine. 3-column CSV: Date, TrainNumber, Status. Lives in
-                the same panel so the driver's "data inputs" are all in
-                one place. */}
+            {/* Sprint 53: BYOD Amtrak Pipeline. Per-shift raw text dump
+                from the Amtrak booking page (NYP → ALB). Backend regex
+                parses train number + arrival time + seat-availability
+                status into synthetic events. Not persisted. */}
             <label className="text-sm text-neutral-400 mt-3">
-              Upload Amtrak Capacity (CSV: Date, TrainNumber, Status)
+              Paste Amtrak Status (NYP → ALB)
             </label>
-            <input
-              type="file"
-              accept=".csv"
-              onChange={handleTrainCsvUpload}
+            <textarea
+              value={trainRawText}
+              onChange={(e) => setTrainRawText(e.target.value)}
               disabled={isBusy}
-              className="text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-neutral-800 file:text-neutral-200 file:cursor-pointer disabled:opacity-60"
+              placeholder="Paste Amtrak status here..."
+              rows={6}
+              className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm font-mono disabled:opacity-60"
             />
-            {trainCalendar.length > 0 && (
-              <div className="text-xs text-neutral-500">
-                {trainCalendar.length} train capacity rows loaded.
-              </div>
-            )}
 
             {/* Sprint 40: X-Ray Vision Toggle. Reveals dead zones and
                 sub-1.0 surges as ghosted items so power users can audit

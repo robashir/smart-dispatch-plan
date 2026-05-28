@@ -51,6 +51,12 @@ export function EventCard({ data }) {
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">Event Egress</div>
       <div className="text-2xl font-bold mb-2">{data.location}</div>
       <div className="text-lg">{data.egressMod}x Surge Active</div>
+      {/* Sprint 54: BYOD-parsed trains carry the raw "5:47p" arrivalTime
+          field. Other event types (Hospital / State Commuter / Holiday /
+          Crossgates) omit it, so the line is conditional. */}
+      {data.arrivalTime && (
+        <div className="text-sm text-neutral-300 mt-1">Arrives: {data.arrivalTime}</div>
+      )}
       <div className="flex flex-wrap gap-2 mt-2">
         {data.categories.map((c) => (
           <span key={c} className="px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded">
