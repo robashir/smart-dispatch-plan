@@ -1,3 +1,9 @@
+// Sprint 50: Last Call Egress Engine. 7-Day Matrix dictionary built by
+// tasks/pull-nightlife.js and hand-curated by the driver. Frozen so no
+// runtime mutation can drift the closing-time source of truth.
+import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json";
+const ALBANY_NIGHTLIFE_HOURS = Object.freeze(ALBANY_NIGHTLIFE_HOURS_RAW);
+
 // Sprint 26: in-memory TTL cache shared across requests on a warm process.
 // Lives at module scope so it persists across POST invocations on the same
 // Node container (dev server and prod lambda warm container alike). Entry
@@ -1408,6 +1414,75 @@ async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
   return { foodHotspots, groceryHotspots };
 }
 
+// Sprint 50: Last Call Egress math, ported verbatim from test-last-call-engine.js
+// after 12/12 tests passed. A close time listed as < 06:00 belongs to the
+// PREVIOUS operational day (e.g. Friday "02:00" = Saturday 02:00 wall-clock).
+const LAST_CALL_EARLY_AM_THRESHOLD_MIN = 360;
+const LAST_CALL_WINDOW_MIN = 30;
+const LAST_CALL_WINDOW_MAX = 45;
+
+function lastCallParseHHMMtoMin(str) {
+  if (typeof str !== "string") return null;
+  const m = str.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return h * 60 + min;
+}
+
+function minutesUntilLastCall(localStart, closingTimes) {
+  if (!(localStart instanceof Date) || !closingTimes) return null;
+  const nowMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  const dayIdx = localStart.getUTCDay();
+  const prevIdx = (dayIdx + 6) % 7;
+  const candidates = [];
+
+  const todayMin = lastCallParseHHMMtoMin(closingTimes[String(dayIdx)]);
+  if (todayMin !== null) {
+    const offset =
+      todayMin < LAST_CALL_EARLY_AM_THRESHOLD_MIN
+        ? 1440 - nowMin + todayMin
+        : todayMin - nowMin;
+    if (offset >= 0) candidates.push(offset);
+  }
+
+  const prevMin = lastCallParseHHMMtoMin(closingTimes[String(prevIdx)]);
+  if (prevMin !== null && prevMin < LAST_CALL_EARLY_AM_THRESHOLD_MIN) {
+    const offset = prevMin - nowMin;
+    if (offset >= 0) candidates.push(offset);
+  }
+
+  for (const offset of candidates) {
+    if (offset >= LAST_CALL_WINDOW_MIN && offset <= LAST_CALL_WINDOW_MAX) {
+      return offset;
+    }
+  }
+  return null;
+}
+
+function computeLastCallEgressEvents(localStart, dictionary) {
+  const events = [];
+  if (!Array.isArray(dictionary)) return events;
+  for (const venue of dictionary) {
+    const offset = minutesUntilLastCall(localStart, venue.closingTimes);
+    if (offset === null) continue;
+    events.push({
+      type: "event",
+      location: `Last Call Egress: ${venue.name}`,
+      volume: 1,
+      egressMod: 3.5,
+      categories: ["Last Call", "Nightlife Egress"],
+      lat: venue.lat,
+      lng: venue.lng,
+    });
+    console.log(
+      `LAST CALL EGRESS INJECTED: ${venue.name} | ${offset} min before close | egressMod 3.5x`
+    );
+  }
+  return events;
+}
+
 export async function POST(request) {
   try {
     const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, activeHoliday: activeHolidayRaw } =
@@ -1767,6 +1842,16 @@ export async function POST(request) {
       console.log(
         `HOLIDAY EVENT INJECTED: ${activeHoliday} | egressMod 3.5x | ESP_COORDS`
       );
+    }
+
+    // Sprint 50: Last Call Egress Engine. For each venue in ALBANY_NIGHTLIFE_HOURS,
+    // fire a synthetic event when localStart is 30–45 min before that venue's
+    // mapped close (with cross-midnight day-rollback). egressMod 3.5 mirrors
+    // Sprint 49's holiday surge so the Last Call card floats to the top of
+    // Profitability sorts without touching buildItinerary math.
+    const lastCallEvents = computeLastCallEgressEvents(localStart, ALBANY_NIGHTLIFE_HOURS);
+    for (const ev of lastCallEvents) {
+      structuredEvents.push(ev);
     }
 
     // Sprint 42: Nightlife Density Engine. Yelp's price tier is the cheapest

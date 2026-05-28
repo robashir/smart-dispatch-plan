@@ -2288,3 +2288,28 @@ finalFoodMod = foodMod × weatherFoodMod × supplyDropMod                  (unto
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 50: The Last Call Egress Engine
+
+**Goal:** Auto-dispatch drivers to high-volume nightlife venues 30–45 min before close (patron + staff egress surge). Two-Phase Static Dictionary architecture — no live Yelp Business Details calls at dispatch time. **7-Day Matrix Edition** — per-day closing times for max precision.
+
+### Phase 1 — Automated Data Pull (standalone Node script)
+- [x] 1. Create `tasks/pull-nightlife.js`: parse `.env` for `YELP_API_KEY`, hit `/businesses/search` with `location=Albany,NY`, `categories=nightlife,bars`, `sort_by=review_count`, `limit=50`.
+- [x] 2. Map response → 7-Day Matrix schema `[{ name, yelpId, lat, lng, closingTimes: { "0": "00:00", ..., "6": "02:00" } }]` (key = `getUTCDay()`, 0 = Sun … 6 = Sat) and write to root `nightlife_dictionary.json`.
+- [x] 3. **Execution pause:** user pasted closing times for 50 venues in chat; merged into `nightlife_dictionary.json` and validated (50 entries, all 7 day keys present).
+
+### Phase 2 — Engine Wiring (after user confirms)
+- [x] 4. Write `test-last-call-engine.js`: prove the 30–45 min pre-close window math in isolation. Covers lower/upper bounds (30/45 inclusive), just-outside (29/46), cross-midnight day-lookup (Fri close="02:00" → fires at Sat 01:25), `"00:00"` as next-day midnight, `"Closed"` skip on today-and-yesterday. **12/12 passed.**
+- [x] 5. `app/api/dispatch/route.js`: import populated dictionary as frozen const `ALBANY_NIGHTLIFE_HOURS` at file top (ESM JSON import).
+- [x] 6. `route.js`: helper `minutesUntilLastCall(localStart, closingTimes)` returns offset only when in [30,45]; day-rollback via `(dayIdx + 6) % 7` when value < 06:00 (EARLY_AM threshold).
+- [x] 7. `route.js`: `computeLastCallEgressEvents(...)` pushes synthetic `type:"event"` (egressMod 3.5, categories `["Last Call","Nightlife Egress"]`, venue lat/lng) into `structuredEvents` right after the Sprint 49 holiday block.
+- [x] 8. Manual verification: simulated Sat 2026-05-30 01:25 UTC against live dictionary → **9 venues fire** (Ralph's, The Ruck, Wolff's, Katie O'Byrne's, 20 North Broadway, Savoy, McGeary's, 151 Bar, Hill Street Cafe), each with offset=35 min and exact coords flowing through. `node --check` syntax-clean.
+
+### Acceptance Criteria
+- Phase 1: `nightlife_dictionary.json` has 50 entries in 7-Day Matrix shape (`closingTimes` object keyed `"0"`–`"6"`).
+- Phase 2: `test-last-call-engine.js` exits 0 including the cross-midnight day-lookup case; live dispatch fires the synthetic egress event during the 30–45 min window and renders as a standard `event` pin/card with no frontend changes.
+
+### Anti-Goals
+- NO live calls to Yelp Business Details at dispatch time. The static dictionary is the sole source of truth.
+- NO new Mapbox pin color, no new React card. Reuse `type: "event"`.
+- NO changes to `buildItinerary` sort math — `egressMod: 3.5` handles prioritization naturally.
