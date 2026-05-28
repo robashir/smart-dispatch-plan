@@ -28,6 +28,22 @@ function getGeolocation() {
 // still computes a real itinerary instead of crashing.
 const ROESSLEVILLE_COORDS = { latitude: 42.69516, longitude: -73.86063 };
 
+// Sprint 49: BYOD holiday names — must match the backend HOLIDAY_WINDOWS
+// keys EXACTLY (case + apostrophes). Listed in the order the driver is
+// likely to encounter them on the calendar.
+const HOLIDAY_OPTIONS = [
+  "New Year's Day",
+  "Super Bowl Sunday",
+  "Valentine's Day",
+  "St. Patrick's Day",
+  "Cinco de Mayo",
+  "4th of July",
+  "Halloween",
+  "Thanksgiving",
+  "Christmas",
+  "New Year's Eve",
+];
+
 // Sprint 33: pure helpers mirroring the backend's surgeScore + Sprint 32.1
 // time-decay so the banner can recompute the same ranking score the API
 // already used internally. Kept outside the component because they hold no
@@ -93,6 +109,13 @@ export default function Home() {
   // sold-out / almost-full trains and the backend stacks a 2.0x / 1.5x
   // multiplier on top of the live Amtraker bucket.
   const [trainCalendar, setTrainCalendar] = useState([]);
+  // Sprint 49: BYOD holiday calendar. Each entry is { holiday, date }.
+  // Form-side scratch state (holidaySelect / holidayDate) is separate
+  // from the persisted array so an unsaved selection never accidentally
+  // fires in handleClick.
+  const [holidayCalendar, setHolidayCalendar] = useState([]);
+  const [holidaySelect, setHolidaySelect] = useState(HOLIDAY_OPTIONS[0]);
+  const [holidayDate, setHolidayDate] = useState("");
   // Sprint 38: global Map/List toggle. Default "map" so the SSR pass renders
   // the radar; the useEffect below replaces it with the driver's prior choice
   // once the browser hydrates.
@@ -151,7 +174,37 @@ export default function Home() {
     } catch (e) {
       console.warn("dispatchCostPerMile hydrate failed:", e.message);
     }
+    // Sprint 49: hydrate the BYOD holiday calendar. Each entry is
+    // { holiday, date }; the array survives page reloads so a driver
+    // configures Halloween / Christmas / etc. once per year.
+    try {
+      const rawHoliday = localStorage.getItem("dispatchHolidayCalendar");
+      if (rawHoliday) {
+        const parsed = JSON.parse(rawHoliday);
+        if (Array.isArray(parsed)) setHolidayCalendar(parsed);
+      }
+    } catch (e) {
+      console.warn("dispatchHolidayCalendar hydrate failed:", e.message);
+    }
   }, []);
+
+  // Sprint 49: persist the holiday calendar on every save. Replace-by-key
+  // semantics — saving the same holiday twice overwrites the old date
+  // instead of duplicating, so the driver can easily roll the year forward.
+  function handleSaveHoliday() {
+    if (!holidaySelect || !holidayDate) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(holidayDate)) return;
+    const next = [
+      ...holidayCalendar.filter((row) => row.holiday !== holidaySelect),
+      { holiday: holidaySelect, date: holidayDate },
+    ];
+    setHolidayCalendar(next);
+    try {
+      localStorage.setItem("dispatchHolidayCalendar", JSON.stringify(next));
+    } catch (err) {
+      console.warn("dispatchHolidayCalendar persist failed:", err.message);
+    }
+  }
 
   // Sprint 45: persist costPerMile on every change so the driver configures
   // it once. Mirrors handleViewModeChange — the setter + persistence stay
@@ -240,6 +293,12 @@ export default function Home() {
     campusCalendar.length > 0 &&
     campusCalendar.every((row) => row.date < todayLocalISO());
 
+  // Sprint 49: per-entry expiration warning. A holiday whose saved date
+  // has slipped into the past needs the driver to roll the year forward.
+  const expiredHolidays = holidayCalendar.filter(
+    (row) => row.date < todayLocalISO()
+  );
+
   async function handleClick() {
     setError("");
     setItinerary([]);
@@ -282,6 +341,10 @@ export default function Home() {
       const todaysTrainCapacity = trainCalendar
         .filter((row) => row.date === today)
         .map((row) => ({ trainNumber: row.trainNumber, status: row.status }));
+      // Sprint 49: forward the BYOD holiday name only when today's local
+      // date matches a saved entry. The backend matrix gates on the
+      // wall-clock hour; missing key = vanilla payload (back-compat).
+      const todaysHoliday = holidayCalendar.find((row) => row.date === today);
       const body = {
         latitude,
         longitude,
@@ -298,6 +361,7 @@ export default function Home() {
         costPerMile,
       };
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
+      if (todaysHoliday?.holiday) body.activeHoliday = todaysHoliday.holiday;
 
       const res = await fetch("/api/dispatch", {
         method: "POST",
@@ -530,6 +594,57 @@ export default function Home() {
                 disabled={isBusy}
                 className="w-full accent-yellow-400 disabled:opacity-60"
               />
+            </div>
+
+            {/* Sprint 49: Localized BYOD Holiday Engine. Driver picks a
+                holiday from the 10 MVP options and pairs it with the
+                actual local celebration date. Stored as
+                [{ holiday, date }] in localStorage["dispatchHolidayCalendar"].
+                Replace-by-key semantics — saving the same holiday twice
+                overwrites the old date. */}
+            <div className="flex flex-col gap-2 mt-4 pt-3 border-t border-neutral-800">
+              <label className="text-sm text-neutral-400">
+                Holiday Calendar (BYOD)
+              </label>
+              <select
+                value={holidaySelect}
+                onChange={(e) => setHolidaySelect(e.target.value)}
+                disabled={isBusy}
+                className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm disabled:opacity-60"
+              >
+                {HOLIDAY_OPTIONS.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={holidayDate}
+                onChange={(e) => setHolidayDate(e.target.value)}
+                disabled={isBusy}
+                className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={handleSaveHoliday}
+                disabled={isBusy || !holidayDate}
+                className="self-start py-2 px-4 rounded-lg bg-neutral-800 border border-neutral-700 text-sm font-semibold disabled:opacity-60"
+              >
+                Save Holiday
+              </button>
+              {holidayCalendar.length > 0 && (
+                <ul className="text-xs text-neutral-500 mt-1 space-y-0.5">
+                  {holidayCalendar.map((row) => (
+                    <li key={row.holiday}>
+                      {row.holiday}: {row.date}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {expiredHolidays.map((row) => (
+                <div key={row.holiday} className="text-sm text-red-400">
+                  Action Required: {row.holiday} date is in the past. Please update.
+                </div>
+              ))}
             </div>
           </div>
         </fieldset>

@@ -2223,3 +2223,68 @@ Because the hotspot's `tier` is a human-readable string (`"High-Value ($$$)"`), 
 
 ### Debugging Agreement
 If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.
+
+## Sprint 49 — The Localized BYOD Holiday Engine
+
+**Problem:** Floating-date holidays (Thanksgiving = 4th Thursday of November, Easter, Super Bowl Sunday, etc.) need either expensive date-math algorithms OR an external calendar API. Both options carry maintenance debt and fail on niche local celebrations (e.g. a city moves their Cinco de Mayo block party to the previous Saturday).
+
+**Fix:** A **Localized BYOD Architecture** — the driver pairs each of the 10 MVP holidays with the actual local celebration date via a simple `<select>` + `<input type="date">` form, persisted in `localStorage["dispatchHolidayCalendar"]`. When today's local date matches a saved row, the frontend forwards `activeHoliday: "<HolidayName>"` to the backend. The backend cross-references a strictly locked **Temporal Logic Matrix** (10 entries → minute-of-day windows, some cross-midnight) and — if the wall-clock falls inside — multiplies `finalRideMod` by 1.5x AND injects a synthetic ESP-coords `type: "event"` so the Mapbox pin and EventCard render natively (no new component).
+
+### Decisions (locked before coding)
+- **TDD scaffold:** `test-holiday-engine.js` at repo root validates `isInHolidayWindow(holiday, wallMinutes)` (normal, split-window, cross-midnight, boundaries, unknown) + the `applyHolidayBoost` math (inside vs outside window, stacking onto an already-boosted `finalRideMod`, food untouched). Required 29/29 PASS before any edit to `route.js` or `page.js`.
+- **`HOLIDAY_WINDOWS` matrix (locked, from PO):** Backend constant mapping each holiday name → array of `{ start, end }` minute pairs. Cross-midnight is encoded as `start > end` (e.g. Halloween 20:00-03:00 → `{ start: 1200, end: 180 }`) and tested with the OR branch in `isInHolidayWindow`. Both endpoints are inclusive — 21:30 and 23:30 both fire on the 4th of July window.
+- **Frontend `HOLIDAY_OPTIONS`:** Lives in `app/page.js` and MUST match the backend keys exactly (case + apostrophes — `"New Year's Day"`, `"St. Patrick's Day"`, etc.). The dropdown rendering is `HOLIDAY_OPTIONS.map`.
+- **State separation:** Form scratch state (`holidaySelect`, `holidayDate`) is split from the persisted `holidayCalendar` array so an unsaved selection never accidentally fires in `handleClick`.
+- **Replace-by-key save semantics:** `handleSaveHoliday` filters out any existing row with the same `holiday` name BEFORE pushing the new pair. Saving "Halloween → 2026-10-31" twice doesn't duplicate; saving "Halloween → 2026-10-31" then "Halloween → 2027-10-31" rolls the year forward cleanly.
+- **Expiration warning (per-entry):** Any saved entry whose `date < todayLocalISO()` renders a small red `Action Required: <Holiday> date is in the past. Please update.` line beneath the saved list. Non-blocking — the driver can still dispatch with stale rows in storage, they just won't match `today` and so won't inject `activeHoliday`.
+- **Math boost site:** `finalRideMod *= 1.5` lands AFTER the Sprint 34 BYOD Campus boost so it stacks multiplicatively on top of weather × supply × temporal × campus. Food untouched (PO anti-goal). The same `holidayActiveInWindow` boolean gates the synthetic event push later in PHASE 2.
+- **Synthetic event shape (locked, from PO):** `{ type: "event", location: "<Holiday> Peak Surge", volume: 1, egressMod: 3.5, categories: ["Holiday Surge", "High Demand"], lat: ESP_COORDS.lat, lng: ESP_COORDS.lng }`. `egressMod 3.5` outranks every other PHASE 2 injector (Hospital max 4.0, State Commuter 2.5, Nightlife max 4.0) only by category — the PO chose 3.5 specifically so the Holiday Peak Surge dominates the Profitability sort during the active window.
+- **Pipeline insertion point:** synthetic event pushes into `structuredEvents` AFTER the State Commuter injector and BEFORE the Nightlife clone loop, matching the Sprint 36.2 PHASE 2 sequencing rule.
+- **Date-gate semantics (known limitation):** the frontend filter compares `today === savedDate`, so the post-midnight tail of a cross-midnight window (e.g. Halloween 00:00-03:00 on 2026-11-01) is NOT reached unless the driver enters the holiday date as the "next day". Documented for future tightening.
+
+### Phase 1 — Test-Driven Scaffolding
+- [x] 1. `test-holiday-engine.js`: standalone `HOLIDAY_WINDOWS` + `isInHolidayWindow` + `applyHolidayBoost` + 29 assertions covering Halloween cross-midnight, Valentine's non-crossing boundaries, NYD split window, 4th of July tight boundaries, Super Bowl cross-midnight, unknown-holiday safety, and stacking math vs `finalFoodMod` anti-goal. Run `node test-holiday-engine.js`; require 29/29 PASS. ✅ 29/29 PASS.
+
+### Phase 2 — Backend Integration
+- [x] 2. `app/api/dispatch/route.js`: add `HOLIDAY_WINDOWS` + `isInHolidayWindow(holiday, wallMinutes)` alongside the other top-of-file constants (near `HOSPITAL_SHIFTS` / `VENUE_DICTIONARY`).
+- [x] 3. `app/api/dispatch/route.js`: destructure `activeHoliday: activeHolidayRaw` from `request.json()`; defensive string-cast to `activeHoliday` (trim, null on empty / non-string).
+- [x] 4. `app/api/dispatch/route.js`: after the Sprint 34 BYOD Campus boost, compute `holidayWallMinutes` + `holidayActiveInWindow`; multiply `finalRideMod *= 1.5` when the gate fires and log `HOLIDAY SURGE ACTIVE: <name> | Wall: HH:MM | Mod: 1.5x`.
+- [x] 5. `app/api/dispatch/route.js`: in PHASE 2 (after State Commuter, before Nightlife), if `holidayActiveInWindow` push the synthetic `{ type: "event", location: "<name> Peak Surge", volume: 1, egressMod: 3.5, categories: ["Holiday Surge", "High Demand"], lat: ESP_COORDS.lat, lng: ESP_COORDS.lng }`. Log `HOLIDAY EVENT INJECTED: <name> | egressMod 3.5x | ESP_COORDS`.
+- [x] 6. Parse-check per L4: `node --check app/api/dispatch/route.js` → `PARSE OK`; full ESM `import()` → `ROUTE IMPORT OK`.
+
+### Phase 3 — Frontend Integration
+- [x] 7. `app/page.js`: add `HOLIDAY_OPTIONS` constant alongside `ROESSLEVILLE_COORDS`; add `holidayCalendar`, `holidaySelect`, `holidayDate` React state.
+- [x] 8. `app/page.js`: hydrate `holidayCalendar` from `localStorage["dispatchHolidayCalendar"]` inside the existing BYOD `useEffect`.
+- [x] 9. `app/page.js`: implement `handleSaveHoliday()` with replace-by-key semantics + YYYY-MM-DD validation; persist to localStorage on every save.
+- [x] 10. `app/page.js`: render the Holiday Calendar UI inside the existing BYOD Data Settings panel (below the cost-per-mile slider, separated by a `border-t` divider) — `<select>` + `<input type="date">` + `Save Holiday` button + saved-rows list + per-entry red expiration warning.
+- [x] 11. `app/page.js`: inside `handleClick`, find today's matching `holidayCalendar` row and conditionally add `body.activeHoliday = todaysHoliday.holiday`. Missing key = vanilla payload (back-compat).
+- [x] 12. Grep audit: `holidayCalendar / holidaySelect / holidayDate / handleSaveHoliday / HOLIDAY_OPTIONS / expiredHolidays / activeHoliday` all referenced in state, hydration, save handler, expiration check, body assembly, and JSX render — no orphans introduced.
+
+### Phase 4 — Visual Verification
+- [ ] 13. Manual verification (user): `npm run dev` → open Smart Dispatch → in the BYOD Data Settings panel, pick `Halloween` from the dropdown, set the date to today, click **Save Holiday**. Refresh the browser, confirm the entry persists in the saved-rows list. Click **What's happening?** during 20:00-03:00 local; confirm (a) terminal logs `HOLIDAY SURGE ACTIVE: Halloween` and `HOLIDAY EVENT INJECTED: Halloween`, (b) `mergedPayload.finalRideMod` is exactly 1.5x what a vanilla payload would have produced, (c) a purple Holiday Peak Surge EventCard sits at the top of the Profitability tab, (d) a purple Mapbox pin drops on Empire State Plaza. Re-save Halloween with last year's date; confirm the red `Action Required` warning appears.
+
+### Acceptance Criteria (Definition of Done)
+- **TDD Validation:** `node test-holiday-engine.js` reports `29 pass / 0 fail`.
+- **UI Persistence:** `holidayCalendar` survives a page reload via `localStorage["dispatchHolidayCalendar"]`.
+- **Backend Execution:** When today's local date matches a saved holiday AND wall-clock is inside the matrix window, the terminal logs `HOLIDAY SURGE ACTIVE` + `HOLIDAY EVENT INJECTED`, `finalRideMod` is inflated 1.5x, and a `type: "event"` row with `egressMod 3.5` + ESP coords appears in `mergedPayload.itinerary`.
+- **UI Surfacing:** A purple EventCard reading `<Holiday> Peak Surge` renders at the top of the Profitability tab; a purple Mapbox pin drops at ESP_COORDS — no new components introduced.
+- **Anti-Goal Enforced:** `finalFoodMod` is byte-for-byte identical to a non-holiday dispatch (verified by the TDD `applyHolidayBoost` test).
+
+### Out of Scope (Anti-Goals)
+- NO algorithmic date-math (e.g., "4th Thursday of November"). The BYOD date picker is the entire solution.
+- NO new Mapbox pin color, no new React card component. Reuse `type: "event"`.
+- NO 1.5x multiplier on `finalFoodMod` or grocery pipelines. Rideshare-specific transit boost only.
+- NO server-side persistence (`fs` or DB) — localStorage is the source of truth.
+- NO automatic year-rollover. Driver consciously updates each entry after the warning appears.
+
+### Mathematical Integration
+```
+holidayMod = 1.0 (default) | 1.5 (today matches saved holiday AND wall-clock in matrix window)
+
+finalRideMod = rideMod × weatherRideMod × supplyDropMod × campusMod × holidayMod
+finalFoodMod = foodMod × weatherFoodMod × supplyDropMod                  (untouched)
+```
+`finalRideMod` then flows into `buildItinerary`'s densityScore exactly as before. The synthetic Holiday Peak Surge event scores via the `event` branch of `densityScore` (yield 450 for `mega_event` since `egressMod >= 2.5`, capacity falls back to 80 since "holiday surge" isn't a CAPACITY_DICTIONARY key) — `(1 × 450) / 80 × finalRideMod × 100` lands the holiday card near the top of the Profitability sort by raw math, with the 1.5x ride boost compounding the already-elevated number.
+
+### Debugging Agreement
+If a runtime/build error surfaces, identify the failing line and provide a targeted patch — no full-file rewrites.

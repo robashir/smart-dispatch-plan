@@ -62,6 +62,42 @@ const HOSPITAL_SHIFTS = [
   { start: 1350, end: 1410, mod: 2.0, label: "Night Admin Shift" },       // 10:30 PM - 11:30 PM
 ];
 
+// Sprint 49: Localized BYOD Holiday Engine. 10-entry Temporal Logic Matrix
+// mapping each MVP holiday → array of minute-of-day windows. Cross-midnight
+// windows are encoded as { start > end } and tested with the OR branch in
+// isInHolidayWindow. The "activeHoliday" string is supplied by the frontend
+// only when today's local date matches a saved BYOD entry — so the matrix
+// just gates on the wall-clock hour. Both endpoints are inclusive.
+// Validated in isolation by test-holiday-engine.js (29 assertions).
+const HOLIDAY_WINDOWS = {
+  "New Year's Day": [
+    { start: 0, end: 180 },     // 00:00-03:00
+    { start: 600, end: 780 },   // 10:00-13:00
+  ],
+  "Super Bowl Sunday": [{ start: 1290, end: 30 }],   // 21:30-00:30 (cross-midnight)
+  "Valentine's Day":   [{ start: 1080, end: 1410 }], // 18:00-23:30
+  "St. Patrick's Day": [{ start: 900, end: 120 }],   // 15:00-02:00 (cross)
+  "Cinco de Mayo":     [{ start: 1020, end: 60 }],   // 17:00-01:00 (cross)
+  "4th of July":       [{ start: 1290, end: 1410 }], // 21:30-23:30
+  "Halloween":         [{ start: 1200, end: 180 }],  // 20:00-03:00 (cross)
+  "Thanksgiving":      [{ start: 1140, end: 120 }],  // 19:00-02:00 (cross)
+  "Christmas":         [{ start: 1080, end: 60 }],   // 18:00-01:00 (cross)
+  "New Year's Eve":    [{ start: 1200, end: 180 }],  // 20:00-03:00 (cross)
+};
+
+function isInHolidayWindow(holiday, wallMinutes) {
+  const windows = HOLIDAY_WINDOWS[holiday];
+  if (!Array.isArray(windows)) return false;
+  for (const { start, end } of windows) {
+    if (start <= end) {
+      if (wallMinutes >= start && wallMinutes <= end) return true;
+    } else {
+      if (wallMinutes >= start || wallMinutes <= end) return true;
+    }
+  }
+  return false;
+}
+
 // Sprint 43: Ticketmaster Geocoding. Hardcoded venue dictionary keyed by
 // the lowercase/trimmed venue name. Used as a strict whitelist — events
 // whose venue is not present are dropped before reaching the frontend.
@@ -1374,8 +1410,17 @@ async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw, costPerMile: costPerMileRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, trainCapacity: trainCapacityRaw, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, activeHoliday: activeHolidayRaw } =
       await request.json();
+
+    // Sprint 49: Localized BYOD Holiday Engine. The frontend filters its
+    // saved holiday calendar against today's local date and forwards the
+    // matched holiday name only. Defensive string-cast at the boundary so
+    // a malformed payload can't crash the matrix lookup.
+    const activeHoliday =
+      typeof activeHolidayRaw === "string" && activeHolidayRaw.trim()
+        ? activeHolidayRaw.trim()
+        : null;
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -1515,6 +1560,24 @@ export async function POST(request) {
       console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
     } else if (isFoodCampusDay) {
       console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
+    }
+
+    // Sprint 49: Localized BYOD Holiday Engine — math boost. If the
+    // frontend forwarded an activeHoliday AND the wall-clock falls inside
+    // the matrix window, stack a 1.5x multiplier on finalRideMod ONLY
+    // (anti-goal: do not touch finalFoodMod / grocery). The synthetic
+    // event with ESP coords is pushed in PHASE 2 below alongside the
+    // Hospital / State Commuter injectors so the Mapbox pin and EventCard
+    // render natively without any new component.
+    const holidayWallMinutes =
+      localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+    const holidayActiveInWindow =
+      activeHoliday && isInHolidayWindow(activeHoliday, holidayWallMinutes);
+    if (holidayActiveInWindow) {
+      finalRideMod *= 1.5;
+      console.log(
+        `HOLIDAY SURGE ACTIVE: ${activeHoliday} | Wall: ${Math.floor(holidayWallMinutes / 60)}:${String(holidayWallMinutes % 60).padStart(2, "0")} | Mod: 1.5x`
+      );
     }
 
     // Sprint 20: Zero-Prompt Math. Compute exact driving time to ALB from the
@@ -1683,6 +1746,26 @@ export async function POST(request) {
       });
       console.log(
         "STATE COMMUTER INJECTED: Empire State Plaza & Harriman Campus | egressMod 2.5x"
+      );
+    }
+
+    // Sprint 49: Localized BYOD Holiday Engine — synthetic event. When the
+    // matrix window is active, push one Holiday Peak Surge event at ESP
+    // coords. egressMod 3.5 lifts it above Mega-Venue (2.5x) so it
+    // dominates the Profitability sort. type:"event" reuses the existing
+    // purple EventCard + Mapbox pin (PO anti-goal: no new component).
+    if (holidayActiveInWindow) {
+      structuredEvents.push({
+        type: "event",
+        location: `${activeHoliday} Peak Surge`,
+        volume: 1,
+        egressMod: 3.5,
+        categories: ["Holiday Surge", "High Demand"],
+        lat: ESP_COORDS.lat,
+        lng: ESP_COORDS.lng,
+      });
+      console.log(
+        `HOLIDAY EVENT INJECTED: ${activeHoliday} | egressMod 3.5x | ESP_COORDS`
       );
     }
 
