@@ -1269,7 +1269,6 @@ function buildItinerary(
   payload,
   strategy,
   currentLocalStart,
-  showRawData = false,
   driverLat = null,
   driverLng = null,
   costPerMile = 0.65
@@ -1311,9 +1310,10 @@ function buildItinerary(
   // every scoreable item so (a) the terminal merged-payload log surfaces
   // the math, and (b) the React UI can render "Density: X%" without
   // re-deriving anything.
-  // Sprint 40: stamp isWeak BEFORE the strict cutoff so ghosted items
-  // still carry the flag downstream. When showRawData is true the cutoff
-  // is bypassed; when false the default Sprint 27 behavior holds.
+  // Sprint 60: Ghost Mode is permanently dead — the Sprint 27 strict
+  // < 10.0 cutoff is now always enforced. isWeak is still stamped for
+  // any future headless client that wants the signal, but the bypass
+  // branch has been excised.
   const items = rawItems
     .map((it) => {
       const scoreable =
@@ -1342,7 +1342,6 @@ function buildItinerary(
         it.type === "grocery" ||
         it.type === "event";
       if (!scoreable) return true;
-      if (showRawData) return true;
       return decayed(it) >= 10.0;
     })
     // Sprint 45: Mathematical ROI Filter. After the Sprint 27 strict <1.0
@@ -1498,7 +1497,7 @@ function computeLastCallEgressEvents(localStart, dictionary) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, eventConfig: eventConfigRaw, byodTrains: byodTrainsRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, costPerMile: costPerMileRaw, eventConfig: eventConfigRaw, byodTrains: byodTrainsRaw } =
       await request.json();
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
@@ -1520,11 +1519,6 @@ export async function POST(request) {
       Number.isFinite(Number(costPerMileRaw)) && Number(costPerMileRaw) >= 0
         ? Number(costPerMileRaw)
         : 0.65;
-
-    // Sprint 40: X-Ray Vision Toggle. Default false so the standard
-    // experience keeps Sprint 27's strict <1.0 filter intact; explicit
-    // true bypasses the cutoff and ghosts weak items in the UI.
-    const showRawData = showRawDataRaw === true;
 
     // Sprint 23: deterministic router strategy. Default to "hybrid" when
     // missing/undefined; reject anything outside the allowed set.
@@ -1632,20 +1626,6 @@ export async function POST(request) {
     }
     finalRideMod = finalRideMod * supplyDropMod;
     finalFoodMod = finalFoodMod * supplyDropMod;
-
-    // Sprint 34: BYOD Campus Calendar — Move-In / Break days surge transit
-    // demand (departing students, arriving families) before flights/trains
-    // are aggregated. Game / Syllabus days surge food demand around campus
-    // hotspots; that branch fires after Yelp data is in hand (below).
-    const campusEventStr = typeof campusEvent === "string" ? campusEvent : "";
-    const isTransitCampusDay = /move|break/i.test(campusEventStr);
-    const isFoodCampusDay = /game|syllabus/i.test(campusEventStr);
-    if (isTransitCampusDay) {
-      finalRideMod *= 1.5;
-      console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
-    } else if (isFoodCampusDay) {
-      console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
-    }
 
     // Sprint 57: Unified Event Database. The Sprint 49 finalRideMod boost
     // tied to the BYOD activeHoliday payload has been removed. Holiday +
@@ -1934,20 +1914,6 @@ export async function POST(request) {
       if (!activePlatforms.grocery) gigDemand.groceryHotspots = [];
     }
 
-    // Sprint 34: BYOD Game / Syllabus day. Apply the 1.5x campusMod boost on
-    // each surviving food hotspot (Sprint 31 already seeds campusMod 1.0/1.5
-    // for late-night campus-adjacent clusters; this stacks on top of it).
-    if (
-      isFoodCampusDay &&
-      gigDemand &&
-      typeof gigDemand === "object" &&
-      Array.isArray(gigDemand.foodHotspots)
-    ) {
-      for (const h of gigDemand.foodHotspots) {
-        h.campusMod = (Number(h.campusMod) || 1.0) * 1.5;
-      }
-    }
-
     // Sprint 15 refinement — Synthetic Data Swap. Prompt-only "do not route
     // to ALB" lost to data obligation when the raw arrival string was strong.
     // Keep the bucket count so the AI still sees WHEN the ripple hits, but
@@ -2008,7 +1974,6 @@ export async function POST(request) {
       mergedPayload,
       routingStrategy,
       localStart,
-      showRawData,
       latitude,
       longitude,
       costPerMile

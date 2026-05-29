@@ -100,12 +100,6 @@ export default function Home() {
     food: false,
     grocery: false,
   });
-  const [includeAirport, setIncludeAirport] = useState(true);
-  const [includeAmtrak, setIncludeAmtrak] = useState(true);
-  // Sprint 40: X-Ray Vision Toggle. Off by default — the standard
-  // dashboard stays uncluttered. When on, the backend bypasses the
-  // strict <1.0 filter and ghosted weak items render in the UI.
-  const [showRawData, setShowRawData] = useState(false);
   // Sprint 45: Mathematical ROI Filter. Driver's vehicle cost per mile
   // (fuel + depreciation + wear). Default 0.65 = the "Safe Sedan" baseline;
   // hydrated from localStorage so the driver only configures it once.
@@ -121,9 +115,6 @@ export default function Home() {
   // Sprint 37.2: renamed coords → driverCoords for an unambiguous prop chain
   // (the blue dot was missing because state hydration was easy to misread).
   const [driverCoords, setDriverCoords] = useState(null);
-  // Sprint 34: BYOD semester calendar. Persisted in localStorage so a driver
-  // uploads once per semester and forgets it. Each entry is { date, eventType }.
-  const [campusCalendar, setCampusCalendar] = useState([]);
   // Sprint 53: BYOD Amtrak Pipeline. Per-shift raw text dump from the
   // Amtrak booking page. NOT persisted to localStorage — the spec
   // explicitly calls this a per-shift input.
@@ -173,15 +164,6 @@ export default function Home() {
   }
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("campusCalendar");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setCampusCalendar(parsed);
-      }
-    } catch (e) {
-      console.warn("campusCalendar hydrate failed:", e.message);
-    }
     // Sprint 45: hydrate the driver's cost-per-mile preference. Default
     // 0.65 already sits in state, so a missing/invalid value is a no-op.
     try {
@@ -289,37 +271,6 @@ export default function Home() {
     return `${y}-${m}-${dd}`;
   }
 
-  function handleCsvUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "");
-      const parsed = text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [date, eventType] = line.split(",").map((s) => (s || "").trim());
-          return { date, eventType };
-        })
-        // Drop header rows / malformed lines — only keep YYYY-MM-DD entries.
-        .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.eventType);
-      setCampusCalendar(parsed);
-      try {
-        localStorage.setItem("campusCalendar", JSON.stringify(parsed));
-      } catch (err) {
-        console.warn("campusCalendar persist failed:", err.message);
-      }
-    };
-    reader.readAsText(file);
-  }
-
-  // Expiration check — latest stored date is in the past.
-  const calendarExpired =
-    campusCalendar.length > 0 &&
-    campusCalendar.every((row) => row.date < todayLocalISO());
-
   async function handleClick() {
     setError("");
     setItinerary([]);
@@ -351,21 +302,19 @@ export default function Home() {
     const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
     try {
-      // Sprint 34: only inject campusEvent when today's local date is
-      // listed in the BYOD calendar. Missing key means the backend sees
-      // a vanilla payload (back-compat).
+      // Sprint 60: hub filters are hardcoded true at the API contract —
+      // the driver-facing UI no longer exposes the Airport/Amtrak toggles,
+      // but the backend Synthetic Ripple Swap logic still honors the keys.
       const today = todayLocalISO();
-      const todaysEvent = campusCalendar.find((row) => row.date === today);
       const body = {
         latitude,
         longitude,
         hours,
         timezoneOffsetMinutes,
         platforms,
-        includeAirport,
-        includeAmtrak,
+        includeAirport: true,
+        includeAmtrak: true,
         routingStrategy,
-        showRawData,
         // Sprint 45: backend uses this with haversineMiles to compute
         // each item's deadhead cost and drop unprofitable surges.
         costPerMile,
@@ -388,7 +337,6 @@ export default function Home() {
         console.warn("trainConfig read failed:", e.message);
         body.byodTrains = [];
       }
-      if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
 
       const res = await fetch("/api/dispatch", {
         method: "POST",
@@ -517,63 +465,14 @@ export default function Home() {
 
         <fieldset className="flex flex-col gap-2">
           <span className="text-sm uppercase tracking-wide text-neutral-400">
-            Location/Hub Filtering
-          </span>
-          <div className="flex flex-col gap-2 rounded-xl bg-neutral-900 border border-neutral-700 p-4">
-            <label className="flex items-center gap-3 text-lg">
-              <input
-                type="checkbox"
-                checked={includeAirport}
-                onChange={(e) => setIncludeAirport(e.target.checked)}
-                disabled={isBusy}
-                className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
-              />
-              <span>Airport (ALB)</span>
-            </label>
-            <label className="flex items-center gap-3 text-lg">
-              <input
-                type="checkbox"
-                checked={includeAmtrak}
-                onChange={(e) => setIncludeAmtrak(e.target.checked)}
-                disabled={isBusy}
-                className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
-              />
-              <span>Amtrak (Rensselaer)</span>
-            </label>
-          </div>
-        </fieldset>
-
-        <fieldset className="flex flex-col gap-2">
-          <span className="text-sm uppercase tracking-wide text-neutral-400">
             BYOD Data Settings
           </span>
           <div className="flex flex-col gap-2 rounded-xl bg-neutral-900/60 border border-neutral-800 p-4">
-            <label className="text-sm text-neutral-400">
-              Upload semester calendar (CSV: Date, EventType)
-            </label>
-            <input
-              type="file"
-              accept=".csv"
-              onChange={handleCsvUpload}
-              disabled={isBusy}
-              className="text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-neutral-800 file:text-neutral-200 file:cursor-pointer disabled:opacity-60"
-            />
-            {campusCalendar.length > 0 && (
-              <div className="text-xs text-neutral-500">
-                {campusCalendar.length} dates loaded.
-              </div>
-            )}
-            {calendarExpired && (
-              <div className="text-sm text-red-400">
-                Calendar expired. Please upload a new CSV.
-              </div>
-            )}
-
             {/* Sprint 53: BYOD Amtrak Pipeline. Per-shift raw text dump
                 from the Amtrak booking page (NYP → ALB). Backend regex
                 parses train number + arrival time + seat-availability
                 status into synthetic events. Not persisted. */}
-            <label className="text-sm text-neutral-400 mt-3">
+            <label className="text-sm text-neutral-400">
               Paste Amtrak Status (NYP → ALB)
             </label>
             <textarea
@@ -601,20 +500,6 @@ export default function Home() {
                 ? "Saving..."
                 : "Save Trains"}
             </button>
-
-            {/* Sprint 40: X-Ray Vision Toggle. Reveals dead zones and
-                sub-1.0 surges as ghosted items so power users can audit
-                the grid during slow shifts. */}
-            <label className="flex items-center gap-3 text-lg mt-3">
-              <input
-                type="checkbox"
-                checked={showRawData}
-                onChange={(e) => setShowRawData(e.target.checked)}
-                disabled={isBusy}
-                className="h-5 w-5 accent-yellow-400 disabled:opacity-60"
-              />
-              <span>Show Raw Data (Ghost Mode)</span>
-            </label>
 
             {/* Sprint 45: Mathematical ROI Filter — driver's vehicle cost
                 per mile. Range slider 0.00–2.00 in $0.05 steps so EV /

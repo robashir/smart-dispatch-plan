@@ -2640,3 +2640,43 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - NO changes to the live Amtraker fetcher (`fetchAlbTrainArrivals`) — BYOD rides alongside.
 - NO UI redesign / new cards / new Mapbox pins beyond the Save button.
 - NO touching the Sprint 54 `isTrainInWindow` time-gate logic.
+
+---
+
+## Sprint 60 — UI Deprecation & The Hybrid Excision
+
+### Epic
+Aggressively reduce visual clutter and technical debt by deprecating legacy UI toggles (Location/Hub filters, BYOD CSV uploader, Ghost Mode), while preserving the `includeAirport` / `includeAmtrak` backend contract for future headless clients.
+
+### Decision (interpretation locked-in)
+"BYOD Data Settings panel (CSV uploader)" parses as the CSV sub-block, NOT the entire fieldset. Recent (Sprint 45/53–59) sub-features stay: Amtrak textarea + Save Trains, Cost Per Mile slider, Holiday/Academic Calendar picker. Only the CSV uploader, the campus calendar pipeline, and Ghost Mode are excised. Confirmed with user before first edit.
+
+### Build Steps (Frontend)
+- [x] `app/page.js` — delete `useState` for `includeAirport`, `includeAmtrak`, `showRawData`, `campusCalendar`; delete `handleCsvUpload`; delete `calendarExpired`; delete the `campusCalendar` hydrate try-block inside the existing `useEffect` (keep the `dispatchCostPerMile` hydrate).
+- [x] `app/page.js` — hardcode `includeAirport: true, includeAmtrak: true` in the dispatch body; drop `showRawData` and the `campusEvent` injection entirely.
+- [x] `app/page.js` — remove the Location/Hub Filtering `<fieldset>` JSX.
+- [x] `app/page.js` — remove the CSV uploader sub-block (label + `<input type="file">` + count + `calendarExpired` warning) from the BYOD panel.
+- [x] `app/page.js` — remove the Ghost Mode `<label>` JSX.
+- [x] `components/DispatchCards.jsx` — remove the `ghostCls` constant + each card's `${data.isWeak ? ghostCls : ""}` conditional.
+- [x] `components/DispatchMap.jsx` — remove the `item.isWeak` color override and the `opacity: 0.5` inline style.
+
+### Build Steps (Backend — Hard Delete)
+- [x] `app/api/dispatch/route.js` — remove `showRawData` from `buildItinerary` signature and the `if (showRawData) return true;` bypass (Sprint 27 strict `< 10.0` cutoff is now permanent).
+- [x] `app/api/dispatch/route.js` — remove `showRawData` and `campusEvent` from the POST destructure; remove `const showRawData = showRawDataRaw === true;`.
+- [x] `app/api/dispatch/route.js` — remove `campusEventStr` / `isTransitCampusDay` / `isFoodCampusDay` block and the downstream `isFoodCampusDay` food-hotspot `campusMod` boost.
+- [x] `app/api/dispatch/route.js` — remove the `showRawData` arg from the `buildItinerary` call site.
+- [x] PRESERVE: `includeAirport` + `includeAmtrak` destructure, defaulting, and all downstream Synthetic Ripple Swap logic.
+
+### Verification
+- [x] `node --check` on both `route.js` and `page.js` after the edits — clean parse.
+
+### Acceptance Criteria
+- Frontend smoke test reveals no Location/Hub panel, no CSV uploader, no Ghost Mode toggle.
+- POST body now transmits `includeAirport: true` + `includeAmtrak: true` always (no `showRawData`, no `campusEvent`).
+- Dispatch still completes 200 OK; cards + map render normally.
+- Backend `includeAirport` / `includeAmtrak` ripple logic remains functional at the API level.
+
+### Anti-Goals
+- NO localStorage cleanup script — orphaned `campusCalendar` key is passively ignored.
+- NO deletion of backend Hub Filter (`includeAirport` / `includeAmtrak`) logic.
+- NO UI redesign — strictly subtractive.
