@@ -2466,3 +2466,177 @@ If a runtime/build error surfaces, identify the failing line and provide a targe
 - NO external libraries (pdf.js, scrapers, etc.). Pure regex.
 - NO localStorage persistence — per-shift input.
 - NO surgical changes to `buildItinerary`, `densityScore`, or `aggregateTrainArrivalsByHour`.
+
+## Sprint 56 — The College Calendar Surge Injector
+
+> **Retroactive log (post-implementation).** CLAUDE.md says "Plan First": the plan should have been written here before the first edit. It wasn't — logging it now so the paper trail is complete.
+
+### Decisions (locked before coding)
+- **Storage:** Hardcoded `academicSurges` array in `app/api/dispatch/route.js` (NOT a JSON file — that's Sprint 57's scope).
+- **Window encoding:** Decimal-hour `activeWindows: [{ start, end }]` per entry. Hours > 24 encode the cross-midnight tail of the SAME entry (e.g. `{ start: 25.5, end: 27.0 }` = 1:30 AM - 3:00 AM next day). Both endpoints inclusive.
+- **Match math:** Two-branch lookup — same-day entry + `dispatchHour ∈ [w.start, w.end]`, OR yesterday's entry + `(dispatchHour + 24) ∈ [w.start, w.end]`.
+- **Pipeline integration:** Mirror the Sprint 49 holiday-event injection — push one synthetic `type: "event"` with `egressMod: 3.5` (Parity Tier with major holidays), ESP coords for the Mapbox pin. No new UI component.
+- **UI:** Rename the existing label "Holiday Calendar (BYOD)" → "Holiday & Academic Calendar". NO new frontend state — dictionary lives entirely in the backend.
+
+### Build Steps
+- [x] 1. Write `test-academic-surge.js` first (TDD scaffold) with the 3 brief-required assertions + boundary cases. Run + confirm green.
+- [x] 2. Add `academicSurges` dictionary + `findAcademicSurge` / `isAcademicSurge` helpers to `app/api/dispatch/route.js`.
+- [x] 3. Hook a synthetic event push into `structuredEvents` right after the Sprint 49 holiday-event block. `egressMod: 3.5`.
+- [x] 4. Rename label in `app/page.js`.
+- [x] 5. `node --check` both files → **PARSE OK**. Re-run `test-academic-surge.js` → **18/18 PASS**.
+
+### Acceptance Criteria
+- 12:00 PM on Homecoming → 3.5x fires.
+- 4:00 PM on Homecoming (gap between 14.5 and 18.5) → does NOT fire.
+- 2:00 AM the night of Homecoming → cross-midnight 25.5-27.0 fires.
+- Frontend label reads "Holiday & Academic Calendar".
+
+### Anti-Goals
+- NO new frontend state for academic dates (backend-only dictionary).
+- NO touching of the Sprint 49 holiday pipeline.
+- NO test rewrites on failure — patch the math, don't replace the file.
+
+### Status: SUPERSEDED 2026-05-29 by Sprint 57 (data moved to event-config.json; helper renamed to findActiveEvent).
+
+## Sprint 57 — The Unified Event Database
+
+> **Retroactive log (post-implementation).** Same disclosure as Sprint 56 — plan wasn't written first; logging it after the fact so the trail is complete.
+
+### Decisions (locked before coding)
+- **Storage:** Flat JSON file `event-config.json` at the project root. Native Node `fs` only — NO SQLite / Mongo / Prisma (brief anti-goal).
+- **Schema:** `{ [eventName]: { date: "YYYY-MM-DD", type: "holiday" | "academic", multiplier: number, activeWindows: null | [{ start, end }] } }`.
+- **Match semantics:** `type: "holiday"` with `activeWindows: null` → fire whenever today's calendar date matches (whole-day surge — Sprint 49's windowed timing is deliberately collapsed). `type: "academic"` with `activeWindows` → same date-match + decimal-hour window logic from Sprint 56 (including the hours-> 24 cross-midnight tail).
+- **Rip-out scope:** Delete `HOLIDAY_WINDOWS`, `isInHolidayWindow`, the `activeHoliday` request field, the `finalRideMod *= 1.5` boost, the Sprint 49 BYOD localStorage holiday calendar UI, AND the Sprint 56 `academicSurges` array. Single unified `findActiveEvent` helper replaces both.
+- **API:** `app/api/config/events/route.js` — GET reads JSON, POST validates `{ eventName, newDate }` and writes via `fs.writeFileSync`. 404 on unknown event name.
+- **Dispatch read path:** Re-read the JSON on every request (so a Save in the UI takes effect on the next dispatch click).
+- **Frontend:** Fetch JSON on mount, populate dropdown from `Object.keys(eventConfig)`, show inline `<input type="date">` + "Save Date" button ONLY when an event is selected. Button flips to "Saved!" for 2s on success.
+
+### Build Steps
+- [x] 1. Write `scripts/seed-events.js` (26 entries: 10 holiday + 16 academic). Run it → `event-config.json` lands at project root.
+- [x] 2. Refactor `test-academic-surge.js` to round-trip a mock fixture through `fs.writeFileSync` + `fs.readFileSync`. Add holiday-branch cases. Run → **23/23 PASS**.
+- [x] 3. Build `app/api/config/events/route.js` (GET + POST).
+- [x] 4. Refactor `app/api/dispatch/route.js`: add `fs`/`path` imports, `readEventConfig()`, `findActiveEvent`. Delete `HOLIDAY_WINDOWS`, `isInHolidayWindow`, `academicSurges`, `findAcademicSurge`, the `holidayActiveInWindow` boost, and the two separate synthetic-event pushes. Replace with a single unified push using `egressMod = entry.multiplier`.
+- [x] 5. Refactor `app/page.js`: remove `HOLIDAY_OPTIONS`, `holidayCalendar`/`holidaySelect`/`holidayDate` state, localStorage hydrate, `handleSaveHoliday`, `expiredHolidays`, and the `activeHoliday` body field. Add `eventConfig`/`selectedEventName`/`dateInput`/`saveStatus` state, fetch on mount, `handleSaveEvent`, and the new dropdown + conditional date picker + "Save Date" button.
+- [x] 6. `node --check` all 4 changed files → **PARSE OK**. Re-run test suite → **23/23 PASS**. Grep audit confirms no live references to removed symbols (only Sprint 57 receipt-comments remain).
+
+### Acceptance Criteria
+- `node scripts/seed-events.js` produces a valid JSON file at the project root.
+- Selecting an event in the dropdown reveals the date picker pre-populated with the seeded date.
+- Clicking Save POSTs to `/api/config/events` and writes `event-config.json` on disk; button flips to "Saved!" briefly.
+- `test-academic-surge.js` (now reading from a mock JSON file) passes all cross-midnight and half-hour cases.
+
+### Behavioral Changes Flagged to PO
+- Holidays now fire whole-day instead of the Sprint 49 windowed timing (the schema example put `activeWindows: null` on Halloween; brief said "respecting activeWindows if the type is 'academic'").
+- BYOD localStorage holiday calendar is replaced by server-side JSON; per-driver Save persistence has moved to the filesystem.
+- Netlify caveat: `fs.writeFileSync` on serverless is ephemeral / may fail. This is a local-dev-first MVP per brief's acceptance criteria.
+
+### Anti-Goals
+- NO external databases (SQLite / Mongo / Prisma).
+- NO new Settings page or full calendar grid — date picker stays tightly coupled to the dropdown.
+- NO touching unrelated dispatch / routing logic.
+
+### Status: CLOSED 2026-05-29 (modulo browser smoke-test — code paths verified by `node --check` + 23-assertion engine test, but the dropdown reveal / Save round-trip was not validated in a live `npm run dev` session).
+
+---
+
+## Sprint 58 — The BYOD Amtrak Persistence Engine
+
+> **Plan-first per L8.** Written into `tasks/todo.md` BEFORE the first implementation edit. Mirrors the Sprint 57 Unified Event Database storage pattern (flat JSON at the project root, native `fs` only, read on every dispatch).
+
+### Decisions (locked before coding)
+- **Storage:** Flat JSON file `train-config.json` at the project root. Native Node `fs` only — NO SQLite / Mongo / Prisma / Redis / Vercel KV per brief anti-goals. Mirrors Sprint 57.
+- **Schema:** `{ "savedDate": "YYYY-MM-DD", "trains": [{ trainNumber, status, time, arrivalTime }] }`. The `trains` array is the exact output shape of the existing `parseAmtrakText` regex (Sprint 53 / 54 contract — unchanged).
+- **API split:**
+  - NEW `app/api/config/trains/route.js` (POST only). Accepts `{ rawText, localDate }`, runs the regex parser, writes the schema via `fs.writeFileSync`. Returns `{ ok: true, savedDate, trains }`.
+  - MODIFIED `app/api/dispatch/route.js` — remove `trainRawText` from the POST destructure, remove the inline `parseAmtrakText(trainRawText)` call from PHASE 2, add `readTrainConfig(localDate)` helper that returns `{ trains: [] }` on (a) missing file, (b) JSON parse failure, OR (c) `savedDate !== localDate` (lazy auto-wipe).
+  - `parseAmtrakText` moves OUT of dispatch and INTO the new trains route. Sprint 54's `isTrainInWindow` time gate stays in dispatch — it gates the injection loop over the now-persistent trains array.
+- **Lazy auto-wipe:** Compared at READ time inside `readTrainConfig`. No cron, no scheduled deletion, no in-memory TTL. The file may remain on disk forever; if its `savedDate` doesn't match today's local date (derived from `localStart`), dispatch sees an empty trains array.
+- **Frontend:**
+  - Drop `trainRawText` from the `/api/dispatch` POST body (the textarea state stays — it's the typing surface).
+  - Add a "Save Trains" button directly under the textarea. Click → POST `{ rawText: trainRawText, localDate: todayLocalISO() }` to `/api/config/trains`.
+  - On 2xx: button label flips to "Saved!" for ~2s then reverts. On error: label flips to "Save Failed" briefly.
+- **Date source of truth:** Use the existing `todayLocalISO()` helper in `page.js` for the POST `localDate`; in dispatch, derive today's local YYYY-MM-DD from `localStart` (already a Date constructed against `timezoneOffsetMinutes`).
+
+### Build Steps
+- [x] 1. Write `test-amtrak-persistence.js` first. Cover: (a) parser round-trips through `fs.writeFileSync` + `fs.readFileSync`, (b) lazy auto-wipe returns `[]` when `savedDate` is yesterday, (c) same-day match returns the saved trains, (d) missing file returns `{ trains: [] }` without throwing, (e) malformed JSON returns `{ trains: [] }` without throwing. Run → **10/10 PASS**.
+- [x] 2. Create `app/api/config/trains/route.js` (POST). Moves `parseAmtrakText` regex into the new route. Validates `rawText` is a string and `localDate` matches `^\d{4}-\d{2}-\d{2}$`. Writes the schema via `fs.writeFileSync`.
+- [x] 3. Refactor `app/api/dispatch/route.js`: drop `trainRawText` from the POST destructure, delete the inline `parseAmtrakText` definition, add `readTrainConfig(todayISO)` near `readEventConfig`, derive `localDateISO` from `localStart` once, swap the Sprint 53 inline parse for `const parsedTrains = readTrainConfig(localDateISO).trains;`. The Sprint 54 `isTrainInWindow` filter loop stays exactly as written.
+- [x] 4. Refactor `app/page.js`: remove `trainRawText` from the POST body (keep the state + textarea); add `trainSaveStatus` state + `handleSaveTrains` POST handler + the "Save Trains" button under the textarea.
+- [x] 5. `node --check` on all 3 changed files → **PARSE OK** (dispatch, page.js, new trains route). Re-run `test-amtrak-persistence.js` → **10/10 PASS**. Re-run `test-amtrak-parser.js` → **5/5 PASS** (parser logic unchanged, just relocated). Grep audit: remaining hits of `parseAmtrakText` / `trainRawText` in dispatch are receipt comments only.
+
+### Status: CLOSED 2026-05-29 (modulo browser smoke-test — code paths verified by `node --check` + 10-assertion persistence test + 5-assertion parser test, but the textarea → Save Trains → dispatch round-trip was not validated in a live `npm run dev` session).
+
+---
+
+## Sprint 59 — The localStorage Migration (57 + 58 Re-Architecture)
+
+> **Plan-first per L8.** Written into `tasks/todo.md` BEFORE the first implementation edit. Triggered by user clarification after Sprint 58 closeout flagged the Netlify `fs.writeFileSync` failure mode for BOTH `event-config.json` (Sprint 57) and `train-config.json` (Sprint 58).
+
+### Decisions (locked before coding)
+- **Persistence:** Browser `localStorage` only. No server-side filesystem writes. Survives Netlify Lambda's read-only filesystem cleanly. Per-device, per-driver.
+- **Seed strategy for events (Option A):** Static import `import SEED from "../event-config.json"` in `app/page.js`. Next.js bundles the 26-entry seed at build time (~2 KB). On mount, if `localStorage["eventConfig"]` is absent, hydrate from SEED and persist a copy. Re-seeding requires `npm run build` + redeploy.
+- **Seed strategy for trains:** None needed — trains are per-shift ephemeral data. localStorage starts empty; driver pastes + saves.
+- **Data flow:**
+  - `handleSaveEvent` → writes `localStorage["eventConfig"]` only. No fetch.
+  - `handleSaveTrains` → parses textarea client-side via the relocated `parseAmtrakText`, writes `localStorage["trainConfig"] = { savedDate, trains }`.
+  - `handleDispatch` → reads BOTH from localStorage, applies the trains lazy auto-wipe client-side (savedDate vs today → empty array), sends `{ eventConfig, byodTrains }` in the dispatch body.
+  - Dispatch route reads `eventConfig` + `byodTrains` from the body with defensive type-guards. No fs.
+- **Lazy auto-wipe ownership:** Moves to the client. `handleDispatch` checks `savedDate === todayLocalISO()` before forwarding the trains array; mismatch → forward `[]`. Server-side `isTrainInWindow` filter (Sprint 54) is unchanged and still runs.
+- **Files to delete:**
+  - `app/api/config/events/route.js` (GET + POST both unused).
+  - `app/api/config/trains/route.js` (POST unused).
+  - `scripts/seed-events.js` STAYS — engineers regenerate `event-config.json` with it; the file is now the static-import source.
+- **Tests:** Both `test-amtrak-persistence.js` and `test-academic-surge.js` currently mock the fs roundtrip. Strip the fs wrapping; keep the underlying logic assertions (parser shape, lazy-auto-wipe, findActiveEvent date+window matching). The fs round-trip was testing dead code post-migration.
+
+### Build Steps
+- [x] 1. Strip fs roundtrip from `test-amtrak-persistence.js` — keep parser + lazy auto-wipe assertions (now testing `applyLazyWipe` instead of fs read), drop the `os.tmpdir` write/read wrapper. Run → **9/9 PASS**.
+- [x] 2. Strip fs roundtrip from `test-academic-surge.js` — keep findActiveEvent assertions, drop the tmp-file write/read wrapper. Run → **23/23 PASS**.
+- [x] 3. Refactor `app/page.js`:
+  - Added `import EVENT_CONFIG_SEED from "../event-config.json"`.
+  - Added `parseAmtrakText` (relocated from the deleted trains route).
+  - Mount effect: hydrates `eventConfig` from `localStorage["eventConfig"]` if present, else seeds from `EVENT_CONFIG_SEED` and persists.
+  - `handleSaveEvent` → localStorage write only.
+  - `handleSaveTrains` → parses client-side, writes `{ savedDate, trains }` to localStorage.
+  - `handleDispatch` body → adds `eventConfig` + `byodTrains` (lazy auto-wipe applied client-side: `savedDate !== today` → `[]`).
+- [x] 4. Refactor `app/api/dispatch/route.js`:
+  - Destructured `eventConfig` + `byodTrains` from request body with defensive type-guards (`{}` / `[]` fallbacks).
+  - Deleted `EVENT_CONFIG_PATH`, `readEventConfig`, `TRAIN_CONFIG_PATH`, `readTrainConfig`.
+  - Removed `import fs from "fs"` and `import path from "path"` (verified no other consumers).
+  - Replaced `const eventConfig = readEventConfig();` with the body-passed object.
+  - Replaced `readTrainConfig(localDateISO).trains` with the body-passed `byodTrains`.
+- [x] 5. Deleted `app/api/config/events/route.js` + `app/api/config/trains/route.js` + their empty parent directories (`app/api/` now contains only `dispatch/`).
+- [x] 6. `node --check` on dispatch + page.js → **PARSE OK**. Re-ran all three test files → **9 + 23 + 5 = 37/37 PASS**. Grep audit: no live `readEventConfig` / `readTrainConfig` / `EVENT_CONFIG_PATH` / `TRAIN_CONFIG_PATH` / `/api/config` references survive (only Sprint 57/58 historical receipts in `tasks/todo.md`).
+
+### Status: CLOSED 2026-05-29 (modulo browser smoke-test — code paths verified by `node --check` + 37-assertion test suite, but the full first-mount-seed → Save Date → reload → dispatch flow was not validated in a live `npm run dev` session).
+
+### Acceptance Criteria
+- Fresh browser visit: dropdown auto-populates from the SEED (26 entries) on first mount without any network roundtrip.
+- "Save Date" persists to localStorage; reload → the new date survives; the dropdown reflects it.
+- "Save Trains" parses + persists; reload → the textarea is empty (per-shift) but localStorage holds the parsed array.
+- Dispatch click on the same day as Save Trains → BYOD train events still inject downstream.
+- Dispatch click the next day → `savedDate` mismatch → zero BYOD train events injected (no localStorage clear needed — the next Save overwrites).
+- `app/api/config/events/route.js` and `app/api/config/trains/route.js` are gone; no callers anywhere in the repo.
+- Dispatch route has zero `fs.writeFileSync` / `fs.readFileSync` / `fs.existsSync` calls (the static `nightlife_dictionary.json` import is fine — it's bundled, not fs).
+
+### Anti-Goals
+- NO server-side persistence layer (no fs, no Netlify Blobs, no DB).
+- NO new endpoints replacing the deleted ones.
+- NO localStorage hydration for trains beyond the saved-date + trains tuple (no historical log).
+- NO touching the Sprint 54 `isTrainInWindow` time-gate or the Sprint 57 `findActiveEvent` window-match math.
+
+### Behavioral Changes Flagged to PO
+- Cross-device sync is GONE for both events and trains — each driver's browser owns its own config. If a fleet manager updates events centrally, every driver must `npm run build`-pull the new SEED OR clear localStorage.
+- A driver who clears browser data loses their saved event-date overrides AND any pasted trains — both revert to (a) bundled SEED for events, (b) empty for trains.
+- The dispatch request body grows by ~2 KB (the eventConfig object). Negligible.
+
+### Acceptance Criteria (Definition of Done)
+- **Strict File Write:** A POST to `/api/config/trains` with the Sprint 53 sample text writes `train-config.json` at the project root with `savedDate` + `trains` keys; the `trains` array matches the existing parser output exactly.
+- **Same-Day Dispatch:** With `savedDate === todayLocalISO`, dispatch reads the file, the time-gated subset injects into `structuredEvents`, and the existing BYOD log line still fires.
+- **Expiration Edge Case:** With `savedDate` set to yesterday (e.g. `2026-05-28` when today is `2026-05-29`), `readTrainConfig` returns `{ trains: [] }` cleanly — no throw, no crash, zero synthetic train events injected.
+
+### Anti-Goals
+- NO external databases (Postgres / Mongo / Redis / Prisma / Vercel KV).
+- NO cron / scheduled wipe — lazy read-time evaluation only.
+- NO changes to the live Amtraker fetcher (`fetchAlbTrainArrivals`) — BYOD rides alongside.
+- NO UI redesign / new cards / new Mapbox pins beyond the Save button.
+- NO touching the Sprint 54 `isTrainInWindow` time-gate logic.

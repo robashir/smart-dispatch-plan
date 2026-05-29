@@ -4,6 +4,14 @@
 import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json";
 const ALBANY_NIGHTLIFE_HOURS = Object.freeze(ALBANY_NIGHTLIFE_HOURS_RAW);
 
+// Sprint 57: Unified Event Database.
+// Sprint 59: filesystem persistence removed (Netlify Lambdas have a
+// read-only fs). The eventConfig + byodTrains objects are now owned by
+// the browser (localStorage, seeded from a static import of
+// event-config.json) and travel in the dispatch request body. The
+// dispatch route reads them off the body with defensive type-guards
+// instead of off the disk — no more fs / path imports needed here.
+
 // Sprint 26: in-memory TTL cache shared across requests on a warm process.
 // Lives at module scope so it persists across POST invocations on the same
 // Node container (dev server and prod lambda warm container alike). Entry
@@ -87,40 +95,52 @@ const HOSPITAL_SHIFTS = [
   { start: 1350, end: 1410, mod: 2.0, label: "Night Admin Shift" },       // 10:30 PM - 11:30 PM
 ];
 
-// Sprint 49: Localized BYOD Holiday Engine. 10-entry Temporal Logic Matrix
-// mapping each MVP holiday → array of minute-of-day windows. Cross-midnight
-// windows are encoded as { start > end } and tested with the OR branch in
-// isInHolidayWindow. The "activeHoliday" string is supplied by the frontend
-// only when today's local date matches a saved BYOD entry — so the matrix
-// just gates on the wall-clock hour. Both endpoints are inclusive.
-// Validated in isolation by test-holiday-engine.js (29 assertions).
-const HOLIDAY_WINDOWS = {
-  "New Year's Day": [
-    { start: 0, end: 180 },     // 00:00-03:00
-    { start: 600, end: 780 },   // 10:00-13:00
-  ],
-  "Super Bowl Sunday": [{ start: 1290, end: 30 }],   // 21:30-00:30 (cross-midnight)
-  "Valentine's Day":   [{ start: 1080, end: 1410 }], // 18:00-23:30
-  "St. Patrick's Day": [{ start: 900, end: 120 }],   // 15:00-02:00 (cross)
-  "Cinco de Mayo":     [{ start: 1020, end: 60 }],   // 17:00-01:00 (cross)
-  "4th of July":       [{ start: 1290, end: 1410 }], // 21:30-23:30
-  "Halloween":         [{ start: 1200, end: 180 }],  // 20:00-03:00 (cross)
-  "Thanksgiving":      [{ start: 1140, end: 120 }],  // 19:00-02:00 (cross)
-  "Christmas":         [{ start: 1080, end: 60 }],   // 18:00-01:00 (cross)
-  "New Year's Eve":    [{ start: 1200, end: 180 }],  // 20:00-03:00 (cross)
-};
+// Sprint 57: Unified Event Database — match logic. Iterates the JSON-backed
+// event config and returns the first entry whose date matches localStart
+// (with cross-midnight tail-day handling for academic windows that span
+// midnight, encoded with decimal hours > 24, e.g. 25.5 = 1:30 AM next day).
+//
+// Match semantics:
+//   - type "holiday" / activeWindows null|empty: fire whenever today's
+//     calendar date matches (whole-day surge — the Sprint 49 windowed
+//     timing was deliberately collapsed in Sprint 57's schema simplification).
+//   - type "academic" with activeWindows: today's date matches AND
+//     dispatchHour falls inside a window, OR yesterday's date matches AND
+//     (dispatchHour + 24) falls inside a window with hours > 24.
+//
+// Validated in isolation by test-academic-surge.js (23 assertions).
+function findActiveEvent(dispatchDate, dispatchHour, eventConfig) {
+  if (!eventConfig || typeof eventConfig !== "object") return null;
+  if (!(dispatchDate instanceof Date) || Number.isNaN(dispatchDate.getTime())) return null;
+  if (!Number.isFinite(dispatchHour)) return null;
 
-function isInHolidayWindow(holiday, wallMinutes) {
-  const windows = HOLIDAY_WINDOWS[holiday];
-  if (!Array.isArray(windows)) return false;
-  for (const { start, end } of windows) {
-    if (start <= end) {
-      if (wallMinutes >= start && wallMinutes <= end) return true;
-    } else {
-      if (wallMinutes >= start || wallMinutes <= end) return true;
+  const todayYmd = toYmd(dispatchDate);
+  const prevDay = new Date(dispatchDate.getTime() - 24 * 60 * 60 * 1000);
+  const prevYmd = toYmd(prevDay);
+
+  for (const [name, entry] of Object.entries(eventConfig)) {
+    if (!entry || typeof entry !== "object" || typeof entry.date !== "string") continue;
+
+    const windows = Array.isArray(entry.activeWindows) ? entry.activeWindows : null;
+
+    if (!windows || windows.length === 0) {
+      if (entry.date === todayYmd) return { name, ...entry };
+      continue;
+    }
+
+    for (const w of windows) {
+      if (entry.date === todayYmd && dispatchHour >= w.start && dispatchHour <= w.end) {
+        return { name, ...entry };
+      }
+      if (entry.date === prevYmd) {
+        const shifted = dispatchHour + 24;
+        if (shifted >= w.start && shifted <= w.end) {
+          return { name, ...entry };
+        }
+      }
     }
   }
-  return false;
+  return null;
 }
 
 // Sprint 43: Ticketmaster Geocoding. Hardcoded venue dictionary keyed by
@@ -815,39 +835,10 @@ async function fetchAlbTrainArrivals() {
   });
 }
 
-// Sprint 53: BYOD Amtrak Pipeline. Pure regex parser over the driver's
-// pasted-in Amtrak booking page. Status is derived from seat-availability
-// tokens ("Sold Out" / "Only N seat") since the booking view has no
-// "On Time"/"Delayed" string. `time` is formatted "H:MM AM/PM" for the
-// existing parseTimeLabel / computeTimeDecayMod engines; Sprint 54 adds
-// `arrivalTime` in the raw "H:MMp" form so the EventCard can echo what
-// the driver pasted. Validated in isolation by test-amtrak-parser.js.
-function parseAmtrakText(rawText) {
-  if (typeof rawText !== "string" || !rawText.trim()) return [];
-  const text = rawText.replace(/\r\n/g, "\n");
-  const pattern =
-    /(?:^|\n)\s*(\d{2,3})\s*\n[^\n]+\n\s*DEPARTS[\s\S]*?ARRIVES\s*\n\s*(\d{1,2}:\d{2})\s*\n\s*([ap])([\s\S]*?)(?=\n\s*\d{2,3}\s*\n[^\n]+\n\s*DEPARTS|$)/g;
-
-  const results = [];
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    const trainNumber = match[1];
-    const arrivalRaw = match[2];
-    const ampmLetter = match[3].toUpperCase();
-    const tail = match[4] || "";
-
-    const time = `${arrivalRaw} ${ampmLetter}M`;
-    const arrivalTime = `${arrivalRaw}${ampmLetter.toLowerCase()}`;
-
-    let status;
-    if (/Sold Out/i.test(tail)) status = "Sold Out";
-    else if (/Only\s+\d+\s+seat/i.test(tail)) status = "Almost Full";
-    else status = "On Time";
-
-    results.push({ trainNumber, status, time, arrivalTime });
-  }
-  return results;
-}
+// Sprint 53 parseAmtrakText now lives client-side in app/page.js
+// (Sprint 59 — localStorage migration). The parsed trains array travels
+// in the dispatch body as `byodTrains`, already lazy-wiped against
+// today's local date by the client.
 
 // Sprint 54: BYOD Time Gate. Returns true when a BYOD-parsed train's
 // arrival falls in [localStart - 10 min, localEnd]. The -10 min buffer
@@ -1507,25 +1498,19 @@ function computeLastCallEgressEvents(localStart, dictionary) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, activeHoliday: activeHolidayRaw, trainRawText: trainRawTextRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, campusEvent, showRawData: showRawDataRaw, costPerMile: costPerMileRaw, eventConfig: eventConfigRaw, byodTrains: byodTrainsRaw } =
       await request.json();
 
-    // Sprint 53: BYOD Amtrak Pipeline. Driver pastes the Amtrak booking
-    // page text into a textarea; we keep the string here and run the
-    // regex parser inside PHASE 2 alongside the other synthetic
-    // injectors. Defensive string-cast at the boundary so a malformed
-    // payload can't blow up the parser regex.
-    const trainRawText =
-      typeof trainRawTextRaw === "string" ? trainRawTextRaw : "";
-
-    // Sprint 49: Localized BYOD Holiday Engine. The frontend filters its
-    // saved holiday calendar against today's local date and forwards the
-    // matched holiday name only. Defensive string-cast at the boundary so
-    // a malformed payload can't crash the matrix lookup.
-    const activeHoliday =
-      typeof activeHolidayRaw === "string" && activeHolidayRaw.trim()
-        ? activeHolidayRaw.trim()
-        : null;
+    // Sprint 59: client-owned persistence. eventConfig is the localStorage-
+    // backed object (seeded from a static import on first mount) and
+    // byodTrains is the array the client already lazy-wiped against
+    // today's date. Defensive guards at the boundary so a malformed
+    // payload can't crash the pipeline — fall back to {} / [].
+    const eventConfig =
+      eventConfigRaw && typeof eventConfigRaw === "object" && !Array.isArray(eventConfigRaw)
+        ? eventConfigRaw
+        : {};
+    const byodTrains = Array.isArray(byodTrainsRaw) ? byodTrainsRaw : [];
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -1662,23 +1647,14 @@ export async function POST(request) {
       console.log(`BYOD CAMPUS EVENT ACTIVE: ${campusEventStr}`);
     }
 
-    // Sprint 49: Localized BYOD Holiday Engine — math boost. If the
-    // frontend forwarded an activeHoliday AND the wall-clock falls inside
-    // the matrix window, stack a 1.5x multiplier on finalRideMod ONLY
-    // (anti-goal: do not touch finalFoodMod / grocery). The synthetic
-    // event with ESP coords is pushed in PHASE 2 below alongside the
-    // Hospital / State Commuter injectors so the Mapbox pin and EventCard
-    // render natively without any new component.
-    const holidayWallMinutes =
-      localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
-    const holidayActiveInWindow =
-      activeHoliday && isInHolidayWindow(activeHoliday, holidayWallMinutes);
-    if (holidayActiveInWindow) {
-      finalRideMod *= 1.5;
-      console.log(
-        `HOLIDAY SURGE ACTIVE: ${activeHoliday} | Wall: ${Math.floor(holidayWallMinutes / 60)}:${String(holidayWallMinutes % 60).padStart(2, "0")} | Mod: 1.5x`
-      );
-    }
+    // Sprint 57: Unified Event Database. The Sprint 49 finalRideMod boost
+    // tied to the BYOD activeHoliday payload has been removed. Holiday +
+    // academic surges now fire exclusively as synthetic events injected in
+    // PHASE 2 below (egressMod = entry.multiplier), driven by the
+    // localStorage-owned eventConfig the client ships in the body
+    // (Sprint 59). A Save in the UI takes effect on the very next
+    // dispatch click since the next POST carries the updated object.
+    // (eventConfig is destructured + type-guarded at the top of POST.)
 
     // Sprint 20: Zero-Prompt Math. Compute exact driving time to ALB from the
     // driver's current coords (Haversine miles ÷ 20 mph city assumption) so
@@ -1848,23 +1824,31 @@ export async function POST(request) {
       );
     }
 
-    // Sprint 49: Localized BYOD Holiday Engine — synthetic event. When the
-    // matrix window is active, push one Holiday Peak Surge event at ESP
-    // coords. egressMod 3.5 lifts it above Mega-Venue (2.5x) so it
-    // dominates the Profitability sort. type:"event" reuses the existing
-    // purple EventCard + Mapbox pin (PO anti-goal: no new component).
-    if (holidayActiveInWindow) {
+    // Sprint 57: Unified Event Database injector. Single match path for both
+    // holiday and academic surges — driven by event-config.json (read above).
+    // On hit, push one synthetic event with egressMod = entry.multiplier
+    // (default 3.5x — Parity Tier so it dominates the Profitability sort
+    // above Mega-Venue 2.5x). ESP coords reuse the existing purple EventCard
+    // + Mapbox pin path so no new UI component is required. Math validated
+    // in isolation by test-academic-surge.js (23 assertions PASS).
+    const eventDispatchHour =
+      localStart.getUTCHours() + localStart.getUTCMinutes() / 60;
+    const activeEvent = findActiveEvent(localStart, eventDispatchHour, eventConfig);
+    if (activeEvent) {
+      const mod = Number(activeEvent.multiplier) > 0 ? Number(activeEvent.multiplier) : 3.5;
+      const category =
+        activeEvent.type === "holiday" ? "Holiday Surge" : "Academic Calendar";
       structuredEvents.push({
         type: "event",
-        location: `${activeHoliday} Peak Surge`,
+        location: `${activeEvent.name} Surge`,
         volume: 1,
-        egressMod: 3.5,
-        categories: ["Holiday Surge", "High Demand"],
+        egressMod: mod,
+        categories: [category, "High Demand"],
         lat: ESP_COORDS.lat,
         lng: ESP_COORDS.lng,
       });
       console.log(
-        `HOLIDAY EVENT INJECTED: ${activeHoliday} | egressMod 3.5x | ESP_COORDS`
+        `EVENT SURGE INJECTED: ${activeEvent.name} | ${activeEvent.date} | type=${activeEvent.type} | egressMod ${mod}x`
       );
     }
 
@@ -1912,9 +1896,13 @@ export async function POST(request) {
     // isTrainInWindow before injection — only trains arriving in
     // [localStart - 10 min, localEnd] survive. Out-of-window trains
     // never reach the merged payload or the log.
+    // Sprint 58: Persistence. The raw textarea string is no longer in
+    // the request body; trains live in train-config.json.
+    // Sprint 59: localStorage edition. The client lazy-wipes against
+    // today's local date BEFORE shipping, so byodTrains is already
+    // either today's saved trains or [].
     if (activePlatforms.rideshare && includeAmtrak) {
-      const parsedTrains = parseAmtrakText(trainRawText);
-      for (const train of parsedTrains) {
+      for (const train of byodTrains) {
         if (!isTrainInWindow(train.time, localStart, hoursNum)) continue;
         structuredEvents.push({
           type: "event",

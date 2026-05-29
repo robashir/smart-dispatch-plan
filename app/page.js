@@ -6,6 +6,38 @@ import { TopPickBanner } from "../components/TopPickBanner";
 import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
 import DispatchMap from "../components/DispatchMap";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
+// Sprint 59: static seed for the Unified Event Database. Next.js bundles
+// the 26-entry JSON at build time so a fresh browser (no localStorage)
+// hydrates the dropdown without a network round-trip. Re-seeding requires
+// `npm run build` + redeploy. This replaces the Sprint 57 /api/config/events
+// GET fetch.
+import EVENT_CONFIG_SEED from "../event-config.json";
+
+// Sprint 59: BYOD Amtrak parser, relocated client-side from the deleted
+// /api/config/trains route. Output shape is unchanged so the Sprint 54
+// isTrainInWindow server gate keeps working off the body-passed array.
+function parseAmtrakText(rawText) {
+  if (typeof rawText !== "string" || !rawText.trim()) return [];
+  const text = rawText.replace(/\r\n/g, "\n");
+  const pattern =
+    /(?:^|\n)\s*(\d{2,3})\s*\n[^\n]+\n\s*DEPARTS[\s\S]*?ARRIVES\s*\n\s*(\d{1,2}:\d{2})\s*\n\s*([ap])([\s\S]*?)(?=\n\s*\d{2,3}\s*\n[^\n]+\n\s*DEPARTS|$)/g;
+  const results = [];
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const trainNumber = match[1];
+    const arrivalRaw = match[2];
+    const ampmLetter = match[3].toUpperCase();
+    const tail = match[4] || "";
+    const time = `${arrivalRaw} ${ampmLetter}M`;
+    const arrivalTime = `${arrivalRaw}${ampmLetter.toLowerCase()}`;
+    let status;
+    if (/Sold Out/i.test(tail)) status = "Sold Out";
+    else if (/Only\s+\d+\s+seat/i.test(tail)) status = "Almost Full";
+    else status = "On Time";
+    results.push({ trainNumber, status, time, arrivalTime });
+  }
+  return results;
+}
 
 // Sprint 35: Promise wrapper around navigator.geolocation.getCurrentPosition.
 // Resolves with the coords object, rejects on permission denial / timeout /
@@ -28,21 +60,9 @@ function getGeolocation() {
 // still computes a real itinerary instead of crashing.
 const ROESSLEVILLE_COORDS = { latitude: 42.69516, longitude: -73.86063 };
 
-// Sprint 49: BYOD holiday names — must match the backend HOLIDAY_WINDOWS
-// keys EXACTLY (case + apostrophes). Listed in the order the driver is
-// likely to encounter them on the calendar.
-const HOLIDAY_OPTIONS = [
-  "New Year's Day",
-  "Super Bowl Sunday",
-  "Valentine's Day",
-  "St. Patrick's Day",
-  "Cinco de Mayo",
-  "4th of July",
-  "Halloween",
-  "Thanksgiving",
-  "Christmas",
-  "New Year's Eve",
-];
+// Sprint 57: Unified Event Database. The Sprint 49 hardcoded HOLIDAY_OPTIONS
+// list is gone — the dropdown is populated from EVENT_CONFIG_SEED on first
+// mount and from localStorage["eventConfig"] thereafter (Sprint 59).
 
 // Sprint 33: pure helpers mirroring the backend's surgeScore + Sprint 32.1
 // time-decay so the banner can recompute the same ranking score the API
@@ -111,13 +131,21 @@ export default function Home() {
   // dispatchTrainCalendar localStorage) has been fully excised; this
   // textarea is the sole BYOD train-data input.
   const [trainRawText, setTrainRawText] = useState("");
-  // Sprint 49: BYOD holiday calendar. Each entry is { holiday, date }.
-  // Form-side scratch state (holidaySelect / holidayDate) is separate
-  // from the persisted array so an unsaved selection never accidentally
-  // fires in handleClick.
-  const [holidayCalendar, setHolidayCalendar] = useState([]);
-  const [holidaySelect, setHolidaySelect] = useState(HOLIDAY_OPTIONS[0]);
-  const [holidayDate, setHolidayDate] = useState("");
+  // Sprint 58/59: BYOD Amtrak Persistence. Tracks the "Save Trains" button
+  // label — "idle" | "saving" | "saved" | "error". Flips to "saved" for
+  // ~2 s after a successful localStorage write, then resets.
+  const [trainSaveStatus, setTrainSaveStatus] = useState("idle");
+  // Sprint 57/59: Unified Event Database. eventConfig is the object
+  // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
+  // by event name with
+  // { date, type, multiplier, activeWindows } values. selectedEventName
+  // drives the dropdown; dateInput is the value of the inline date picker
+  // (initialized from the selected event's persisted date on each change).
+  // saveStatus toggles the button label briefly to "Saved!" on success.
+  const [eventConfig, setEventConfig] = useState({});
+  const [selectedEventName, setSelectedEventName] = useState("");
+  const [dateInput, setDateInput] = useState("");
+  const [saveStatus, setSaveStatus] = useState("idle");
   // Sprint 38: global Map/List toggle. Default "map" so the SSR pass renders
   // the radar; the useEffect below replaces it with the driver's prior choice
   // once the browser hydrates.
@@ -165,35 +193,79 @@ export default function Home() {
     } catch (e) {
       console.warn("dispatchCostPerMile hydrate failed:", e.message);
     }
-    // Sprint 49: hydrate the BYOD holiday calendar. Each entry is
-    // { holiday, date }; the array survives page reloads so a driver
-    // configures Halloween / Christmas / etc. once per year.
-    try {
-      const rawHoliday = localStorage.getItem("dispatchHolidayCalendar");
-      if (rawHoliday) {
-        const parsed = JSON.parse(rawHoliday);
-        if (Array.isArray(parsed)) setHolidayCalendar(parsed);
-      }
-    } catch (e) {
-      console.warn("dispatchHolidayCalendar hydrate failed:", e.message);
-    }
   }, []);
 
-  // Sprint 49: persist the holiday calendar on every save. Replace-by-key
-  // semantics — saving the same holiday twice overwrites the old date
-  // instead of duplicating, so the driver can easily roll the year forward.
-  function handleSaveHoliday() {
-    if (!holidaySelect || !holidayDate) return;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(holidayDate)) return;
-    const next = [
-      ...holidayCalendar.filter((row) => row.holiday !== holidaySelect),
-      { holiday: holidaySelect, date: holidayDate },
-    ];
-    setHolidayCalendar(next);
+  // Sprint 59: Unified Event Database — localStorage hydration.
+  // Mount-time priority: localStorage["eventConfig"] (driver's saved
+  // overrides) → bundled EVENT_CONFIG_SEED. On first visit the SEED is
+  // persisted so subsequent reloads use the same object identity.
+  // No network round-trip; Netlify-safe.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let config = null;
     try {
-      localStorage.setItem("dispatchHolidayCalendar", JSON.stringify(next));
+      const raw = localStorage.getItem("eventConfig");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") config = parsed;
+      }
+    } catch (e) {
+      console.warn("eventConfig hydrate failed:", e.message);
+    }
+    if (!config) {
+      config = EVENT_CONFIG_SEED;
+      try { localStorage.setItem("eventConfig", JSON.stringify(config)); } catch (e) {
+        console.warn("eventConfig seed persist failed:", e.message);
+      }
+    }
+    setEventConfig(config);
+    const firstName = Object.keys(config)[0] || "";
+    setSelectedEventName(firstName);
+    setDateInput(firstName ? config[firstName]?.date || "" : "");
+  }, []);
+
+  // Sprint 59: Save the selected event's new date to localStorage only.
+  // The dispatch route receives the whole eventConfig object in the POST
+  // body on the next click, so there's no server round-trip on Save.
+  function handleSaveEvent() {
+    if (!selectedEventName) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return;
+    setSaveStatus("saving");
+    try {
+      const updated = {
+        ...eventConfig,
+        [selectedEventName]: {
+          ...eventConfig[selectedEventName],
+          date: dateInput,
+        },
+      };
+      localStorage.setItem("eventConfig", JSON.stringify(updated));
+      setEventConfig(updated);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (err) {
-      console.warn("dispatchHolidayCalendar persist failed:", err.message);
+      console.warn("eventConfig save failed:", err.message);
+      setSaveStatus("idle");
+    }
+  }
+
+  // Sprint 59: BYOD Amtrak Persistence — localStorage edition. Parses the
+  // textarea client-side via parseAmtrakText, then writes the
+  // { savedDate, trains } tuple to localStorage["trainConfig"]. Dispatch
+  // reads from localStorage on each click and applies the lazy auto-wipe
+  // (savedDate vs todayLocalISO) before forwarding the array in the body.
+  function handleSaveTrains() {
+    setTrainSaveStatus("saving");
+    try {
+      const trains = parseAmtrakText(trainRawText);
+      const payload = { savedDate: todayLocalISO(), trains };
+      localStorage.setItem("trainConfig", JSON.stringify(payload));
+      setTrainSaveStatus("saved");
+      setTimeout(() => setTrainSaveStatus("idle"), 2000);
+    } catch (err) {
+      console.warn("trainConfig save failed:", err.message);
+      setTrainSaveStatus("error");
+      setTimeout(() => setTrainSaveStatus("idle"), 2000);
     }
   }
 
@@ -248,12 +320,6 @@ export default function Home() {
     campusCalendar.length > 0 &&
     campusCalendar.every((row) => row.date < todayLocalISO());
 
-  // Sprint 49: per-entry expiration warning. A holiday whose saved date
-  // has slipped into the past needs the driver to roll the year forward.
-  const expiredHolidays = holidayCalendar.filter(
-    (row) => row.date < todayLocalISO()
-  );
-
   async function handleClick() {
     setError("");
     setItinerary([]);
@@ -290,10 +356,6 @@ export default function Home() {
       // a vanilla payload (back-compat).
       const today = todayLocalISO();
       const todaysEvent = campusCalendar.find((row) => row.date === today);
-      // Sprint 49: forward the BYOD holiday name only when today's local
-      // date matches a saved entry. The backend matrix gates on the
-      // wall-clock hour; missing key = vanilla payload (back-compat).
-      const todaysHoliday = holidayCalendar.find((row) => row.date === today);
       const body = {
         latitude,
         longitude,
@@ -307,13 +369,26 @@ export default function Home() {
         // Sprint 45: backend uses this with haversineMiles to compute
         // each item's deadhead cost and drop unprofitable surges.
         costPerMile,
-        // Sprint 53: BYOD Amtrak Pipeline. Raw textarea string —
-        // backend regex parses it into synthetic events. Empty string
-        // is a no-op (parser returns []).
-        trainRawText,
       };
+
+      // Sprint 59: client-owned persistence. eventConfig comes from
+      // localStorage (seeded from EVENT_CONFIG_SEED on first mount) and
+      // ships with every dispatch click — replaces the deleted Sprint 57
+      // fs read. byodTrains ships the saved trains array WITH the lazy
+      // auto-wipe applied here: if today doesn't match savedDate, send [].
+      body.eventConfig = eventConfig;
+      try {
+        const rawTrain = localStorage.getItem("trainConfig");
+        const stored = rawTrain ? JSON.parse(rawTrain) : null;
+        body.byodTrains =
+          stored && stored.savedDate === today && Array.isArray(stored.trains)
+            ? stored.trains
+            : [];
+      } catch (e) {
+        console.warn("trainConfig read failed:", e.message);
+        body.byodTrains = [];
+      }
       if (todaysEvent?.eventType) body.campusEvent = todaysEvent.eventType;
-      if (todaysHoliday?.holiday) body.activeHoliday = todaysHoliday.holiday;
 
       const res = await fetch("/api/dispatch", {
         method: "POST",
@@ -509,6 +584,23 @@ export default function Home() {
               rows={6}
               className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm font-mono disabled:opacity-60"
             />
+            {/* Sprint 58/59: BYOD Amtrak Persistence. Parses the textarea
+                client-side and writes { savedDate, trains } to
+                localStorage. Dispatch reads it with lazy auto-wipe. */}
+            <button
+              type="button"
+              onClick={handleSaveTrains}
+              disabled={isBusy || trainSaveStatus === "saving" || !trainRawText.trim()}
+              className="mt-2 py-2 px-4 rounded-lg bg-neutral-800 border border-neutral-600 text-sm hover:bg-neutral-700 disabled:opacity-50"
+            >
+              {trainSaveStatus === "saved"
+                ? "Saved!"
+                : trainSaveStatus === "error"
+                ? "Save Failed"
+                : trainSaveStatus === "saving"
+                ? "Saving..."
+                : "Save Trains"}
+            </button>
 
             {/* Sprint 40: X-Ray Vision Toggle. Reveals dead zones and
                 sub-1.0 surges as ghosted items so power users can audit
@@ -544,55 +636,59 @@ export default function Home() {
               />
             </div>
 
-            {/* Sprint 49: Localized BYOD Holiday Engine. Driver picks a
-                holiday from the 10 MVP options and pairs it with the
-                actual local celebration date. Stored as
-                [{ holiday, date }] in localStorage["dispatchHolidayCalendar"].
-                Replace-by-key semantics — saving the same holiday twice
-                overwrites the old date. */}
+            {/* Sprint 57/59: Unified Event Database. Dropdown is populated
+                from localStorage (seeded from EVENT_CONFIG_SEED on first
+                mount). Selecting an event reveals an inline date picker
+                pre-loaded with the persisted date; Save writes the
+                override back to localStorage. */}
             <div className="flex flex-col gap-2 mt-4 pt-3 border-t border-neutral-800">
               <label className="text-sm text-neutral-400">
-                Holiday Calendar (BYOD)
+                Holiday & Academic Calendar
               </label>
               <select
-                value={holidaySelect}
-                onChange={(e) => setHolidaySelect(e.target.value)}
-                disabled={isBusy}
+                value={selectedEventName}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  setSelectedEventName(name);
+                  setDateInput(eventConfig[name]?.date || "");
+                  setSaveStatus("idle");
+                }}
+                disabled={isBusy || Object.keys(eventConfig).length === 0}
                 className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm disabled:opacity-60"
               >
-                {HOLIDAY_OPTIONS.map((h) => (
-                  <option key={h} value={h}>{h}</option>
+                {Object.keys(eventConfig).length === 0 && (
+                  <option value="">Loading events…</option>
+                )}
+                {Object.keys(eventConfig).map((name) => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </select>
-              <input
-                type="date"
-                value={holidayDate}
-                onChange={(e) => setHolidayDate(e.target.value)}
-                disabled={isBusy}
-                className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm disabled:opacity-60"
-              />
-              <button
-                type="button"
-                onClick={handleSaveHoliday}
-                disabled={isBusy || !holidayDate}
-                className="self-start py-2 px-4 rounded-lg bg-neutral-800 border border-neutral-700 text-sm font-semibold disabled:opacity-60"
-              >
-                Save Holiday
-              </button>
-              {holidayCalendar.length > 0 && (
-                <ul className="text-xs text-neutral-500 mt-1 space-y-0.5">
-                  {holidayCalendar.map((row) => (
-                    <li key={row.holiday}>
-                      {row.holiday}: {row.date}
-                    </li>
-                  ))}
-                </ul>
+              {selectedEventName && (
+                <>
+                  <input
+                    type="date"
+                    value={dateInput}
+                    onChange={(e) => {
+                      setDateInput(e.target.value);
+                      setSaveStatus("idle");
+                    }}
+                    disabled={isBusy}
+                    className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm disabled:opacity-60"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveEvent}
+                    disabled={isBusy || !dateInput || saveStatus === "saving"}
+                    className="self-start py-2 px-4 rounded-lg bg-neutral-800 border border-neutral-700 text-sm font-semibold disabled:opacity-60"
+                  >
+                    {saveStatus === "saved"
+                      ? "Saved!"
+                      : saveStatus === "saving"
+                      ? "Saving…"
+                      : "Save Date"}
+                  </button>
+                </>
               )}
-              {expiredHolidays.map((row) => (
-                <div key={row.holiday} className="text-sm text-red-400">
-                  Action Required: {row.holiday} date is in the past. Please update.
-                </div>
-              ))}
             </div>
           </div>
         </fieldset>
