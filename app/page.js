@@ -16,20 +16,25 @@ import EVENT_CONFIG_SEED from "../event-config.json";
 // Sprint 59: BYOD Amtrak parser, relocated client-side from the deleted
 // /api/config/trains route. Output shape is unchanged so the Sprint 54
 // isTrainInWindow server gate keeps working off the body-passed array.
-function parseAmtrakText(rawText) {
+// Sprint 61: direction-aware. "outbound" anchors the time capture on the
+// DEPARTS block instead of ARRIVES so the backend's outbound branch sees
+// a departure time in `train.time`. Default stays inbound for back-compat.
+function parseAmtrakText(rawText, direction = "inbound") {
   if (typeof rawText !== "string" || !rawText.trim()) return [];
   const text = rawText.replace(/\r\n/g, "\n");
   const pattern =
-    /(?:^|\n)\s*(\d{2,3})\s*\n[^\n]+\n\s*DEPARTS[\s\S]*?ARRIVES\s*\n\s*(\d{1,2}:\d{2})\s*\n\s*([ap])([\s\S]*?)(?=\n\s*\d{2,3}\s*\n[^\n]+\n\s*DEPARTS|$)/g;
+    direction === "outbound"
+      ? /(?:^|\n)\s*(\d{2,3})\s*\n[^\n]+\n\s*DEPARTS\s*\n\s*(\d{1,2}:\d{2})\s*\n\s*([ap])([\s\S]*?)(?=\n\s*\d{2,3}\s*\n[^\n]+\n\s*DEPARTS|$)/g
+      : /(?:^|\n)\s*(\d{2,3})\s*\n[^\n]+\n\s*DEPARTS[\s\S]*?ARRIVES\s*\n\s*(\d{1,2}:\d{2})\s*\n\s*([ap])([\s\S]*?)(?=\n\s*\d{2,3}\s*\n[^\n]+\n\s*DEPARTS|$)/g;
   const results = [];
   let match;
   while ((match = pattern.exec(text)) !== null) {
     const trainNumber = match[1];
-    const arrivalRaw = match[2];
+    const rawTime = match[2];
     const ampmLetter = match[3].toUpperCase();
     const tail = match[4] || "";
-    const time = `${arrivalRaw} ${ampmLetter}M`;
-    const arrivalTime = `${arrivalRaw}${ampmLetter.toLowerCase()}`;
+    const time = `${rawTime} ${ampmLetter}M`;
+    const arrivalTime = `${rawTime}${ampmLetter.toLowerCase()}`;
     let status;
     if (/Sold Out/i.test(tail)) status = "Sold Out";
     else if (/Only\s+\d+\s+seat/i.test(tail)) status = "Almost Full";
@@ -126,6 +131,11 @@ export default function Home() {
   // label — "idle" | "saving" | "saved" | "error". Flips to "saved" for
   // ~2 s after a successful localStorage write, then resets.
   const [trainSaveStatus, setTrainSaveStatus] = useState("idle");
+  // Sprint 61: BYOD Amtrak direction. "inbound" → existing Rensselaer
+  // arrival path. "outbound" → ESP ingress path (60 min before departure,
+  // <40 min hard drop). Persisted inside trainConfig alongside the parsed
+  // trains so the radio survives reload.
+  const [direction, setDirection] = useState("inbound");
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -150,6 +160,22 @@ export default function Home() {
       if (stored === "map" || stored === "list") setViewMode(stored);
     } catch (e) {
       console.warn("dispatchViewMode hydrate failed:", e.message);
+    }
+  }, []);
+
+  // Sprint 61: hydrate the BYOD direction radio from localStorage so the
+  // driver's last choice survives reload. trainConfig now carries a
+  // `direction` field alongside the parsed trains; older payloads (no
+  // field) default to "inbound" via the truthy check below.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("trainConfig");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.direction === "outbound") setDirection("outbound");
+    } catch (e) {
+      console.warn("trainConfig direction hydrate failed:", e.message);
     }
   }, []);
 
@@ -239,8 +265,11 @@ export default function Home() {
   function handleSaveTrains() {
     setTrainSaveStatus("saving");
     try {
-      const trains = parseAmtrakText(trainRawText);
-      const payload = { savedDate: todayLocalISO(), trains };
+      // Sprint 61: parse against the active direction so the saved trains
+      // already carry DEPARTS times when outbound is selected. The direction
+      // itself is persisted so dispatch + reload both stay coherent.
+      const trains = parseAmtrakText(trainRawText, direction);
+      const payload = { savedDate: todayLocalISO(), direction, trains };
       localStorage.setItem("trainConfig", JSON.stringify(payload));
       setTrainSaveStatus("saved");
       setTimeout(() => setTrainSaveStatus("idle"), 2000);
@@ -326,6 +355,10 @@ export default function Home() {
       // fs read. byodTrains ships the saved trains array WITH the lazy
       // auto-wipe applied here: if today doesn't match savedDate, send [].
       body.eventConfig = eventConfig;
+      // Sprint 61: forward the saved direction alongside the trains so the
+      // backend routes outbound trains through ESP / the 60-min buffer math
+      // and inbound trains through the legacy Rensselaer path.
+      body.direction = direction;
       try {
         const rawTrain = localStorage.getItem("trainConfig");
         const stored = rawTrain ? JSON.parse(rawTrain) : null;
@@ -468,6 +501,32 @@ export default function Home() {
             BYOD Data Settings
           </span>
           <div className="flex flex-col gap-2 rounded-xl bg-neutral-900/60 border border-neutral-800 p-4">
+            {/* Sprint 61: BYOD Amtrak direction. Radio sits directly above
+                the textarea so the parser anchor (DEPARTS vs ARRIVES) is
+                obviously a property of the same dump the driver pastes
+                next. Persisted in trainConfig alongside the trains. */}
+            <div className="flex flex-col gap-1">
+              <span className="text-sm text-neutral-400">Train Direction</span>
+              <div className="flex gap-4">
+                {[
+                  { value: "inbound", label: "Inbound (Arriving)" },
+                  { value: "outbound", label: "Outbound (Departing)" },
+                ].map((opt) => (
+                  <label key={opt.value} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="trainDirection"
+                      value={opt.value}
+                      checked={direction === opt.value}
+                      onChange={() => setDirection(opt.value)}
+                      disabled={isBusy}
+                      className="accent-yellow-400 disabled:opacity-60"
+                    />
+                    <span>{opt.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
             {/* Sprint 53: BYOD Amtrak Pipeline. Per-shift raw text dump
                 from the Amtrak booking page (NYP → ALB). Backend regex
                 parses train number + arrival time + seat-availability

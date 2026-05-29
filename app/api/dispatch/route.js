@@ -58,8 +58,19 @@ const AMTRAK_COORDS = { lat: 42.6463, lng: -73.7392 };
 // Sprint 36: spatial anchors for the State Capital engine. ESP gates the
 // Lobbyist Premium (1.5-mi centroid radius); both ESP + Harriman are the
 // location label on the 4 PM commuter synthetic event.
+// Sprint 61: ESP_COORDS doubles as the BYOD outbound-train anchor — drivers
+// intercept departing-train passengers downtown 60 min before they leave.
 const ESP_COORDS = { lat: 42.6514, lng: -73.7608 };
 const HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 };
+
+// Sprint 61: Outbound Amtrak Ingress Engine. Driver wants to be downtown
+// 60 min before a train departs (BUFFER); if the train departs in less
+// than 40 min from "now" the synthetic event is dropped because the
+// driver can't realistically reach ESP + transport the rider to ALB in
+// time. Validated in isolation by test-amtrak-outbound.js before being
+// ported here.
+const OUTBOUND_BUFFER_MINUTES = 60;
+const OUTBOUND_DROP_THRESHOLD = 40;
 
 // Sprint 52: spatial anchor for Crossgates Mall (largest indoor regional
 // shopping center in the Capital District). Paired with CROSSGATES_HOURS
@@ -1206,6 +1217,38 @@ function itemTime(item) {
   return -Infinity;
 }
 
+// Sprint 61: inverse of parseTimeLabel — minutes-since-midnight → "H:MM AM/PM".
+// Wraps via mod-1440 so a sub-60 outbound shift that crosses backwards over
+// midnight (e.g. 12:30 AM dep → -30 min raw → 11:30 PM prior day) still
+// produces a valid wall-clock label.
+function formatTimeLabel(minutes) {
+  if (!Number.isFinite(minutes)) return null;
+  const wrapped = ((minutes % 1440) + 1440) % 1440;
+  const h24 = Math.floor(wrapped / 60);
+  const mm = wrapped % 60;
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 || 12;
+  return `${h12}:${String(mm).padStart(2, "0")} ${ampm}`;
+}
+
+// Sprint 61: BYOD Outbound time math. Driver targets ESP 60 min before the
+// train leaves. Strict drop under 40 min (cannot make it); clamp leaveBy to
+// "now" inside the 40–60 min band so it acts as an immediate surge without
+// a past-timestamp time-decay penalty. Cross-midnight rollover mirrors the
+// Sprint 54 isTrainInWindow convention. Returns null when the train must be
+// dropped or when inputs are malformed.
+function computeOutboundLeaveBy(departureTimeStr, localStart) {
+  const depMin = parseTimeLabel(departureTimeStr);
+  if (!Number.isFinite(depMin)) return null;
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return null;
+  const nowMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  let delta = depMin - nowMin;
+  if (delta < -360) delta += 1440;
+  if (delta < OUTBOUND_DROP_THRESHOLD) return null;
+  if (delta < OUTBOUND_BUFFER_MINUTES) return formatTimeLabel(nowMin);
+  return formatTimeLabel(depMin - OUTBOUND_BUFFER_MINUTES);
+}
+
 // Sprint 32.1: Time-Decay modifier. Protects the driver's hourly wage by
 // penalizing future surges that are too far away to chase. Tiers:
 //   delta < 45 min (or in the past, or no time label) -> 1.0
@@ -1497,8 +1540,13 @@ function computeLastCallEgressEvents(localStart, dictionary) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, costPerMile: costPerMileRaw, eventConfig: eventConfigRaw, byodTrains: byodTrainsRaw } =
+    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, costPerMile: costPerMileRaw, eventConfig: eventConfigRaw, byodTrains: byodTrainsRaw, direction: directionRaw } =
       await request.json();
+
+    // Sprint 61: BYOD Amtrak direction toggle. Only an explicit "outbound"
+    // flips the engine; anything else (missing, malformed, "inbound") keeps
+    // the legacy Rensselaer-arrival behavior so existing clients still work.
+    const direction = directionRaw === "outbound" ? "outbound" : "inbound";
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
     // backed object (seeded from a static import on first mount) and
@@ -1883,6 +1931,31 @@ export async function POST(request) {
     // either today's saved trains or [].
     if (activePlatforms.rideshare && includeAmtrak) {
       for (const train of byodTrains) {
+        if (direction === "outbound") {
+          // Sprint 61: Outbound Ingress. train.time is the DEPARTS time
+          // (client parser already captured the right block). Shift it
+          // backwards by OUTBOUND_BUFFER_MINUTES (drop / clamp per the
+          // 40-min rule), then re-gate against the dispatch window using
+          // the shifted leaveBy so out-of-window outbound trains are still
+          // suppressed.
+          const leaveBy = computeOutboundLeaveBy(train.time, localStart);
+          if (!leaveBy) continue;
+          if (!isTrainInWindow(leaveBy, localStart, hoursNum)) continue;
+          structuredEvents.push({
+            type: "event",
+            location: `Empire State Plaza — Outbound Train ${train.trainNumber}`,
+            volume: 1,
+            egressMod: 2.0,
+            categories: ["BYOD Train", "Outbound", train.status],
+            leaveBy,
+            lat: ESP_COORDS.lat,
+            lng: ESP_COORDS.lng,
+          });
+          console.log(
+            `BYOD OUTBOUND TRAIN PARSED: ${train.trainNumber} | Status: ${train.status} | Departs: ${train.time} | LeaveBy: ${leaveBy}`
+          );
+          continue;
+        }
         if (!isTrainInWindow(train.time, localStart, hoursNum)) continue;
         structuredEvents.push({
           type: "event",

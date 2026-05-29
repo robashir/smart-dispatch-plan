@@ -2680,3 +2680,44 @@ Aggressively reduce visual clutter and technical debt by deprecating legacy UI t
 - NO localStorage cleanup script — orphaned `campusCalendar` key is passively ignored.
 - NO deletion of backend Hub Filter (`includeAirport` / `includeAmtrak`) logic.
 - NO UI redesign — strictly subtractive.
+
+---
+
+## Sprint 61 — The Outbound Amtrak Ingress Engine
+
+### Epic
+Expand the BYOD Amtrak pipeline to cover departing trains. Driver picks Inbound or Outbound; outbound routes to Empire State Plaza (ESP) `OUTBOUND_BUFFER_MINUTES = 60` before the train leaves so they can intercept passengers heading to the station.
+
+### Decisions (locked-in)
+- New constants live next to the spatial anchors at the top of `route.js`: `OUTBOUND_BUFFER_MINUTES = 60`, `OUTBOUND_DROP_THRESHOLD = 40`.
+- Parser becomes direction-aware: `parseAmtrakText(rawText, direction)`. When `direction === "outbound"` the regex captures the time block under `DEPARTS` instead of `ARRIVES`. Output shape stays `{ trainNumber, status, time, arrivalTime }`; for outbound, `time` is the DEPARTS time as "H:MM AM/PM" and `arrivalTime` carries the raw `H:MMp` DEPARTS string so EventCard's existing line keeps rendering (it stays a single time-of-day line — the card's "Arrives:" label is acceptable noise per the NO-UI-redesign anti-goal).
+- The `direction` field is persisted in `localStorage["trainConfig"]` alongside `{ savedDate, trains }` so the radio survives reload.
+- Backend gating order: for outbound trains, compute `delta = depMin - nowMin` (with the same `< -360` cross-midnight rollover used by Sprint 54 / 32.1). If `delta < OUTBOUND_DROP_THRESHOLD` → drop. Else if `delta < OUTBOUND_BUFFER_MINUTES` → `leaveBy = formatTimeLabel(nowMin)` (clamp to now). Else → `leaveBy = formatTimeLabel(depMin - OUTBOUND_BUFFER_MINUTES)`.
+- After the shift / clamp, the existing `isTrainInWindow` time-gate runs against the synthetic `leaveBy` so out-of-dispatch-window outbound trains are still suppressed.
+- For outbound events the synthetic push uses `ESP_COORDS`, location label `"Empire State Plaza — Outbound Train ${trainNumber}"`, omits `origin: "NYP"` (the rider is heading TO NYP), keeps `egressMod: 2.0` for parity with the inbound branch.
+
+### Build Steps
+- [x] 1. Write `test-amtrak-outbound.js` (TDD) covering: parser DEPARTS capture, drop (`delta < 40`), clamp-to-now (`40 <= delta < 60`), shift (`delta >= 60`), 40-min and 60-min boundary inclusivity, cross-midnight rollover, malformed input → null.
+- [x] 2. Run `node test-amtrak-outbound.js` → confirm ALL PASS before editing `route.js`. **16/16 PASS.**
+- [x] 3. `route.js`: add `OUTBOUND_BUFFER_MINUTES` + `OUTBOUND_DROP_THRESHOLD` next to `ESP_COORDS` / `AMTRAK_COORDS`.
+- [x] 4. `route.js`: add `formatTimeLabel(minutesSinceMidnight)` and `computeOutboundLeaveBy(departureTimeStr, localStart)` near `parseTimeLabel`.
+- [x] 5. `route.js`: extend POST destructure with `direction: directionRaw`; defensive default to `"inbound"` unless `directionRaw === "outbound"`.
+- [x] 6. `route.js`: in the existing BYOD train injection loop, branch on `direction`. Outbound branch computes leaveBy via `computeOutboundLeaveBy`; drop on `null`; pushes synthetic event with `ESP_COORDS` + ESP location label; reuses the existing `isTrainInWindow` against the shifted/clamped `leaveBy`.
+- [x] 7. `app/page.js`: extend `parseAmtrakText(rawText, direction)` so outbound captures DEPARTS. Add a `direction` `useState` defaulting to `"inbound"`. Add a radio fieldset above the Amtrak textarea. Persist `{ savedDate, direction, trains }` in `handleSaveTrains`. Read & hydrate `direction` from `localStorage["trainConfig"]` on mount. Forward `direction` in the dispatch body.
+- [x] 8. Verification: `node --check` clean on both `route.js` and `page.js`; `node test-amtrak-outbound.js` → 16/16 PASS; `node test-amtrak-parser.js` → 5/5 PASS; `node test-time-gate.js` → 21/21 PASS.
+- [x] 9. Update this todo file with the closing status.
+
+### Acceptance Criteria
+- TDD: `test-amtrak-outbound.js` exists at repo root and passes before `route.js` is edited.
+- Outbound synthetic event lands at `ESP_COORDS` with a `leaveBy` reflecting either the 60-min shift or the clamp-to-now rule.
+- Trains departing in under 40 min from `localStart` are silently dropped (no log spam, no card, no pin).
+- Inbound behavior is byte-for-byte unchanged: still pushes the Rensselaer-pinned event with the verbatim `train.time` as `leaveBy`.
+- Radio choice survives a hard reload because it lives in `trainConfig` alongside the parsed trains.
+
+### Anti-Goals
+- NO live Amtrak API call (no `api-v3.amtraker.com`, no fetcher, no cache entry).
+- NO redesign of Mapbox pins or `DispatchCards.jsx` — outbound rides the existing purple `type: "event"` path.
+- NO changes to the inbound code path or its log line — strictly additive branch.
+- NO new fields in the synthetic event shape beyond what `type: "event"` already supports.
+
+### Status: CLOSED 2026-05-29 — outbound branch + radio toggle landed; `test-amtrak-outbound.js` (16/16), `test-amtrak-parser.js` (5/5), `test-time-gate.js` (21/21) all green; `node --check` clean on both `route.js` and `page.js`. Browser smoke-test of the radio + dispatch round-trip not yet exercised in a live `npm run dev` session.
