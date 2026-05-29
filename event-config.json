@@ -3,61 +3,111 @@
     "date": "2026-01-01",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 10,
+        "end": 15
+      }
+    ]
   },
   "Super Bowl Sunday": {
     "date": "2026-02-08",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 21,
+        "end": 24
+      }
+    ]
   },
   "Valentine's Day": {
     "date": "2026-02-14",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 17,
+        "end": 23
+      }
+    ]
   },
   "St. Patrick's Day": {
     "date": "2026-03-17",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 15,
+        "end": 26
+      }
+    ]
   },
   "Cinco de Mayo": {
     "date": "2026-05-05",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 16,
+        "end": 24
+      }
+    ]
   },
   "4th of July": {
     "date": "2026-07-04",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 21,
+        "end": 24
+      }
+    ]
   },
   "Halloween": {
     "date": "2026-10-31",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 20,
+        "end": 27
+      }
+    ]
   },
   "Thanksgiving": {
     "date": "2026-11-26",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 16,
+        "end": 22
+      }
+    ]
   },
   "Christmas": {
     "date": "2026-12-25",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 16,
+        "end": 22
+      }
+    ]
   },
   "New Year's Eve": {
     "date": "2026-12-31",
     "type": "holiday",
     "multiplier": 3.5,
-    "activeWindows": null
+    "activeWindows": [
+      {
+        "start": 19,
+        "end": 28
+      }
+    ]
   },
   "Fall Move-In Day 1": {
     "date": "2026-08-22",
