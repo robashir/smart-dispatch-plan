@@ -4,6 +4,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { useEffect, useState } from "react";
 import { TopPickBanner } from "../components/TopPickBanner";
 import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
+import { PeakSurgeBanner } from "../components/PeakSurgeBanner";
 import DispatchMap from "../components/DispatchMap";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 // Sprint 59: static seed for the Unified Event Database. Next.js bundles
@@ -115,6 +116,9 @@ export default function Home() {
   // null until the first dispatch; GlobalWeatherBanner returns null on null
   // or on any combo that isn't a known Storm / Pre-Surge / Heatwave.
   const [weatherModifiers, setWeatherModifiers] = useState(null);
+  // Sprint 66: Peak Overlap Engine payload. Stateless banner renders this
+  // object verbatim (or hides when totalDensity <= 50). Null until first dispatch.
+  const [peakSurgeWindow, setPeakSurgeWindow] = useState(null);
   // Sprint 37: live driver coords for the pulsing blue dot on the radar.
   // Reset on each dispatch so a stale fix never floats over the new plan.
   // Sprint 37.2: renamed coords → driverCoords for an unambiguous prop chain
@@ -334,6 +338,7 @@ export default function Home() {
   async function handleClick() {
     setError("");
     setItinerary([]);
+    setPeakSurgeWindow(null);
     setDriverCoords(null);
     setStatus("locating");
 
@@ -410,6 +415,7 @@ export default function Home() {
 
       setItinerary(data.itinerary || []);
       setWeatherModifiers(data.weatherModifiers || null);
+      setPeakSurgeWindow(data.peakSurgeWindow || null);
       setStatus("done");
     } catch (err) {
       console.error(err);
@@ -691,6 +697,8 @@ export default function Home() {
             {error}
           </div>
         )}
+
+        {status === "done" && <PeakSurgeBanner data={peakSurgeWindow} />}
 
         {status === "done" && topPick && <TopPickBanner data={topPick} />}
 

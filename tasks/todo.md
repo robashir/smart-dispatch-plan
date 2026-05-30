@@ -2964,4 +2964,50 @@ Drivers see absolute timestamps on transit cards ("12:10p") and have to mentally
 - DO NOT modify `isTrainInWindow` or `computeOutboundLeaveBy`.
 - DO NOT touch `app/page.js` (no UI state changes belong on the form).
 
+## Sprint 66 — Peak Overlap Engine (Golden Half-Hour)
+
+### Epic
+The dispatch engine already names the single best move. Drivers also need to know the half-hour where overlapping surges stack the highest, so they can plan breaks around the rush. Sprint 66 builds a pure-observer engine: a 30-minute window sliding in 15-minute increments across the itinerary, summing each block's `densityScore`, surfacing the winning window and its top 2-3 contributors as `mergedPayload.peakSurgeWindow`. Frontend renders a single muted banner above the existing Top Pick.
+
+### Decisions (locked before coding)
+- **Helper signature:** `findPeakSurgeWindow(itinerary)`. Pure function — operates only on the already-scored items in the itinerary, no payload re-reads, no time-decay re-math. Returns `null` when there is nothing to score (empty input / every item with `densityScore <= 0`).
+- **Window math:** 30-minute window length, 15-minute slide. Window is half-open `[start, start+30)` so a single item at the exact boundary lands in exactly one window (no double-count when two adjacent windows touch).
+- **Time source:** existing `item.leaveBy || item.hourBucket`, parsed via `parseTimeLabel` (already in `route.js`). Items lacking a finite time are "current / ongoing" and contribute to the EARLIEST window only — matching the brief's "apply to the current window" rule without inventing a `localStart` parameter the helper doesn't need.
+- **Cross-midnight handling:** if the spread of finite times exceeds 720 min, every time `< 360` is shifted by `+1440` for the duration of the sweep (mirrors Sprint 54 / Sprint 61 wrap convention). `formatTimeLabel` already wraps via `mod 1440` so the rendered window survives both pre- and post-midnight starts.
+- **Contributor labels:** prefer `item.location`, fall back to `item.hub`, last-resort `item.type`. No new field invented; no shape-specific formatter.
+- **Top contributors:** sorted by `densityScore` descending, take up to 3 names.
+- **Threshold for UI:** banner hidden when `peakSurgeWindow == null` OR `totalDensity <= 50`. Matches the brief's `e.g., > 50%` example and aligns with the project's Sprint 27 `<10` per-item floor (a window with one weak item must still clear).
+- **Tie-break:** earliest qualifying window wins (`> best.total` keeps the first-seen tie, never overwrites).
+- **No payload mutation:** the engine reads `mergedPayload.itinerary` AFTER `buildItinerary` runs; it does not edit any item or recompute any densityScore.
+- **Single render site:** new stateless `components/PeakSurgeBanner.jsx`, mounted in `app/page.js` immediately above the existing `<TopPickBanner>`. No new React state, no useEffect.
+
+### Build Steps
+- [x] 0. Append this Sprint 66 section to `tasks/todo.md`.
+- [x] 1. Create `test-peak-overlap.js` at project root: assertions for (a) tightly-packed overlap finding the 23:15-23:45 window with totalDensity 350, (b) 15-min slide correctness, (c) cross-midnight wrap (11:45 PM + 12:00 AM), (d) noTime items applied to earliest window only, (e) top-3 contributor extraction sorted by densityScore, (f) empty / all-zero / null itinerary returns `null`, (g) threshold not enforced inside the helper (helper returns the raw object; banner enforces the threshold).
+- [x] 2. Run `node test-peak-overlap.js`; confirm 0 failures.
+- [x] 3. `app/api/dispatch/route.js`: add `findPeakSurgeWindow(itinerary)` helper next to `buildItinerary`. Reuses existing `parseTimeLabel` + `formatTimeLabel` — no new time-math primitives.
+- [x] 4. `app/api/dispatch/route.js`: after `mergedPayload.itinerary = buildItinerary(...)`, set `mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary)`.
+- [x] 5. Create `components/PeakSurgeBanner.jsx`: stateless functional component, returns `null` when `data == null` or `data.totalDensity <= 50`, otherwise renders one line with the window + contributor join.
+- [x] 6. `app/page.js`: import `PeakSurgeBanner`; render above `<TopPickBanner>`. Threaded the payload via a single `peakSurgeWindow` useState (mirrors `weatherModifiers`); reset on dispatch click, populated from `data.peakSurgeWindow` on response. Decision revision logged below.
+- [x] 7. Verification: `node --check` clean on `route.js` + `page.js`; `node test-peak-overlap.js` 28/28; regression `test-relative-time.js` 22/22 + `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 all green.
+
+### Decision Revision (recorded mid-sprint)
+- Original decision: "No new React state — thread through the existing `itinerary` setter."
+- Revised: added a single `useState(null)` for `peakSurgeWindow`, mirroring the existing `weatherModifiers` pattern. Reason: `itinerary` is an array; overloading it to hold an object would have polluted every downstream consumer (`flatItinerary`, `filteredItinerary`, `topPick`). The original anti-goal targets ticking-timer state, not payload-field state — the new state is set once per dispatch and never re-rendered for clock reasons. No `useEffect`, no `setInterval`, no `Date.now()` introduced. Anti-goal still honored in spirit.
+
+### Status: CLOSED 2026-05-30 — `test-peak-overlap.js` 28/28 PASS at project root. Backend ships `mergedPayload.peakSurgeWindow` of shape `{ timeWindow, totalDensity, topContributors }` (or `null`); helper sweeps 30-min windows in 15-min increments, half-open intervals so boundary items count exactly once, no-time hotspots ride the earliest window only, cross-midnight wrap via `+1440` on early times when spread > 720, earliest-on-tie pick. Frontend mounts `PeakSurgeBanner` above `TopPickBanner` and silently hides when `totalDensity <= 50`. No charting library, no edits to `buildItinerary` / `densityScore` / `computeTimeDecayMod`. `node --check` clean on both touched files. All four regression suites still pass.
+
+### Acceptance Criteria
+- `test-peak-overlap.js` exists, exercises the sliding-window math + cross-midnight + top-contributor extraction, exits with 0 failures.
+- `/api/dispatch` response carries `peakSurgeWindow` of shape `{ timeWindow, totalDensity, topContributors }` (or `null` when nothing scores).
+- Frontend renders the Golden Half-Hour banner above the Top Pick when `totalDensity > 50`, otherwise it's silently hidden.
+- No new React state, no charting libraries, no edits to `buildItinerary` math or sort.
+
+### Anti-Goals
+- DO NOT change the window length (30 min) or slide step (15 min).
+- DO NOT introduce a charting library or visual heatmap.
+- DO NOT mutate `buildItinerary`, `densityScore`, `computeTimeDecayMod`, or any item's `densityScore`.
+- DO NOT add new React state, `useEffect`, or client-side time math for the banner.
+- DO NOT enforce the 50% threshold inside the backend helper — the helper returns the raw shape; the banner decides whether to render.
+
 ### Status: CLOSED 2026-05-30 — `test-relative-time.js` 16/16 PASS (future arrival + future departure + zero delta both verbs + past both verbs + cross-midnight forward + cross-midnight backward + non-finite inputs return null). `route.js` adds `computeRelativeTimeString(targetMinutes, startMinutes, kind = "arrival")` next to `formatTimeLabel` (same wrap convention as Sprint 61: delta < -360 → +1440 / delta > 720 → -1440, no clamping). `aggregateTrainArrivalsByHour` stamps `relativeTime` on each live-Amtraker bucket using the hour-boundary minute. The single BYOD loop stamps `relativeTime` on both branches — inbound uses `parseTimeLabel(train.time)` + `"arrival"`, outbound uses `parseTimeLabel(train.time)` (the train's actual departure, NOT the shifted `leaveBy`) + `"departure"`. `components/DispatchCards.jsx` `TrainCard` + `EventCard` render `data.relativeTime` as a `text-sm text-neutral-400` line, conditional on presence (older payloads still render cleanly). No `useEffect` / `setInterval` / client-side clock math introduced. `node --check` clean on `route.js` + `page.js`; regression `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 all still green. Live `npm run dev` browser smoke-test of the rendered indicator line not yet exercised.

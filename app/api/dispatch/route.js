@@ -1629,6 +1629,83 @@ function buildItinerary(
   return out;
 }
 
+// Sprint 66: Peak Overlap Engine. Sweeps a 30-minute window in 15-minute
+// increments across the already-scored itinerary, sums each block's
+// densityScore, and returns the winning window + its top contributors.
+// Pure observer — does NOT mutate items or re-run any scoring math. Items
+// without a finite time (current/ongoing hotspots) ride the EARLIEST
+// window only. Cross-midnight handled via the same +1440 wrap convention
+// as the rest of the file (Sprint 54 / 61). Returns null when there is
+// nothing scoreable so the frontend can hide the banner cleanly.
+function peakSurgeContributorLabel(it) {
+  return it?.location || it?.hub || it?.type || "Unknown";
+}
+function findPeakSurgeWindow(itinerary) {
+  if (!Array.isArray(itinerary) || itinerary.length === 0) return null;
+
+  const withTime = [];
+  const noTime = [];
+  for (const it of itinerary) {
+    const ds = Number(it?.densityScore);
+    if (!Number.isFinite(ds) || ds <= 0) continue;
+    const label = it.leaveBy || it.hourBucket;
+    const t = parseTimeLabel(label);
+    if (Number.isFinite(t)) withTime.push({ item: it, t });
+    else noTime.push(it);
+  }
+
+  if (withTime.length === 0 && noTime.length === 0) return null;
+
+  if (withTime.length === 0) {
+    const total = noTime.reduce((s, it) => s + (Number(it.densityScore) || 0), 0);
+    const top = [...noTime]
+      .sort((a, b) => (Number(b.densityScore) || 0) - (Number(a.densityScore) || 0))
+      .slice(0, 3)
+      .map(peakSurgeContributorLabel);
+    return {
+      timeWindow: "Current / Ongoing",
+      totalDensity: Math.round(total),
+      topContributors: top,
+    };
+  }
+
+  const rawTimes = withTime.map((x) => x.t);
+  const spans = Math.max(...rawTimes) - Math.min(...rawTimes) > 720;
+  const norm = withTime.map(({ item, t }) => ({
+    item,
+    t: spans && t < 360 ? t + 1440 : t,
+  }));
+
+  const minT = Math.min(...norm.map((x) => x.t));
+  const maxT = Math.max(...norm.map((x) => x.t));
+
+  let best = null;
+  for (let start = minT; start <= maxT; start += 15) {
+    const end = start + 30;
+    const inside = norm
+      .filter((x) => x.t >= start && x.t < end)
+      .map((x) => x.item);
+    const items = start === minT ? [...noTime, ...inside] : inside;
+    if (items.length === 0) continue;
+    const total = items.reduce((s, it) => s + (Number(it.densityScore) || 0), 0);
+    if (!best || total > best.total) {
+      best = { start, end, total, items };
+    }
+  }
+  if (!best) return null;
+
+  const top = [...best.items]
+    .sort((a, b) => (Number(b.densityScore) || 0) - (Number(a.densityScore) || 0))
+    .slice(0, 3)
+    .map(peakSurgeContributorLabel);
+
+  return {
+    timeWindow: `${formatTimeLabel(best.start)} - ${formatTimeLabel(best.end)}`,
+    totalDensity: Math.round(best.total),
+    topContributors: top,
+  };
+}
+
 // Returns { foodHotspots, groceryHotspots } arrays, or null when no API key
 // is configured (so dispatch can run degraded).
 // Sprint 28: localStart threaded through for the late-night Anchor bonus.
@@ -2300,6 +2377,11 @@ export async function POST(request) {
       longitude,
       costPerMile
     );
+
+    // Sprint 66: Peak Overlap Engine — pure observer over the already-scored
+    // itinerary. The frontend gates rendering on totalDensity > 50, so the
+    // helper is free to return low-total results without polluting the UI.
+    mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
 
     // Sprint 62: Unified Situational Radar verification log. Counts how many
     // items in the final itinerary carry "Inbound" vs "Outbound" categories
