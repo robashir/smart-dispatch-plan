@@ -189,6 +189,10 @@ const YIELD_RATES = {
   event: 50,
   mega_event: 450,
   hospital: 30,
+  // Sprint 62.3: Nightlife Decoupling. Micro-venue bar baseline. With a
+  // Sprint 50 Last Call egressMod of 3.5x, this yields ~70 — strictly
+  // below the 80 default-capacity ceiling for an unlisted small venue.
+  nightlife: 20,
 };
 
 // Sprint 48: Static capacity dictionary keyed by lowercased primary
@@ -236,11 +240,20 @@ function yieldRateFor(item) {
   if (item.type === "grocery") return YIELD_RATES.grocery;
   if (item.type === "event") {
     const cat0 = (Array.isArray(item.categories) && item.categories[0]) || "";
+    const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
     if (/shift|nursing|admin|clinic/i.test(cat0)) return YIELD_RATES.hospital;
     // Sprint 52: Crossgates Retail Egress — 150 expected rideshare yield.
     // Checked BEFORE the egress >= 2.5 mega-event branch so the 3.0x
     // egressMod doesn't fall through to the 450 stadium-scale rate.
     if (/retail egress/i.test(cat0)) return 150;
+    // Sprint 62.3: Last Call / Nightlife Egress are MICRO venues (bars),
+    // NOT stadium-scale. Checked BEFORE the egress >= 2.5 mega-event
+    // branch so the 3.5x Sprint 50 egressMod doesn't fall through to
+    // the 450 mega_event rate. Base × egressMod produces a per-venue
+    // yield (20 × 3.5 = 70) that respects bar capacity (default 80).
+    if (/last call|nightlife/i.test(catsAll)) {
+      return YIELD_RATES.nightlife * (Number(item.egressMod) || 1);
+    }
     const egress = Number(item.egressMod) || 0;
     if (egress >= 2.5) return YIELD_RATES.mega_event;
     return YIELD_RATES.event;
@@ -931,6 +944,9 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
       volume: codes.length,
       origins: codes,
       hub: "Rensselaer",
+      // Sprint 62: tag inbound live-Amtraker buckets so the Mapbox radar
+      // can color them emerald via the categories check.
+      categories: ["Inbound"],
       // Sprint 37: Amtrak coords so the Mapbox radar can pin each train bucket.
       lat: AMTRAK_COORDS.lat,
       lng: AMTRAK_COORDS.lng,
@@ -1366,8 +1382,12 @@ function buildItinerary(
         it.type === "grocery" ||
         it.type === "event";
       if (!scoreable) return it;
-      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
+      let expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
       const estimatedCapacity = capacityFor(it);
+      // Sprint 62.3: Mathematical fail-safe. No future multiplier combination
+      // can ever exceed the venue's physical capacity — clamp to 90% so it
+      // stays strictly below the ceiling.
+      if (expectedYield > estimatedCapacity) expectedYield = Math.floor(estimatedCapacity * 0.9);
       const score = decayed(it);
       return {
         ...it,
@@ -1929,6 +1949,18 @@ export async function POST(request) {
     // Sprint 59: localStorage edition. The client lazy-wipes against
     // today's local date BEFORE shipping, so byodTrains is already
     // either today's saved trains or [].
+    //
+    // Sprint 62.1: Tear down the XOR gate. The Live Amtraker feed (called
+    // in the Promise.all above + aggregated into `trainsByHour`) runs
+    // UNCONDITIONALLY on every dispatch — it never reads `direction` and
+    // its inbound hour-buckets always land in `mergedPayload.trainsByHour`
+    // (gated only by the global rideshare + includeAmtrak flags via the
+    // Sprint 11 / 17 sanitization below). This BYOD loop runs the same
+    // way: `direction` ONLY selects per-train leaveBy math + Mapbox coords
+    // (ESP for outbound, AMTRAK for inbound). The two feeds are fully
+    // independent and flow into the merged payload simultaneously. The
+    // outbound branch is now an explicit `if/else` instead of `if/continue`
+    // so the non-XOR shape is visible on the page.
     if (activePlatforms.rideshare && includeAmtrak) {
       for (const train of byodTrains) {
         if (direction === "outbound") {
@@ -1954,24 +1986,26 @@ export async function POST(request) {
           console.log(
             `BYOD OUTBOUND TRAIN PARSED: ${train.trainNumber} | Status: ${train.status} | Departs: ${train.time} | LeaveBy: ${leaveBy}`
           );
-          continue;
+        } else {
+          if (!isTrainInWindow(train.time, localStart, hoursNum)) continue;
+          structuredEvents.push({
+            type: "event",
+            location: `Rensselaer Train ${train.trainNumber}`,
+            volume: 1,
+            egressMod: 2.0,
+            // Sprint 62: tag per-train BYOD inbound entries so the unified
+            // radar paints them emerald alongside the live-API buckets.
+            categories: ["BYOD Train", "Inbound", train.status],
+            origin: "NYP",
+            leaveBy: train.time,
+            arrivalTime: train.arrivalTime,
+            lat: AMTRAK_COORDS.lat,
+            lng: AMTRAK_COORDS.lng,
+          });
+          console.log(
+            `BYOD TRAIN DATA PARSED: ${train.trainNumber} | Status: ${train.status} | Time: ${train.time}`
+          );
         }
-        if (!isTrainInWindow(train.time, localStart, hoursNum)) continue;
-        structuredEvents.push({
-          type: "event",
-          location: `Rensselaer Train ${train.trainNumber}`,
-          volume: 1,
-          egressMod: 2.0,
-          categories: ["BYOD Train", train.status],
-          origin: "NYP",
-          leaveBy: train.time,
-          arrivalTime: train.arrivalTime,
-          lat: AMTRAK_COORDS.lat,
-          lng: AMTRAK_COORDS.lng,
-        });
-        console.log(
-          `BYOD TRAIN DATA PARSED: ${train.trainNumber} | Status: ${train.status} | Time: ${train.time}`
-        );
       }
     }
 
@@ -2050,6 +2084,33 @@ export async function POST(request) {
       latitude,
       longitude,
       costPerMile
+    );
+
+    // Sprint 62: Unified Situational Radar verification log. Counts how many
+    // items in the final itinerary carry "Inbound" vs "Outbound" categories
+    // so the Test-Driven Scaffolding rule (confirm both directions co-exist
+    // BEFORE touching the map) holds at runtime.
+    //
+    // Sprint 62.1: Surface each feed's pre-itinerary count too so XOR can
+    // be ruled out without reading the full merged payload. `liveInbound`
+    // is the live-Amtraker bucket count and `byod` is the BYOD-event count
+    // pushed in Phase 2 — both numbers persist regardless of `direction`.
+    const liveInboundCount = Array.isArray(mergedPayload.trainsByHour)
+      ? mergedPayload.trainsByHour.length
+      : 0;
+    const byodEventCount = Array.isArray(mergedPayload.events)
+      ? mergedPayload.events.filter(
+          (e) => Array.isArray(e.categories) && e.categories.includes("BYOD Train")
+        ).length
+      : 0;
+    const inboundCount = mergedPayload.itinerary.filter(
+      (it) => Array.isArray(it.categories) && it.categories.includes("Inbound")
+    ).length;
+    const outboundCount = mergedPayload.itinerary.filter(
+      (it) => Array.isArray(it.categories) && it.categories.includes("Outbound")
+    ).length;
+    console.log(
+      `=== SPRINT 62 RADAR CHECK === direction=${direction} | liveInbound buckets: ${liveInboundCount} | BYOD events: ${byodEventCount} | itinerary Inbound: ${inboundCount} | itinerary Outbound: ${outboundCount}`
     );
 
     // Acceptance Criteria: log the fully merged payload BEFORE the LLM call.

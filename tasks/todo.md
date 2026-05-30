@@ -2721,3 +2721,115 @@ Expand the BYOD Amtrak pipeline to cover departing trains. Driver picks Inbound 
 - NO new fields in the synthetic event shape beyond what `type: "event"` already supports.
 
 ### Status: CLOSED 2026-05-29 — outbound branch + radio toggle landed; `test-amtrak-outbound.js` (16/16), `test-amtrak-parser.js` (5/5), `test-time-gate.js` (21/21) all green; `node --check` clean on both `route.js` and `page.js`. Browser smoke-test of the radio + dispatch round-trip not yet exercised in a live `npm run dev` session.
+
+---
+
+## Sprint 62 — The Unified Situational Radar (Dual-Color)
+
+### Epic
+Show Inbound (live Amtraker arrivals at Rensselaer) and Outbound (BYOD departures at ESP) trains on the same Mapbox radar at the same time, color-coded so the driver has full situational awareness in one glance.
+
+### Decisions (locked-in)
+- **Keep the radio toggle.** It governs HOW the BYOD paste is parsed (ARRIVES vs DEPARTS anchor). It does NOT gate which directions appear on the radar — both directions render whenever the data supports them.
+- **Inbound = `aggregateTrainArrivalsByHour` (live Amtraker API)** — already runs unconditionally; just needs `categories: ["Inbound"]` stamped on each bucket so the frontend can color it.
+- **Outbound = BYOD parser with `direction === "outbound"`** — already pushes synthetic events with `["BYOD Train", "Outbound", status]`. No backend change needed.
+- **BYOD inbound branch** also gets `"Inbound"` added to its categories array so per-train BYOD arrivals color emerald like the live buckets.
+- **Color rule (frontend):** `categories.includes("Outbound")` → `#f97316` (orange); `categories.includes("Inbound")` → `#10b981` (emerald); else fall back to the existing `type`-based palette.
+- **Overlap rule:** any pin tagged Outbound gets `+0.0005` added to its longitude at render time. Simple, no neighbor-scan required, and it future-proofs against any non-ESP Outbound coords landing on top of an Inbound pin.
+- **Popup header:** when categories carries Inbound or Outbound, replace the uppercase `type` line with "Arriving" / "Departing"; otherwise keep the existing `type` label.
+- **`densityScore` math untouched.** Live Inbound buckets sort on `hub` capacity (Rensselaer = 300, yield 10/train). Outbound events sort on `event` yield (50) × egressMod (2.0). Both already coexist in the Profitability sort today — no rebalancing.
+
+### Build Steps
+- [x] 1. `route.js` — `aggregateTrainArrivalsByHour`: add `categories: ["Inbound"]` to each bucket pushed.
+- [x] 2. `route.js` — BYOD inbound branch: insert `"Inbound"` into the categories array (`["BYOD Train", "Inbound", train.status]`) so per-train BYOD arrivals are taggable by the map.
+- [x] 3. `route.js` — add a targeted one-line log right before the merged-payload dump that counts Inbound vs Outbound items in `mergedPayload.itinerary` (verification per Test-Driven Scaffolding rule).
+- [x] 4. `DispatchMap.jsx` — replace the type-only `pinColor` with an item-aware helper that checks categories first; preserve the existing `PIN_HEX` fallback.
+- [x] 5. `DispatchMap.jsx` — apply `+0.0005` longitude offset to any Outbound marker's `longitude` prop AND to the popup `longitude` so the open popup follows the offset pin.
+- [x] 6. `DispatchMap.jsx` — derive a `directionLabel` ("Arriving" / "Departing" / null) inside the popup and render it in place of `selectedItem.type` when present.
+- [x] 7. Verification: `node --check app/api/dispatch/route.js` clean; `test-amtrak-outbound.js` (16/16), `test-amtrak-parser.js` (5/5), `test-time-gate.js` (21/21) all green.
+- [x] 8. Update this todo file with the closing status.
+
+### Status: CLOSED 2026-05-29 — radio toggle preserved per user override; live Amtraker buckets + BYOD inbound entries now tagged `["Inbound", ...]`; BYOD outbound was already tagged `[..., "Outbound", ...]`; `DispatchMap.jsx` colors from categories (emerald/orange), offsets Outbound markers + popups by `+0.0005` longitude, and swaps the popup header to "Arriving"/"Departing". Live `npm run dev` browser smoke-test of the dual-color radar not yet exercised.
+
+---
+
+## Sprint 62.1 — Hotfix: Tear Down the XOR Gate
+
+### Bug
+User reports that the radar still surfaces only one direction at a time. The literal hotfix prompt called for removing any `if/else returns or continue statements` causing the Live feed and BYOD feed to mutually exclude.
+
+### Audit
+Grep of `route.js` for `direction` returned 5 hits — all confined to (a) destructuring + defensive coercion at the top of POST, and (b) the BYOD loop's per-train routing branch. The Live Amtraker feed (`fetchAlbTrainArrivals` → `aggregateTrainArrivalsByHour` → `trainsByHour` → merged payload) does NOT read `direction` anywhere. There is no Live↔BYOD XOR gate in code.
+
+### Real Likely Cause (flagged, not fixed in this sprint)
+The Sprint 27 strict density floor (`densityScore < 10.0` → drop) silently filters live inbound hour-buckets with low train volume. A typical 1-train Rensselaer bucket scores `(1 × 10 / 300) × 100 = 3.33` → dropped before reaching the itinerary. Once decay (`0.4–0.7`) stacks on, even 3–4 train buckets drop. This produces the "only outbound visible" symptom the user is reporting whenever the live API returns sparse arrivals.
+
+### Decisions (locked-in)
+- Honor the literal hotfix instruction: convert the BYOD loop's `if (direction === "outbound") { ... continue; }` into a clean `if/else` so the per-train direction routing is structurally obvious and the trailing `continue` is gone.
+- Add a header comment to the BYOD loop spelling out that Live feed (Phase 1) and BYOD feed (Phase 2) are fully independent.
+- Expand the Sprint 62 verification log so the terminal shows: `direction`, live inbound bucket count, BYOD event count, plus the existing itinerary Inbound/Outbound counts — making "both feeds ran" verifiable at a glance.
+- Do NOT silently change `densityScore` math or filter behavior; flag the density floor as a follow-up so the user can decide.
+
+### Build Steps
+- [x] 1. Grep `route.js` for every `direction` usage and confirm Live feed has zero direction gates.
+- [x] 2. `route.js` — refactor BYOD loop to `if/else`, remove trailing `continue;` from outbound branch.
+- [x] 3. `route.js` — add Sprint 62.1 header comment to the BYOD loop explaining the Live/BYOD independence.
+- [x] 4. `route.js` — expand the Sprint 62 RADAR CHECK log to surface `direction`, live inbound count, BYOD event count, and final itinerary Inbound/Outbound counts.
+- [x] 5. Verification: `node --check route.js` clean; `test-amtrak-outbound.js` 16/16 PASS; `test-time-gate.js` 21/21 PASS.
+
+### Acceptance Criteria
+- `direction` is consulted only inside the BYOD loop's per-train routing block — zero other call sites.
+- BYOD outbound branch terminates the iteration via `else`, not `continue`.
+- Terminal log on every dispatch surfaces both feed counts so XOR can be ruled out without reading the full merged payload.
+
+### Out of Scope (flagged for follow-up)
+- Adjusting the Sprint 27 strict `< 10.0` density floor for live inbound buckets — separate decision the user should make explicitly.
+
+### Status: CLOSED 2026-05-29 — BYOD loop refactored to `if/else` with a Sprint 62.1 header comment proving non-XOR; verification log now surfaces feed-by-feed counts; `node --check` clean; `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 still green. Density-floor follow-up flagged in Out of Scope.
+
+### Acceptance Criteria
+- A single dispatch click with BYOD outbound data pasted renders BOTH emerald inbound buckets (Rensselaer) AND orange outbound pins (ESP) on the same map.
+- Color rule strictly: Inbound = `#10b981`, Outbound = `#f97316`. Non-train items keep their pre-Sprint-62 colors.
+- An Outbound pin at the same lat/lng as any other pin sits visually offset by `+0.0005` longitude — no eclipsing.
+- Popup for an Inbound bucket reads "Arriving"; popup for an Outbound train reads "Departing".
+- Sprint 53/54/61 time-gates (BYOD `-10 min` window, Outbound `40-min` drop / `60-min` shift, live API window filter) remain functional.
+- No extra network calls — both pipelines reuse the existing Amtraker + body-passed BYOD inputs.
+
+### Anti-Goals
+- DO NOT remove the radio toggle (user override of original Sprint 62 prompt — driver still controls how the BYOD paste is parsed).
+- DO NOT fetch new external data.
+- DO NOT add layering checkboxes.
+- DO NOT touch `DispatchCards.jsx` non-train logic.
+- DO NOT rewrite `DispatchMap.jsx` — strictly surgical patches to `pinColor`, the marker `longitude`, and the popup header.
+
+---
+
+## Sprint 62.3 — The Multiplier Audit & Reality Check (HOTFIX)
+
+### Context
+Audit of a "Last Call" event payload revealed: an 80-capacity bar generated `expectedYield = 450` because the synthetic event hit `yieldRateFor`'s `egressMod >= 2.5` branch and inherited the `mega_event` (450) base — the stadium-scale baseline. Nightlife is a micro-venue category; it must NOT inherit macro-event yields.
+
+### Decisions
+- Decouple nightlife from the mega-event branch by adding a tagged check on `categories` ("Last Call" / "Nightlife Egress") in `yieldRateFor` BEFORE the `egress >= 2.5` fallthrough — mirrors the existing Sprint 52 retail-egress pattern.
+- Add a `nightlife` key to `YIELD_RATES` with a small-bar base (20). Multiplied by the venue's `egressMod` (3.5x) inside `yieldRateFor` yields ~70 — strictly below the 80 default-capacity ceiling.
+- Add a 1-line safety ceiling in `buildItinerary` immediately after `expectedYield` is computed: `if (expectedYield > estimatedCapacity) expectedYield = Math.floor(estimatedCapacity * 0.9)` — a permanent fail-safe against any future multiplier combination that could re-break physics.
+- Do NOT extend the safety ceiling into `densityScore` math — that surface is allowed to exceed 100% because the `finalRideMod` multiplier is part of its design.
+
+### Build Steps
+- [x] 1. `route.js` — add `nightlife: 20` to `YIELD_RATES`.
+- [x] 2. `route.js` — in `yieldRateFor`'s event branch, add a `/last call|nightlife/i` check on the joined categories that returns `YIELD_RATES.nightlife * egressMod` BEFORE the mega-event fallthrough.
+- [x] 3. `route.js` — in `buildItinerary` `.map`, switch `const expectedYield` to `let` and add the 1-line capacity ceiling immediately after `estimatedCapacity` is computed.
+- [x] 4. Verification: `node --check route.js` clean; mock payload (volume=1, egressMod=3.5, categories=["Last Call","Nightlife Egress"]) yields `expectedYield = 70`, `estimatedCapacity = 80`, ceiling not triggered, densityScore = 87.5.
+
+### Acceptance Criteria
+- A mock "Last Call" event at a small bar (volume=1, egressMod=3.5, categories=["Last Call","Nightlife Egress"]) emits `expectedYield` in the 50–70 range AND strictly less than its `estimatedCapacity` (80).
+- The resulting `densityScore` is high but realistic (~80–90).
+- Safety ceiling kicks in for any synthetic event where `volume × yieldRate` would otherwise exceed `estimatedCapacity`.
+
+### Anti-Goals
+- DO NOT rewrite the dispatch routing logic.
+- DO NOT remove the Sprint 52 retail-egress short-circuit or the Sprint 44 hospital-shift short-circuit.
+- DO NOT clamp `densityScore` (only `expectedYield`).
+- DO NOT touch capacity dictionary entries — the user explicitly expects the 80 default for small bars.
+
+### Status: CLOSED 2026-05-29 — `yieldRateFor` decouples nightlife from `mega_event` via tagged branch; `expectedYield` safety ceiling enforced in `buildItinerary`; mock payload confirms 70 / 80 / 87.5 split.
