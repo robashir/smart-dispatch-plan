@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "build-grid": "node scripts/build-census-grid.js"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.3",

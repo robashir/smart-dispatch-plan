@@ -2833,3 +2833,49 @@ Audit of a "Last Call" event payload revealed: an 80-capacity bar generated `exp
 - DO NOT touch capacity dictionary entries — the user explicitly expects the 80 default for small bars.
 
 ### Status: CLOSED 2026-05-29 — `yieldRateFor` decouples nightlife from `mega_event` via tagged branch; `expectedYield` safety ceiling enforced in `buildItinerary`; mock payload confirms 70 / 80 / 87.5 split.
+
+---
+
+## Sprint 63 — Unified Population Density Engine (Rides & Delivery)
+
+### Epic
+Close the "DoorDash/Uber Gap" during steady-state hours. Build a spatial heuristic engine on top of a static US Census-derived population grid so (a) food hotspots in dense residential pockets earn a `populationDensityMod` boost, and (b) high-density residential nodes themselves become synthetic ride origins when no other surge signal is present.
+
+### Decisions (locked-in, user-confirmed)
+- **Grid source:** Synthesized seed. Deterministic hand-built grid of ~30–50 nodes around Center Square (42.652, -73.765), Pine Hills (42.661, -73.785), and SUNY (42.686, -73.823), spread across the Albany / Westmere bounding box (lat 42.63–42.75, lng -73.90 to -73.72). Mirrors public ACS5 weight patterns without a network call.
+- **Ride floor handling:** Math sized to clear. `residential_node` yield = 5, capacity = 100. With a `populationDensityMod` of 2.0 the densityScore math is `(1 × (5 × 2.0)) / 100 × 100 = 10.0` → exactly clears the Sprint 27 strict `< 10.0` drop. Higher-density nodes scale up naturally. No bypass — the floor stays universal.
+- **Hub volume cap:** Top-N capped at 5. Score every grid node, sort by `populationDensityMod` desc, take the first 5 that hit `>= 2.0`. Mirrors Sprint 47's single-injection discipline.
+- **Radius:** 1.5 mile spatial join for food boost lookup (the user's brief specified 1.5–2 mi; pick the tighter end so we don't bleed boost into commercial wastelands).
+- **Capacity dictionary key:** `"residential_node"` → 100 (per brief). `YIELD_RATES.residential_node = 5` (per brief).
+- **Path resolver:** `path.join(process.cwd(), "app", "data", "albany_pop_grid.json")` + synchronous `fs.readFileSync` at module load → in-memory constant. Zero per-request I/O; serverless cold-start cost only.
+- **Verification logs:** Two distinct one-liners per dispatch — `[Food Boost] <name> at <lat>,<lng> received populationDensityMod=<x>` and `[Ride Boost] Synthetic Residential Hub at <lat>,<lng> generated with populationDensityMod=<x>`.
+
+### Build Steps
+- [x] 0. Append this Sprint 63 section to `tasks/todo.md` (this step).
+- [x] 1. Create `scripts/build-census-grid.js` — synthesizes ~30–50 nodes around the three anchors with realistic weights, writes to `app/data/albany_pop_grid.json`. Idempotent. **(90 nodes seeded; 24 dense / 30 mid / 36 low.)**
+- [x] 2. Add `"build-grid": "node scripts/build-census-grid.js"` to `package.json` scripts.
+- [x] 3. Run `npm run build-grid` once → confirm `app/data/albany_pop_grid.json` is created + readable.
+- [x] 4. `app/api/dispatch/route.js` — add `fs`+`path` imports + synchronous load of the grid into a module-scope `POPULATION_GRID` constant.
+- [x] 5. `app/api/dispatch/route.js` — add `calculateSpatialPopulationBoost(lat, lng)` helper. Returns `populationDensityMod` ∈ [1.0, 2.5] based on the nearest node within 1.5 mi (Haversine).
+- [x] 6. `app/api/dispatch/route.js` — add `residential_node: 5` to `YIELD_RATES` and `"residential_node": 100` to `CAPACITY_DICTIONARY`.
+- [x] 7. `app/api/dispatch/route.js` — `yieldRateFor` + `capacityFor` both branch on `type: "ride"`; yield = `YIELD_RATES.residential_node × populationDensityMod`, capacity = 100.
+- [x] 8. `app/api/dispatch/route.js` — food branch of `computeHotspots` attaches `populationDensityMod` and emits `[Food Boost]` log; `yieldRateFor` multiplies the food baseline by it.
+- [x] 9. `app/api/dispatch/route.js` — `buildSyntheticRideHubs()` iterates `POPULATION_GRID`, filters mod ≥ 2.0, sorts desc, caps at 5; emits one `[Ride Boost]` log per injection; result lands in `mergedPayload.rideHubs` and flows into `buildItinerary` rawItems.
+- [x] 10. Verification: `node --check` clean; `test-population-grid.js` 11/11 PASS; regression: `test-amtrak-outbound.js` 16/16, `test-time-gate.js` 21/21, `test-density-engine.js` 10/10.
+- [x] 11. Close out — update this section with the closing status.
+
+### Acceptance Criteria
+- `app/data/albany_pop_grid.json` is populated and shaped as `[{ lat, lng, population, baseMultiplier }, ...]`.
+- JSON is read synchronously at module load — no per-request fs work, serverless functions stay well under the 10s timeout.
+- Terminal log on every dispatch shows BOTH `[Food Boost]` lines (one per qualifying restaurant) AND `[Ride Boost]` lines (≤5).
+- A synthetic ride node with `populationDensityMod = 2.0` clears the Sprint 27 `< 10.0` density floor.
+- Existing Sprint 62 logic (Train carve-outs, BYOD outbound, dual-color radar) and the Sprint 62.3 `Math.floor(estimatedCapacity * 0.9)` capacity ceiling are untouched.
+
+### Anti-Goals
+- DO NOT fetch the Census API at runtime — grid is baked at build time.
+- DO NOT bypass the Sprint 27 density floor for synthetic ride nodes — let the math clear it.
+- DO NOT exceed 5 synthetic ride injections per dispatch.
+- DO NOT touch `DispatchMap.jsx`, `DispatchCards.jsx`, or any UI file — radar already renders `type: "ride"` via the existing palette fallback.
+- DO NOT modify existing food yield baselines — boost is a strict multiplicative add-on.
+
+### Status: CLOSED 2026-05-30 — `app/data/albany_pop_grid.json` seeded with 90 nodes via `npm run build-grid`; `route.js` loads grid synchronously at module scope, exposes `calculateSpatialPopulationBoost` (1.5 mi nearest-node lookup), boosts food yield in `yieldRateFor`, injects up to 5 synthetic `type: "ride"` hubs (mod ≥ 2.0) into `mergedPayload.rideHubs` which `buildItinerary` consumes alongside existing surge streams; `node --check` clean; `test-population-grid.js` 11/11 PASS; regression suites (Amtrak outbound 16/16, time-gate 21/21, density engine 10/10) still green. Live `npm run dev` browser smoke-test of `[Food Boost]` + `[Ride Boost]` log lines not yet exercised.

@@ -4,6 +4,25 @@
 import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json";
 const ALBANY_NIGHTLIFE_HOURS = Object.freeze(ALBANY_NIGHTLIFE_HOURS_RAW);
 
+// Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
+// built by scripts/build-census-grid.js and loaded once at module-load time
+// via process.cwd() (production-safe on Netlify Lambdas — read-only fs but
+// the build artifact lives at the project root, not /tmp). Synchronous read
+// keeps the per-request dispatch path at zero filesystem cost and well under
+// the 10s serverless timeout.
+import fs from "node:fs";
+import path from "node:path";
+let POPULATION_GRID = [];
+try {
+  const gridPath = path.join(process.cwd(), "app", "data", "albany_pop_grid.json");
+  POPULATION_GRID = JSON.parse(fs.readFileSync(gridPath, "utf8"));
+} catch (err) {
+  console.warn(
+    `[Sprint 63] Population grid load failed (${err.message}). Boost helper will return 1.0 for all coords.`
+  );
+  POPULATION_GRID = [];
+}
+
 // Sprint 57: Unified Event Database.
 // Sprint 59: filesystem persistence removed (Netlify Lambdas have a
 // read-only fs). The eventConfig + byodTrains objects are now owned by
@@ -193,6 +212,12 @@ const YIELD_RATES = {
   // Sprint 50 Last Call egressMod of 3.5x, this yields ~70 — strictly
   // below the 80 default-capacity ceiling for an unlisted small venue.
   nightlife: 20,
+  // Sprint 63: Unified Population Density Engine. Baseline residents-per-
+  // ride yield for a synthetic `type: "ride"` injected from a high-density
+  // census grid node. Multiplied by the node's populationDensityMod inside
+  // yieldRateFor — at mod=2.0 (the injection threshold) the resulting
+  // (5*2.0)/100*100 = 10.0 densityScore exactly clears the Sprint 27 floor.
+  residential_node: 5,
 };
 
 // Sprint 48: Static capacity dictionary keyed by lowercased primary
@@ -231,13 +256,27 @@ const CAPACITY_DICTIONARY = {
   "tourist ripple": 600,
   // Sprint 52: Crossgates Mall active occupancy at close.
   "retail egress": 3000,
+  // Sprint 63: Unified Population Density Engine — synthetic residential
+  // ride node capacity (population pool addressable by one driver).
+  "residential_node": 100,
 };
 
 function yieldRateFor(item) {
   if (item.type === "flight") return YIELD_RATES.flight;
   if (item.type === "train") return YIELD_RATES.train;
-  if (item.type === "food") return YIELD_RATES.food;
+  // Sprint 63: Food baseline multiplied by populationDensityMod when the
+  // hotspot's centroid sits inside a dense residential pocket.
+  if (item.type === "food") {
+    const popMod = Number(item.populationDensityMod) || 1;
+    return YIELD_RATES.food * popMod;
+  }
   if (item.type === "grocery") return YIELD_RATES.grocery;
+  // Sprint 63: Synthetic residential ride hub. Baseline yield × the node's
+  // populationDensityMod so denser nodes outscore sparser ones.
+  if (item.type === "ride") {
+    const popMod = Number(item.populationDensityMod) || 1;
+    return YIELD_RATES.residential_node * popMod;
+  }
   if (item.type === "event") {
     const cat0 = (Array.isArray(item.categories) && item.categories[0]) || "";
     const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
@@ -265,6 +304,9 @@ function capacityFor(item) {
   if (item.type === "flight" || item.type === "train") {
     return CAPACITY_DICTIONARY[item.hub] ?? DEFAULT_CAPACITY;
   }
+  // Sprint 63: Synthetic residential ride hub bypasses the category lookup
+  // because the dictionary key is fixed.
+  if (item.type === "ride") return CAPACITY_DICTIONARY.residential_node ?? DEFAULT_CAPACITY;
   const key = (
     (Array.isArray(item.categories) && item.categories[0]) || ""
   )
@@ -983,6 +1025,61 @@ function haversineMiles(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Sprint 63: Spatial join against POPULATION_GRID. Finds the nearest census
+// node within POP_RADIUS_MILES (1.5) and returns its baseMultiplier — i.e.
+// the strongest residential density signal a given coordinate can claim.
+// Returns 1.0 (no boost) when nothing is in range OR when the grid failed
+// to load. Output range: 1.0 (commercial wasteland) → 2.5 (hyper-dense
+// student/residential).
+const POP_RADIUS_MILES = 1.5;
+function calculateSpatialPopulationBoost(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return 1.0;
+  if (!Array.isArray(POPULATION_GRID) || POPULATION_GRID.length === 0) return 1.0;
+  let nearestMult = 1.0;
+  let nearestDist = Infinity;
+  for (const node of POPULATION_GRID) {
+    const d = haversineMiles(lat, lng, node.lat, node.lng);
+    if (d > POP_RADIUS_MILES) continue;
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestMult = Number(node.baseMultiplier) || 1.0;
+    }
+  }
+  return nearestMult;
+}
+
+// Sprint 63: Synthetic Residential Ride Hubs. Iterate POPULATION_GRID, keep
+// nodes whose baseMultiplier >= POP_RIDE_THRESHOLD (2.0 — the math floor
+// that exactly clears the Sprint 27 density gate), sort by multiplier desc,
+// cap at POP_RIDE_MAX_HUBS (5) per the user-confirmed top-N decision so the
+// radar isn't drowned in residential pins. Returns scoreable `type: "ride"`
+// objects ready to flow into buildItinerary alongside flights / trains /
+// food / events.
+const POP_RIDE_THRESHOLD = 2.0;
+const POP_RIDE_MAX_HUBS = 5;
+function buildSyntheticRideHubs() {
+  if (!Array.isArray(POPULATION_GRID) || POPULATION_GRID.length === 0) return [];
+  const qualifying = POPULATION_GRID.filter(
+    (n) => (Number(n.baseMultiplier) || 0) >= POP_RIDE_THRESHOLD
+  );
+  qualifying.sort((a, b) => (b.baseMultiplier || 0) - (a.baseMultiplier || 0));
+  const topN = qualifying.slice(0, POP_RIDE_MAX_HUBS);
+  return topN.map((n) => {
+    console.log(
+      `[Ride Boost] Synthetic Residential Hub at ${n.lat.toFixed(4)},${n.lng.toFixed(4)} generated with populationDensityMod=${n.baseMultiplier}x`
+    );
+    return {
+      type: "ride",
+      volume: 1,
+      location: `Residential Hub @ ${n.lat.toFixed(3)}, ${n.lng.toFixed(3)}`,
+      categories: ["Residential Node"],
+      lat: n.lat,
+      lng: n.lng,
+      populationDensityMod: n.baseMultiplier,
+    };
+  });
+}
+
 // Sprint 20: render a "wall-clock-as-UTC" Date into "h:mm AM/PM" for the
 // leaveBy substring. Mirrors toWallClockLabel but keeps the minutes (not
 // padded to top-of-hour) since the leaveBy is rarely on the hour.
@@ -1155,6 +1252,19 @@ function computeHotspots(businesses, type, localStart) {
     let campusMod = 1.0;
     let campusName = null;
     let corporateMod = 1.0;
+    // Sprint 63: Spatial population boost — only food gets the residential
+    // density multiplier (per brief: applied "when looping through
+    // foodHotspots from the Yelp API data"). Grocery is intentionally
+    // excluded from this engine.
+    let populationDensityMod = 1.0;
+    if (type === "food") {
+      populationDensityMod = calculateSpatialPopulationBoost(centroidLat, centroidLng);
+      if (populationDensityMod > 1.0) {
+        console.log(
+          `[Food Boost] ${location} at ${centroidLat.toFixed(4)},${centroidLng.toFixed(4)} received populationDensityMod=${populationDensityMod}x`
+        );
+      }
+    }
     if (type === "food") {
       const campusResult = computeCampusMod(centroidLat, centroidLng, hour);
       campusMod = campusResult.campusMod;
@@ -1202,6 +1312,11 @@ function computeHotspots(businesses, type, localStart) {
       // on the geographic middle of the cluster.
       lat: centroidLat,
       lng: centroidLng,
+      // Sprint 63: spatial population boost (food only). Travels into
+      // buildItinerary → yieldRateFor and is applied as a strict
+      // multiplicative add-on to the baseline food yield rate. Grocery
+      // hotspots never set it, so the read defaults to 1.0 there.
+      populationDensityMod,
     });
 
     const clusterSet = new Set(bestCluster);
@@ -1346,7 +1461,11 @@ function buildItinerary(
   // flights / trains / hotspots. Only events with egressMod > 1.0 reach this
   // point — buildItinerary itself does no further filtering on them.
   const events = Array.isArray(payload?.events) ? payload.events : [];
-  const rawItems = [...flights, ...trains, ...food, ...grocery, ...events];
+  // Sprint 63: synthetic residential ride hubs (type: "ride") emitted from
+  // the population density engine. Scored / filtered / sorted alongside
+  // every other surge type so they obey the same density floor + ROI rules.
+  const rideHubs = Array.isArray(payload?.rideHubs) ? payload.rideHubs : [];
+  const rawItems = [...flights, ...trains, ...food, ...grocery, ...events, ...rideHubs];
 
   const finalRideMod = Number.isFinite(payload?.finalRideMod) ? payload.finalRideMod : 1.0;
   const finalFoodMod = Number.isFinite(payload?.finalFoodMod) ? payload.finalFoodMod : 1.0;
@@ -1380,7 +1499,8 @@ function buildItinerary(
         it.type === "train" ||
         it.type === "food" ||
         it.type === "grocery" ||
-        it.type === "event";
+        it.type === "event" ||
+        it.type === "ride";
       if (!scoreable) return it;
       let expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
       const estimatedCapacity = capacityFor(it);
@@ -1403,7 +1523,8 @@ function buildItinerary(
         it.type === "train" ||
         it.type === "food" ||
         it.type === "grocery" ||
-        it.type === "event";
+        it.type === "event" ||
+        it.type === "ride";
       if (!scoreable) return true;
       return decayed(it) >= 10.0;
     })
@@ -1419,7 +1540,8 @@ function buildItinerary(
         it.type === "train" ||
         it.type === "food" ||
         it.type === "grocery" ||
-        it.type === "event";
+        it.type === "event" ||
+        it.type === "ride";
       if (!scoreable) return true;
       if (
         !Number.isFinite(driverLat) ||
@@ -2049,6 +2171,11 @@ export async function POST(request) {
       }));
     }
 
+    // Sprint 63: Synthetic residential ride hubs — emits the [Ride Boost]
+    // log lines as a side effect of building each hub. Up to 5 entries with
+    // populationDensityMod >= 2.0.
+    const rideHubs = buildSyntheticRideHubs();
+
     const mergedPayload = {
       location: { latitude, longitude },
       hours: hoursNum,
@@ -2068,6 +2195,9 @@ export async function POST(request) {
       flightsByHour,
       trainsByHour,
       gigDemand: gigDemand ?? "Density data unavailable",
+      // Sprint 63: synthetic residential ride hubs (type: "ride"). Flow
+      // through buildItinerary's rawItems alongside flights / trains / food.
+      rideHubs,
     };
 
     // Sprint 23: deterministic router. Flatten + sort the merged surge data
