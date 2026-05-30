@@ -2879,3 +2879,89 @@ Close the "DoorDash/Uber Gap" during steady-state hours. Build a spatial heurist
 - DO NOT modify existing food yield baselines — boost is a strict multiplicative add-on.
 
 ### Status: CLOSED 2026-05-30 — `app/data/albany_pop_grid.json` seeded with 90 nodes via `npm run build-grid`; `route.js` loads grid synchronously at module scope, exposes `calculateSpatialPopulationBoost` (1.5 mi nearest-node lookup), boosts food yield in `yieldRateFor`, injects up to 5 synthetic `type: "ride"` hubs (mod ≥ 2.0) into `mergedPayload.rideHubs` which `buildItinerary` consumes alongside existing surge streams; `node --check` clean; `test-population-grid.js` 11/11 PASS; regression suites (Amtrak outbound 16/16, time-gate 21/21, density engine 10/10) still green. Live `npm run dev` browser smoke-test of `[Food Boost]` + `[Ride Boost]` log lines not yet exercised.
+
+## Sprint 64 — The Dual-Direction BYOD Amtrak Engine
+
+### Epic
+Sprints 59 + 61 left the BYOD train pipeline with a frontend storage overwrite: a single `localStorage["trainConfig"]` key meant saving Outbound trains wiped the driver's saved Inbound trains (and vice-versa), so only ONE direction could ever ship in a dispatch body. Split frontend storage into per-direction keys, send a dual-array payload, and pre-merge on the backend so a single loop renders both inbound (emerald) and outbound (orange) trains on the radar simultaneously.
+
+### Decisions (locked before coding)
+- **Frontend split:** Two React states (`trainConfigInbound`, `trainConfigOutbound`) and two localStorage keys (`trainConfigInbound`, `trainConfigOutbound`) each shaped `{ savedDate, trains }`. The Sprint 61 single `trainConfig` key is retired (no migration; first Save of either direction seeds the new key).
+- **Direction radio:** Still drives `parseAmtrakText` anchor + which state/key receives the save. The radio's own choice is NOT persisted independently (the spec only mandates hydrating the two train arrays); defaults to `"inbound"` on reload — minimal surgical change vs Sprint 61.
+- **Lazy auto-wipe:** Applied independently per direction inside `handleDispatch` — each `savedDate !== today` collapses ONLY that direction's array to `[]`, never the other.
+- **Body contract:** Exactly `{ inboundTrains: [...], outboundTrains: [...] }`. The Sprint 59 `byodTrains` key + Sprint 61 `direction` key are both removed from the body.
+- **Backend pre-merge:** `const allByod = [...inboundTrains.map(t => ({...t, direction: "inbound"})), ...outboundTrains.map(t => ({...t, direction: "outbound"}))];`. Single BYOD injection loop reads `train.direction` per-iteration. NO duplicated loop.
+- **Defensive defaulting:** Backend destructures `const { inboundTrains = [], outboundTrains = [] } = body;` PLUS belt-and-suspenders `Array.isArray` coercion (mirrors Sprint 59's `byodTrains` boundary guard, per L1).
+- **Test-first:** `test-dual-amtrak.js` proves (a) pre-merge stamps `direction` correctly, (b) defensive defaulting handles undefined arrays without crashing. Run BEFORE any `route.js` / `page.js` edit.
+
+### Build Steps
+- [x] 0. Append this Sprint 64 section to `tasks/todo.md`.
+- [x] 1. Create `test-dual-amtrak.js` at project root with mock inbound/outbound arrays + assertions for pre-merge stamping + defensive defaulting.
+- [x] 2. Run `node test-dual-amtrak.js`; confirm 0 failures.
+- [x] 3. `app/api/dispatch/route.js`: replace `byodTrains` + `direction` body destructure with `inboundTrains = []` + `outboundTrains = []` defensive destructure. Belt-and-suspenders `Array.isArray` coercion preserved per L1.
+- [x] 4. `app/api/dispatch/route.js`: add the pre-merge (`allByod`) immediately before the existing BYOD injection block; stamp each train with its `direction` field.
+- [x] 5. `app/api/dispatch/route.js`: adapt the single BYOD loop to iterate `allByod` and branch on `train.direction` instead of the global `direction` variable. No duplicated loop.
+- [x] 6. `app/api/dispatch/route.js`: update the Sprint 62 RADAR CHECK log so `direction` is replaced with the per-direction counts (`inbound:N outbound:M`) coming from the new arrays.
+- [x] 7. `app/page.js`: add `trainConfigInbound` + `trainConfigOutbound` React states; replace the single Sprint 61 hydration `useEffect` with one that reads BOTH localStorage keys on mount and seeds both states (defaulting to `{ savedDate: null, trains: [] }` if missing/malformed).
+- [x] 8. `app/page.js`: update `handleSaveTrains` to branch on the current radio `direction` and persist to the matching state + localStorage key.
+- [x] 9. `app/page.js`: update `handleDispatch` to apply the lazy auto-wipe independently to both states and POST `{ inboundTrains, outboundTrains }`. Drop `body.byodTrains` and `body.direction`.
+- [x] 10. Verification: `node --check` both files; re-run `test-amtrak-outbound.js` + `test-time-gate.js` for regression; confirm `test-dual-amtrak.js` 0 failures.
+
+### Acceptance Criteria
+- `test-dual-amtrak.js` exists at project root and runs cleanly with 0 failures.
+- Frontend localStorage maintains DISTINCT `trainConfigInbound` + `trainConfigOutbound` keys; toggling the radio and saving one direction does NOT erase the other.
+- Backend `/api/dispatch` POST handler gracefully handles bodies missing either train array — no 500.
+- A single dispatch click with BOTH directions previously saved results in inbound (emerald) AND outbound (orange) trains co-existing on the Mapbox radar and in the List view.
+- Sprint 27 `< 10.0` strict density floor untouched.
+- `fetchAlbTrainArrivals` live pipeline untouched.
+
+### Anti-Goals
+- DO NOT duplicate the backend BYOD injection loop — single loop reading `train.direction` only.
+- DO NOT modify the Sprint 27 strict `< 10.0` density floor math.
+- DO NOT create new Mapbox markers, UI components, or change `DispatchCards.jsx`.
+- DO NOT alter `fetchAlbTrainArrivals` / the live Amtraker pipeline.
+
+### Status: CLOSED 2026-05-30 — `test-dual-amtrak.js` 26/26 PASS (pre-merge direction stamping + defensive defaulting on missing/null/garbage payloads); `route.js` POST destructures `inboundTrains = []` / `outboundTrains = []` with belt-and-suspenders `Array.isArray` coercion, pre-merges into a single `allByod` array (each train stamped with its own `direction`), and the single BYOD loop now branches on `train.direction` (no duplicated loop, global `direction` flag deleted); RADAR CHECK log updated to surface `byodInbound` + `byodOutbound` counts. `page.js` adds split states + storage keys (`trainConfigInbound` / `trainConfigOutbound`), hydrates both on mount, `handleSaveTrains` routes the save to the matching key based on the active radio, `handleDispatch` applies the lazy auto-wipe per-direction and POSTs `{ inboundTrains, outboundTrains }` (legacy `byodTrains` + `direction` body keys gone). `node --check` clean on both files; regression `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 still green. Live `npm run dev` browser smoke-test of dual-color radar (inbound emerald + outbound orange) not yet exercised.
+
+## Sprint 65 — Relative Time Indicators for Transit
+
+### Epic
+Drivers see absolute timestamps on transit cards ("12:10p") and have to mentally subtract from their dashboard clock to know how soon to position. Stamp a precise, mathematically accurate `relativeTime` string ("Arriving in 45 mins", "Departed 5 mins ago") onto each transit payload entry on the backend at dispatch time and render it statelessly on the cards — no React state, no ticking timers, no client-side clock math.
+
+### Decisions (locked before coding)
+- **Helper signature:** `computeRelativeTimeString(targetMinutes, startMinutes, kind = "arrival")`. Pure function; returns `null` on non-finite inputs so the renderer can fall back gracefully. `kind` is `"arrival"` (verbs Arriving / Arrived) or `"departure"` (Departing / Departed).
+- **Wrap convention (matches Sprint 61):** `delta = targetMin - startMin`. If `delta < -360` → `delta += 1440` (cross-midnight forward); if `delta > 720` → `delta -= 1440` (cross-midnight backward). Mirrors `computeOutboundLeaveBy` and `isTrainInWindow` so the same wall-clock conventions apply across every time helper in the file.
+- **No clamping ("Precise Historian"):** Past deltas are stated explicitly ("Arrived 5 mins ago"). Zero is `"Arriving in 0 mins"` / `"Departing in 0 mins"`. No "Now" / "Just arrived" alias.
+- **Unit string:** always `"mins"` (matches every example in the brief). No 1-vs-many pluralization branch — keeps the helper trivial.
+- **Live inbound stamp site:** `aggregateTrainArrivalsByHour` — compute `targetMin = parseTimeLabel(hourBucket)` (hour-boundary anchor, e.g., "5 PM" → 17:00) and stamp `relativeTime` onto each emitted bucket object.
+- **BYOD inbound stamp site:** inside the existing BYOD loop's inbound branch — target = `train.time`, kind = `"arrival"`, stamp onto the pushed synthetic event.
+- **BYOD outbound stamp site:** inside the outbound branch — target = `train.time` (the actual train DEPARTS time, NOT the shifted `leaveBy`, because the verb is "Departing/Departed" describing the train itself), kind = `"departure"`, stamp onto the pushed synthetic event.
+- **Stateless rendering:** `TrainCard` gets a new muted line below the From-line; `EventCard` gets a new muted line below the existing `Arrives:` line. Both conditional on `data.relativeTime` existing — older payloads still render cleanly.
+- **No client-side clock math:** the frontend renders the string verbatim. No `useEffect`, no `setInterval`, no per-render `Date.now()`.
+- **Time-gate immutability:** Sprint 54 `isTrainInWindow` + Sprint 61 `computeOutboundLeaveBy` are not touched. `relativeTime` is purely cosmetic — it lives next to (not inside) the time-gate decisions.
+
+### Build Steps
+- [x] 0. Append this Sprint 65 section to `tasks/todo.md`.
+- [x] 1. Create `test-relative-time.js` at project root: assertions for future arrival, future departure, zero delta (both verbs), past (both verbs), cross-midnight forward, cross-midnight backward, null/invalid inputs.
+- [x] 2. Run `node test-relative-time.js`; confirm 0 failures.
+- [x] 3. `app/api/dispatch/route.js`: add `computeRelativeTimeString` helper next to `formatTimeLabel`.
+- [x] 4. `app/api/dispatch/route.js`: stamp `relativeTime` on each bucket emitted by `aggregateTrainArrivalsByHour` (target = `parseTimeLabel(hourBucket)`, kind `"arrival"`).
+- [x] 5. `app/api/dispatch/route.js`: stamp `relativeTime` on the BYOD inbound synthetic event (target = `parseTimeLabel(train.time)`, kind `"arrival"`).
+- [x] 6. `app/api/dispatch/route.js`: stamp `relativeTime` on the BYOD outbound synthetic event (target = `parseTimeLabel(train.time)`, kind `"departure"`).
+- [x] 7. `components/DispatchCards.jsx`: `TrainCard` renders `data.relativeTime` as a muted secondary line when present; `EventCard` does the same below the `Arrives:` block.
+- [x] 8. Verification: `node --check` clean on `route.js` and `DispatchCards.jsx`; `test-relative-time.js` 0 failures; regression `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 still green.
+
+### Acceptance Criteria
+- `test-relative-time.js` exists, covers future / zero / past / cross-midnight, 0 failures.
+- `/api/dispatch` returns transit-typed items carrying a `relativeTime` string.
+- `TrainCard` + `EventCard` render `relativeTime` only when present — payloads missing the field render exactly as before.
+- No `useEffect` / `setInterval` / `Date.now()` introduced anywhere in `app/page.js` or `components/`.
+- Sprint 54 + Sprint 61 time-gate logic untouched.
+
+### Anti-Goals
+- DO NOT add React state or a ticking timer for live countdowns.
+- DO NOT clamp to "Now" or alias the zero-delta string.
+- DO NOT modify `isTrainInWindow` or `computeOutboundLeaveBy`.
+- DO NOT touch `app/page.js` (no UI state changes belong on the form).
+
+### Status: CLOSED 2026-05-30 — `test-relative-time.js` 16/16 PASS (future arrival + future departure + zero delta both verbs + past both verbs + cross-midnight forward + cross-midnight backward + non-finite inputs return null). `route.js` adds `computeRelativeTimeString(targetMinutes, startMinutes, kind = "arrival")` next to `formatTimeLabel` (same wrap convention as Sprint 61: delta < -360 → +1440 / delta > 720 → -1440, no clamping). `aggregateTrainArrivalsByHour` stamps `relativeTime` on each live-Amtraker bucket using the hour-boundary minute. The single BYOD loop stamps `relativeTime` on both branches — inbound uses `parseTimeLabel(train.time)` + `"arrival"`, outbound uses `parseTimeLabel(train.time)` (the train's actual departure, NOT the shifted `leaveBy`) + `"departure"`. `components/DispatchCards.jsx` `TrainCard` + `EventCard` render `data.relativeTime` as a `text-sm text-neutral-400` line, conditional on presence (older payloads still render cleanly). No `useEffect` / `setInterval` / client-side clock math introduced. `node --check` clean on `route.js` + `page.js`; regression `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 all still green. Live `npm run dev` browser smoke-test of the rendered indicator line not yet exercised.

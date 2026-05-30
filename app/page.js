@@ -133,9 +133,24 @@ export default function Home() {
   const [trainSaveStatus, setTrainSaveStatus] = useState("idle");
   // Sprint 61: BYOD Amtrak direction. "inbound" → existing Rensselaer
   // arrival path. "outbound" → ESP ingress path (60 min before departure,
-  // <40 min hard drop). Persisted inside trainConfig alongside the parsed
-  // trains so the radio survives reload.
+  // <40 min hard drop).
+  // Sprint 64: the radio still controls (a) how parseAmtrakText anchors
+  // and (b) which split state/storage key receives the next save. The
+  // radio choice is no longer persisted; both directions' saved trains
+  // live in their own localStorage keys.
   const [direction, setDirection] = useState("inbound");
+  // Sprint 64: Storage Split. Two independent React states — each holds
+  // `{ savedDate, trains }` and hydrates from / persists to its own
+  // localStorage key. Saving inbound trains no longer wipes the saved
+  // outbound trains and vice-versa.
+  const [trainConfigInbound, setTrainConfigInbound] = useState({
+    savedDate: null,
+    trains: [],
+  });
+  const [trainConfigOutbound, setTrainConfigOutbound] = useState({
+    savedDate: null,
+    trains: [],
+  });
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -163,20 +178,30 @@ export default function Home() {
     }
   }, []);
 
-  // Sprint 61: hydrate the BYOD direction radio from localStorage so the
-  // driver's last choice survives reload. trainConfig now carries a
-  // `direction` field alongside the parsed trains; older payloads (no
-  // field) default to "inbound" via the truthy check below.
+  // Sprint 64: hydrate the two split BYOD train states from their own
+  // localStorage keys. Each key holds `{ savedDate, trains }`; a missing
+  // or malformed entry leaves the corresponding state at its empty default.
+  // Reading both keys on mount is what guarantees inbound + outbound
+  // coexist in the same dispatch without one wiping the other.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try {
-      const raw = localStorage.getItem("trainConfig");
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.direction === "outbound") setDirection("outbound");
-    } catch (e) {
-      console.warn("trainConfig direction hydrate failed:", e.message);
-    }
+    const hydrate = (key, setter) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.trains)) {
+          setter({
+            savedDate: typeof parsed.savedDate === "string" ? parsed.savedDate : null,
+            trains: parsed.trains,
+          });
+        }
+      } catch (e) {
+        console.warn(`${key} hydrate failed:`, e.message);
+      }
+    };
+    hydrate("trainConfigInbound", setTrainConfigInbound);
+    hydrate("trainConfigOutbound", setTrainConfigOutbound);
   }, []);
 
   function handleViewModeChange(mode) {
@@ -259,18 +284,24 @@ export default function Home() {
 
   // Sprint 59: BYOD Amtrak Persistence — localStorage edition. Parses the
   // textarea client-side via parseAmtrakText, then writes the
-  // { savedDate, trains } tuple to localStorage["trainConfig"]. Dispatch
-  // reads from localStorage on each click and applies the lazy auto-wipe
-  // (savedDate vs todayLocalISO) before forwarding the array in the body.
+  // { savedDate, trains } tuple to localStorage. Dispatch reads from
+  // localStorage on each click and applies the lazy auto-wipe (savedDate
+  // vs todayLocalISO) before forwarding the array in the body.
+  //
+  // Sprint 64: Storage Split. The active radio direction selects WHICH
+  // state + localStorage key receives the save. The OTHER direction's
+  // saved trains are left fully intact, so a driver can paste/save an
+  // inbound dump, flip the radio to outbound, paste/save a different
+  // dump, and dispatch with both arrays populated.
   function handleSaveTrains() {
     setTrainSaveStatus("saving");
     try {
-      // Sprint 61: parse against the active direction so the saved trains
-      // already carry DEPARTS times when outbound is selected. The direction
-      // itself is persisted so dispatch + reload both stay coherent.
       const trains = parseAmtrakText(trainRawText, direction);
-      const payload = { savedDate: todayLocalISO(), direction, trains };
-      localStorage.setItem("trainConfig", JSON.stringify(payload));
+      const payload = { savedDate: todayLocalISO(), trains };
+      const key = direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
+      localStorage.setItem(key, JSON.stringify(payload));
+      if (direction === "outbound") setTrainConfigOutbound(payload);
+      else setTrainConfigInbound(payload);
       setTrainSaveStatus("saved");
       setTimeout(() => setTrainSaveStatus("idle"), 2000);
     } catch (err) {
@@ -352,24 +383,18 @@ export default function Home() {
       // Sprint 59: client-owned persistence. eventConfig comes from
       // localStorage (seeded from EVENT_CONFIG_SEED on first mount) and
       // ships with every dispatch click — replaces the deleted Sprint 57
-      // fs read. byodTrains ships the saved trains array WITH the lazy
-      // auto-wipe applied here: if today doesn't match savedDate, send [].
+      // fs read.
       body.eventConfig = eventConfig;
-      // Sprint 61: forward the saved direction alongside the trains so the
-      // backend routes outbound trains through ESP / the 60-min buffer math
-      // and inbound trains through the legacy Rensselaer path.
-      body.direction = direction;
-      try {
-        const rawTrain = localStorage.getItem("trainConfig");
-        const stored = rawTrain ? JSON.parse(rawTrain) : null;
-        body.byodTrains =
-          stored && stored.savedDate === today && Array.isArray(stored.trains)
-            ? stored.trains
-            : [];
-      } catch (e) {
-        console.warn("trainConfig read failed:", e.message);
-        body.byodTrains = [];
-      }
+      // Sprint 64: split BYOD payload. Apply the lazy auto-wipe (savedDate
+      // !== today → []) INDEPENDENTLY to each direction so a stale save
+      // in one direction never collapses the other. The backend pre-merges
+      // these into a single stamped array — no `direction` flag in the body.
+      const liveArray = (cfg) =>
+        cfg && cfg.savedDate === today && Array.isArray(cfg.trains)
+          ? cfg.trains
+          : [];
+      body.inboundTrains = liveArray(trainConfigInbound);
+      body.outboundTrains = liveArray(trainConfigOutbound);
 
       const res = await fetch("/api/dispatch", {
         method: "POST",

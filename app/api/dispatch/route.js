@@ -978,6 +978,12 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
   // Sprint 22: emit a strict array of objects so the frontend can .map() it.
   // No leaveBy — train egress is instant (PO anti-goal).
   // Sprint 27: emit RAW codes.length as volume (parity with flight aggregator).
+  // Sprint 65: stamp `relativeTime` on each bucket so the TrainCard can
+  // render a precise countdown ("Arriving in 45 mins") without any
+  // client-side clock math. Hour-bucket label resolves to its hour-boundary
+  // minute via parseTimeLabel; localStart is already wall-clock-as-UTC
+  // (Sprint 3.1) so getUTCHours/getUTCMinutes reads the driver's wall-clock.
+  const startMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
   const buckets = [];
   for (const [hour, codes] of Object.entries(originsByHour)) {
     buckets.push({
@@ -992,6 +998,7 @@ function aggregateTrainArrivalsByHour({ trains, localStart, localEnd, offsetMin,
       // Sprint 37: Amtrak coords so the Mapbox radar can pin each train bucket.
       lat: AMTRAK_COORDS.lat,
       lng: AMTRAK_COORDS.lng,
+      relativeTime: computeRelativeTimeString(parseTimeLabel(hour), startMin, "arrival"),
     });
   }
   return buckets;
@@ -1362,6 +1369,35 @@ function formatTimeLabel(minutes) {
   return `${h12}:${String(mm).padStart(2, "0")} ${ampm}`;
 }
 
+// Sprint 65: Relative Time Indicator. Pure helper — given a target wall-
+// clock minute and the driver's localStart wall-clock minute, returns the
+// "Arriving in 45 mins" / "Departed 5 mins ago" string the cards render
+// verbatim (no client clock math, no setInterval). Cross-midnight wrap
+// mirrors Sprint 61's computeOutboundLeaveBy convention (delta < -360 →
+// +1440 ; delta > 720 → -1440) so the same time-frame rules apply across
+// every transit helper in this file. NOT clamped — zero and past deltas
+// are stated explicitly per the brief's Precise Historian rule. Returns
+// null on non-finite inputs so the renderer falls through cleanly to the
+// absolute time when, e.g., parseTimeLabel returns Infinity.
+function formatRelativeUnit(absMin) {
+  if (absMin < 60) return `${absMin} mins`;
+  const hrs = Math.floor(absMin / 60);
+  const mins = absMin % 60;
+  const hrLabel = hrs === 1 ? "1 hr" : `${hrs} hrs`;
+  return mins === 0 ? hrLabel : `${hrLabel} ${mins} mins`;
+}
+function computeRelativeTimeString(targetMinutes, startMinutes, kind = "arrival") {
+  if (!Number.isFinite(targetMinutes) || !Number.isFinite(startMinutes)) return null;
+  let delta = targetMinutes - startMinutes;
+  if (delta < -360) delta += 1440;
+  else if (delta > 720) delta -= 1440;
+  const futureVerb = kind === "departure" ? "Departing" : "Arriving";
+  const pastVerb = kind === "departure" ? "Departed" : "Arrived";
+  const unit = formatRelativeUnit(Math.abs(delta));
+  if (delta < 0) return `${pastVerb} ${unit} ago`;
+  return `${futureVerb} in ${unit}`;
+}
+
 // Sprint 61: BYOD Outbound time math. Driver targets ESP 60 min before the
 // train leaves. Strict drop under 40 min (cannot make it); clamp leaveBy to
 // "now" inside the 40–60 min band so it acts as an immediate surge without
@@ -1682,24 +1718,50 @@ function computeLastCallEgressEvents(localStart, dictionary) {
 
 export async function POST(request) {
   try {
-    const { latitude, longitude, hours, timezoneOffsetMinutes, platforms, includeAirport: includeAirportRaw, includeAmtrak: includeAmtrakRaw, routingStrategy: routingStrategyRaw, costPerMile: costPerMileRaw, eventConfig: eventConfigRaw, byodTrains: byodTrainsRaw, direction: directionRaw } =
-      await request.json();
-
-    // Sprint 61: BYOD Amtrak direction toggle. Only an explicit "outbound"
-    // flips the engine; anything else (missing, malformed, "inbound") keeps
-    // the legacy Rensselaer-arrival behavior so existing clients still work.
-    const direction = directionRaw === "outbound" ? "outbound" : "inbound";
+    // Sprint 64: split BYOD train payload. The body now carries
+    // `inboundTrains` + `outboundTrains` (each lazy-wiped client-side
+    // against today's date) instead of the Sprint 59 `byodTrains` array +
+    // Sprint 61 `direction` flag. The pre-merge below stamps `direction`
+    // per train so the single BYOD loop can route each entry without a
+    // global flag — and a frontend payload missing either array no longer
+    // 500s the dispatch.
+    const body = (await request.json()) || {};
+    const {
+      latitude,
+      longitude,
+      hours,
+      timezoneOffsetMinutes,
+      platforms,
+      includeAirport: includeAirportRaw,
+      includeAmtrak: includeAmtrakRaw,
+      routingStrategy: routingStrategyRaw,
+      costPerMile: costPerMileRaw,
+      eventConfig: eventConfigRaw,
+      inboundTrains: inboundTrainsRaw = [],
+      outboundTrains: outboundTrainsRaw = [],
+    } = body;
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
-    // backed object (seeded from a static import on first mount) and
-    // byodTrains is the array the client already lazy-wiped against
-    // today's date. Defensive guards at the boundary so a malformed
-    // payload can't crash the pipeline — fall back to {} / [].
+    // backed object (seeded from a static import on first mount). Defensive
+    // guard at the boundary so a malformed payload can't crash the pipeline.
     const eventConfig =
       eventConfigRaw && typeof eventConfigRaw === "object" && !Array.isArray(eventConfigRaw)
         ? eventConfigRaw
         : {};
-    const byodTrains = Array.isArray(byodTrainsRaw) ? byodTrainsRaw : [];
+
+    // Sprint 64: belt-and-suspenders array coercion (per L1). The `= []`
+    // default catches missing keys; this catches non-array garbage that
+    // the default wouldn't (e.g., `inboundTrains: "oops"`).
+    const inboundTrains = Array.isArray(inboundTrainsRaw) ? inboundTrainsRaw : [];
+    const outboundTrains = Array.isArray(outboundTrainsRaw) ? outboundTrainsRaw : [];
+
+    // Sprint 64: Pre-Merge. Stamp `direction` onto every BYOD train BEFORE
+    // the injection loop so a single iteration can route each entry to its
+    // own location/coords/time-math branch without consulting a global flag.
+    const allByod = [
+      ...inboundTrains.map((t) => ({ ...t, direction: "inbound" })),
+      ...outboundTrains.map((t) => ({ ...t, direction: "outbound" })),
+    ];
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -2080,12 +2142,20 @@ export async function POST(request) {
     // Sprint 11 / 17 sanitization below). This BYOD loop runs the same
     // way: `direction` ONLY selects per-train leaveBy math + Mapbox coords
     // (ESP for outbound, AMTRAK for inbound). The two feeds are fully
-    // independent and flow into the merged payload simultaneously. The
-    // outbound branch is now an explicit `if/else` instead of `if/continue`
-    // so the non-XOR shape is visible on the page.
+    // independent and flow into the merged payload simultaneously.
+    //
+    // Sprint 64: Dual-Direction. The single loop now iterates the pre-
+    // merged `allByod` array (each entry stamped with its own `direction`
+    // by the Pre-Merge above) and branches on `train.direction`. Inbound
+    // and outbound trains coexist in the same dispatch — saving one
+    // direction on the frontend no longer wipes the other.
     if (activePlatforms.rideshare && includeAmtrak) {
-      for (const train of byodTrains) {
-        if (direction === "outbound") {
+      // Sprint 65: driver's wall-clock minute, used by both branches as the
+      // anchor for computeRelativeTimeString. localStart is wall-clock-as-UTC
+      // per Sprint 3.1 so UTC getters return the driver's wall-clock.
+      const byodStartMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+      for (const train of allByod) {
+        if (train.direction === "outbound") {
           // Sprint 61: Outbound Ingress. train.time is the DEPARTS time
           // (client parser already captured the right block). Shift it
           // backwards by OUTBOUND_BUFFER_MINUTES (drop / clamp per the
@@ -2104,6 +2174,14 @@ export async function POST(request) {
             leaveBy,
             lat: ESP_COORDS.lat,
             lng: ESP_COORDS.lng,
+            // Sprint 65: relativeTime tracks the TRAIN's actual departure
+            // (train.time), not the driver's shifted leaveBy — the brief
+            // calls for "Departed 5 mins ago" which describes the train.
+            relativeTime: computeRelativeTimeString(
+              parseTimeLabel(train.time),
+              byodStartMin,
+              "departure"
+            ),
           });
           console.log(
             `BYOD OUTBOUND TRAIN PARSED: ${train.trainNumber} | Status: ${train.status} | Departs: ${train.time} | LeaveBy: ${leaveBy}`
@@ -2123,6 +2201,13 @@ export async function POST(request) {
             arrivalTime: train.arrivalTime,
             lat: AMTRAK_COORDS.lat,
             lng: AMTRAK_COORDS.lng,
+            // Sprint 65: BYOD inbound train arrives at Rensselaer at
+            // train.time. Verb stays "Arriving / Arrived".
+            relativeTime: computeRelativeTimeString(
+              parseTimeLabel(train.time),
+              byodStartMin,
+              "arrival"
+            ),
           });
           console.log(
             `BYOD TRAIN DATA PARSED: ${train.trainNumber} | Status: ${train.status} | Time: ${train.time}`
@@ -2240,7 +2325,7 @@ export async function POST(request) {
       (it) => Array.isArray(it.categories) && it.categories.includes("Outbound")
     ).length;
     console.log(
-      `=== SPRINT 62 RADAR CHECK === direction=${direction} | liveInbound buckets: ${liveInboundCount} | BYOD events: ${byodEventCount} | itinerary Inbound: ${inboundCount} | itinerary Outbound: ${outboundCount}`
+      `=== SPRINT 62 RADAR CHECK === byodInbound: ${inboundTrains.length} | byodOutbound: ${outboundTrains.length} | liveInbound buckets: ${liveInboundCount} | BYOD events: ${byodEventCount} | itinerary Inbound: ${inboundCount} | itinerary Outbound: ${outboundCount}`
     );
 
     // Acceptance Criteria: log the fully merged payload BEFORE the LLM call.

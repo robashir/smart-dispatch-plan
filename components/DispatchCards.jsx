@@ -31,6 +31,11 @@ export function TrainCard({ data }) {
       <div className="text-2xl font-bold mb-2">{data.hourBucket}</div>
       <div className="text-lg">{data.volume} Arrival{data.volume === 1 ? "" : "s"} at {data.hub}</div>
       <div className="text-sm text-neutral-400 mt-1">From: {data.origins.join(", ")}</div>
+      {/* Sprint 65: stateless relative-time stamp from the backend. Falls
+          through cleanly when the field is missing (older payloads). */}
+      {data.relativeTime && (
+        <div className="text-sm text-neutral-400 mt-1">{data.relativeTime}</div>
+      )}
       {density && <div className="text-sm font-semibold text-emerald-300 mt-2">{density}</div>}
     </div>
   );
@@ -51,6 +56,12 @@ export function EventCard({ data }) {
           Crossgates) omit it, so the line is conditional. */}
       {data.arrivalTime && (
         <div className="text-sm text-neutral-300 mt-1">Arrives: {data.arrivalTime}</div>
+      )}
+      {/* Sprint 65: stateless relative-time stamp from the backend (BYOD
+          inbound + outbound trains both carry it). Falls through cleanly
+          when the field is missing (non-train event egress cards). */}
+      {data.relativeTime && (
+        <div className="text-sm text-neutral-400 mt-1">{data.relativeTime}</div>
       )}
       <div className="flex flex-wrap gap-2 mt-2">
         {data.categories.map((c) => (
