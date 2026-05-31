@@ -278,7 +278,14 @@ const YIELD_RATES = {
 const DEFAULT_CAPACITY = 80;
 const CAPACITY_DICTIONARY = {
   // Transit hubs
-  ALB: 600,
+  // Sprint 68 recalibration: 600 → 123. The original Sprint 48 figure
+  // modeled ALB's hourly rideshare-pool ceiling; with YIELD_RATES.flight
+  // = 15, a single arrival scored only (1×15)/600×100 = 2.5 — well below
+  // the Sprint 27 strict <10 floor, so solo flights were silently ghosted.
+  // 123 = real-world blended average seats of incoming ALB aircraft, so a
+  // single arrival now scores (1×15)/123×100 = 12.19 — clears the floor
+  // and reaches the itinerary + Golden Half-Hour engine.
+  ALB: 123,
   Rensselaer: 300,
   // Food / restaurant primary categories
   "fast food": 200,

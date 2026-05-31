@@ -3140,6 +3140,24 @@ Telemetry from the Visibility Patch exposed the real bug: mobile-browser pastes 
 
 #### Status: CLOSED 2026-05-31 — `test-flight-byod.js` 20/20 PASS (5 new mobile-paste assertions + 2 new desktop-paste assertions + Dallas-Fort Worth longest-match + 2 strict-drop blocks + 3 edge cases + 5 fingerprint-dedupe assertions). Mobile "Chicago O Hare" 10:07am, Orlando 12:45pm, Atlanta 3:15pm parsed; Baltimore + Detroit silently dropped. Telemetry log fires only on successful matches (no longer noisy on every candidate line). `route.js` port byte-identical to the test scaffold. `node --check` clean. All six prior regression suites still green. Live `npm run dev` mobile-paste smoke-test not yet exercised.
 
+### Density Engine Recalibration (ALB Hub Capacity)
+- [x] R1. `app/api/dispatch/route.js` `CAPACITY_DICTIONARY`: change `ALB: 600` → `ALB: 123`. 123 = real-world blended average seats of incoming ALB aircraft (137-seat Southwest 737, 100-seat JetBlue E190, 76-seat regional CRJ, 50-seat ERJ-145, etc).
+- [x] R2. Confirm `YIELD_RATES.flight = 15` unchanged (no edit — verified at [route.js:254](app/api/dispatch/route.js#L254)).
+- [x] R3. Math verification: `(1 × 15) / 123 × 1.0 × 100 = 12.195` — single flight clears the Sprint 27 strict `< 10.0` density floor at baseline `finalRideMod = 1.0`. Confirmed via `node -e` arithmetic.
+- [x] R4. Regression sweep: `test-flight-byod.js` 20/20 PASS, `test-density-engine.js` 10/10 PASS, `test-bus-parser.js` 7/7 PASS, `test-peak-overlap.js` 28/28 PASS. `node --check` clean on `route.js`.
+
+#### Math summary (baseline `finalRideMod = 1.0`, no time-decay)
+| volume | OLD (capacity 600) | NEW (capacity 123) |
+|---:|---:|---:|
+| 1 arrival | 2.5 ❌ ghosted | **12.19** ✅ clears |
+| 2 arrivals | 5.0 ❌ ghosted | **24.39** ✅ |
+| 4 arrivals | 10.0 ✅ (prior threshold) | **48.78** ✅ |
+
+#### Caveat (still in effect post-recalibration)
+- `computeTimeDecayMod` haircuts the SORT score (not the displayed density). A solo flight 90+ min out still sees `12.19 × 0.4 = 4.88` effective rank-score — it survives the floor filter (filter reads raw density, not decayed), so it appears in the itinerary, but it ranks below near-term surges. Per L10 this is now traced; intentional.
+
+#### Status: CLOSED 2026-05-31 — Surgical one-line dictionary edit. Sprint 68 BYOD Flight pipeline now end-to-end actionable: a single BYOD-pasted Orlando flight will reach the radar, itinerary, AND Golden Half-Hour engine without requiring multiple stacked arrivals to clear the strict floor.
+
 ### Status: CLOSED 2026-05-30 — `test-flight-byod.js` 15/15 PASS at project root proves the parser extracts the 7 dictionary cities (Boston + Burlington + Philadelphia silently dropped), longest-match-first correctly resolves "Dallas-Fort Worth" without losing to the "Dallas" substring, scheduled ISO carries the airport-local offset (so `T15:45` reads as 3:45 PM EDT for both BYOD and live records), and the relaxed `15:45_MCO` fingerprint dedupes overlapping BYOD + live records into 1 entry while preserving distinct planes on different IATAs or different times. `route.js` adds `HUB_CITY_PATTERNS` + `HUB_IATA_TO_CITY` reverse map + `parseFlightText` (inline copy byte-identical to the TDD scaffold), swaps the Sprint 4.1 strict fingerprint for the Sprint 68 relaxed `HH:MM_IATA` form inside `aggregateArrivalsByHour`, emits `originLabels` on each bucket (city-when-known, IATA-when-not), destructures `inboundFlights` from the POST body with `typeof === "string"` coercion at the boundary (per L1), and merges BYOD + live into one `mergedRawFlights` array BEFORE the aggregator runs (single pass). `components/DispatchCards.jsx` `FlightCard` now reads `data.originLabels` when present, falls back to `data.origins` so payloads from servers without the Sprint 68 change still render. `app/page.js` adds a 4th radio option `flightInbound`, a `flightConfigInbound` useState + hydration branch, a `direction === "flightInbound"` early branch in `handleSaveTrains` that persists `{ savedDate, rawText }` to `localStorage["flightConfigInbound"]` (train + bus states untouched on a flight save), and a body.inboundFlights field on dispatch with the same lazy auto-wipe as the bus payload. `node --check` clean on `route.js` + `page.js`. All six prior regression suites still green. Live `npm run dev` browser smoke-test of the flight-merge surface on a real ALB live-board paste not yet exercised.
 
 ### Acceptance Criteria
