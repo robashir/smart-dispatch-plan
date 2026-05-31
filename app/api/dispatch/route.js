@@ -82,6 +82,11 @@ const AMTRAK_COORDS = { lat: 42.6463, lng: -73.7392 };
 const ESP_COORDS = { lat: 42.6514, lng: -73.7608 };
 const HARRIMAN_COORDS = { lat: 42.6841, lng: -73.8164 };
 
+// Sprint 67: Downtown Albany Bus Terminal (Greyhound / Trailways / Megabus).
+// Single hardcoded anchor for every BYOD-parsed inbound bus — SUNY drop-off
+// buses are filtered out at the parser, not re-mapped.
+const DOWNTOWN_BUS_TERMINAL_COORDS = { lat: 42.6450, lng: -73.7487 };
+
 // Sprint 61: Outbound Amtrak Ingress Engine. Driver wants to be downtown
 // 60 min before a train departs (BUFFER); if the train departs in less
 // than 40 min from "now" the synthetic event is dropped because the
@@ -259,6 +264,12 @@ const CAPACITY_DICTIONARY = {
   // Sprint 63: Unified Population Density Engine — synthetic residential
   // ride node capacity (population pool addressable by one driver).
   "residential_node": 100,
+  // Sprint 67: BYOD Bus per-arrival capacity. ~55-seat motorcoach, so a
+  // single arrival's rideshare pool is bounded much tighter than the
+  // default 80. Paired with the yieldRateFor flat 5, baseline density =
+  // 5/20*100 = 25 — comfortably above the Sprint 27 strict <10 filter so
+  // buses always reach the radar and the Sprint 66 Golden Half-Hour engine.
+  "byod bus": 20,
 };
 
 function yieldRateFor(item) {
@@ -280,6 +291,10 @@ function yieldRateFor(item) {
   if (item.type === "event") {
     const cat0 = (Array.isArray(item.categories) && item.categories[0]) || "";
     const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
+    // Sprint 67: BYOD Bus surges get a flat expected yield of 5 (per spec
+    // clarification). Checked FIRST so the rule can't fall through to the
+    // event/egress branches and accidentally inherit a stadium-scale rate.
+    if (/BYOD Bus/i.test(catsAll)) return 5;
     if (/shift|nursing|admin|clinic/i.test(cat0)) return YIELD_RATES.hospital;
     // Sprint 52: Crossgates Retail Egress — 150 expected rideshare yield.
     // Checked BEFORE the egress >= 2.5 mega-event branch so the 3.0x
@@ -905,6 +920,36 @@ async function fetchAlbTrainArrivals() {
 // (Sprint 59 — localStorage migration). The parsed trains array travels
 // in the dispatch body as `byodTrains`, already lazy-wiped against
 // today's local date by the client.
+
+// Sprint 67: BYOD Bus Inbound parser. Identifies blocks containing
+// `Arriving\n[TIME]` paired with the next `To\n[DESTINATION]`. STRICT
+// FILTER drops any destination matching /SUNY/i so uptown drop-off buses
+// are never re-routed downtown. Surviving entries are tagged with their
+// operator ("Greyhound" | "Trailways"). Kept fully isolated from
+// parseAmtrakText per Sprint 67 Anti-Goal (no shared regex / state).
+// Validated by test-bus-parser.js (7/7) BEFORE wiring into the dispatch loop.
+function parseBusSchedule(rawText) {
+  if (typeof rawText !== "string" || !rawText.trim()) return [];
+  const text = rawText.replace(/\r\n/g, "\n");
+  const pattern =
+    /Arriving\s*\n\s*(\d{1,2}:\d{2})\s*([ap])m[\s\S]*?To\s*\n\s*([^\n]+)/gi;
+  const results = [];
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const timeDigits = match[1];
+    const ampmLetter = match[2].toLowerCase();
+    const destination = match[3].trim();
+    if (/SUNY/i.test(destination)) continue;
+    let operator;
+    if (/Greyhound Bus Terminal/i.test(destination)) operator = "Greyhound";
+    else if (/Trailways Bus Terminal/i.test(destination)) operator = "Trailways";
+    else continue;
+    const arrivalTime = `${timeDigits} ${ampmLetter.toUpperCase()}M`;
+    const arrivalTimeRaw = `${timeDigits}${ampmLetter}`;
+    results.push({ arrivalTime, arrivalTimeRaw, destination, operator });
+  }
+  return results;
+}
 
 // Sprint 54: BYOD Time Gate. Returns true when a BYOD-parsed train's
 // arrival falls in [localStart - 10 min, localEnd]. The -10 min buffer
@@ -1816,6 +1861,10 @@ export async function POST(request) {
       eventConfig: eventConfigRaw,
       inboundTrains: inboundTrainsRaw = [],
       outboundTrains: outboundTrainsRaw = [],
+      // Sprint 67: BYOD Bus Inbound. Raw pasted bus schedule text from the
+      // frontend textarea (when the radio is "busInbound"). Parsed server-
+      // side by parseBusSchedule which drops SUNY drop-off entries.
+      inboundBuses: inboundBusesRaw = "",
     } = body;
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
@@ -1839,6 +1888,13 @@ export async function POST(request) {
       ...inboundTrains.map((t) => ({ ...t, direction: "inbound" })),
       ...outboundTrains.map((t) => ({ ...t, direction: "outbound" })),
     ];
+
+    // Sprint 67: BYOD Bus parse. Raw text comes through as a string; defensive
+    // coercion (per L1) so a malformed payload can't crash the parser. The
+    // strict /SUNY/i filter inside parseBusSchedule is the SOLE drop site —
+    // every surviving entry is a downtown-terminal arrival.
+    const inboundBuses =
+      typeof inboundBusesRaw === "string" ? parseBusSchedule(inboundBusesRaw) : [];
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -2291,6 +2347,37 @@ export async function POST(request) {
           );
         }
       }
+
+      // Sprint 67: BYOD Bus injection. Same window gate as inbound trains
+      // (isTrainInWindow accepts the "H:MM AM/PM" form). Surviving entries
+      // pin to the hardcoded Downtown Bus Terminal — SUNY drop-offs are
+      // never here because parseBusSchedule already dropped them. Push as
+      // type:"event" with categories:["BYOD Bus","Inbound",operator] so
+      // they inherit the scoreable branch, ROI filter, and the existing
+      // emerald "Inbound" pin in DispatchMap (Sprint 62).
+      for (const bus of inboundBuses) {
+        if (!isTrainInWindow(bus.arrivalTime, localStart, hoursNum)) continue;
+        structuredEvents.push({
+          type: "event",
+          location: `Downtown Bus Terminal — ${bus.operator} Arrival`,
+          volume: 1,
+          egressMod: 2.0,
+          categories: ["BYOD Bus", "Inbound", bus.operator],
+          origin: "NYC",
+          leaveBy: bus.arrivalTime,
+          arrivalTime: bus.arrivalTimeRaw,
+          lat: DOWNTOWN_BUS_TERMINAL_COORDS.lat,
+          lng: DOWNTOWN_BUS_TERMINAL_COORDS.lng,
+          relativeTime: computeRelativeTimeString(
+            parseTimeLabel(bus.arrivalTime),
+            byodStartMin,
+            "arrival"
+          ),
+        });
+        console.log(
+          `BYOD BUS DATA PARSED: ${bus.operator} | Dest: ${bus.destination} | Arrives: ${bus.arrivalTime}`
+        );
+      }
     }
 
     // Sprint 11: Payload sanitization. Prompt-only platform isolation kept
@@ -2400,6 +2487,13 @@ export async function POST(request) {
           (e) => Array.isArray(e.categories) && e.categories.includes("BYOD Train")
         ).length
       : 0;
+    // Sprint 67: BYOD Bus count surfaced alongside the train counts so the
+    // terminal log makes it obvious when the SUNY filter dropped every entry.
+    const byodBusEventCount = Array.isArray(mergedPayload.events)
+      ? mergedPayload.events.filter(
+          (e) => Array.isArray(e.categories) && e.categories.includes("BYOD Bus")
+        ).length
+      : 0;
     const inboundCount = mergedPayload.itinerary.filter(
       (it) => Array.isArray(it.categories) && it.categories.includes("Inbound")
     ).length;
@@ -2407,7 +2501,7 @@ export async function POST(request) {
       (it) => Array.isArray(it.categories) && it.categories.includes("Outbound")
     ).length;
     console.log(
-      `=== SPRINT 62 RADAR CHECK === byodInbound: ${inboundTrains.length} | byodOutbound: ${outboundTrains.length} | liveInbound buckets: ${liveInboundCount} | BYOD events: ${byodEventCount} | itinerary Inbound: ${inboundCount} | itinerary Outbound: ${outboundCount}`
+      `=== SPRINT 62 RADAR CHECK === byodInbound: ${inboundTrains.length} | byodOutbound: ${outboundTrains.length} | byodBuses: ${inboundBuses.length} | liveInbound buckets: ${liveInboundCount} | BYOD events: ${byodEventCount} | BYOD bus events: ${byodBusEventCount} | itinerary Inbound: ${inboundCount} | itinerary Outbound: ${outboundCount}`
     );
 
     // Acceptance Criteria: log the fully merged payload BEFORE the LLM call.

@@ -3010,4 +3010,60 @@ The dispatch engine already names the single best move. Drivers also need to kno
 - DO NOT add new React state, `useEffect`, or client-side time math for the banner.
 - DO NOT enforce the 50% threshold inside the backend helper — the helper returns the raw shape; the banner decides whether to render.
 
+## Sprint 67 — BYOD Bus Inbound Engine (Greyhound / Trailways)
+
+### Epic
+Expand the BYOD pipeline to capture downtown Albany Bus Terminal surges (Greyhound, Trailways, Megabus). DOM-pasted bus schedules must be parsed by a backend regex, strictly filtered so SUNY drop-off buses are discarded (never re-routed to uptown), and the surviving downtown arrivals must flow into the dispatch radar at the hardcoded terminal coords `[-73.7487, 42.6450]`.
+
+### Decisions (locked before coding, per CLAUDE.md §2)
+- **Type/shape (clarified with user):** push synthetic bus events as `type: "event"` with `categories: ["BYOD Bus", "Inbound", <STATUS>]` — mirrors the BYOD Train pattern exactly (L2) so they inherit the `scoreable` branch, ROI filter, and the emerald `categories.includes("Inbound")` pin in `DispatchMap.jsx` without inventing a new type. Spec's `type: "bus"` line interpreted as a category tag, not a new type discriminator.
+- **Yield rate (per user clarification):** `yieldRateFor` returns a flat `5` for any `type: "event"` whose `categories` includes `"BYOD Bus"`. Checked BEFORE the existing event/egress branches so it can't fall through to nightlife or mega-event rates.
+- **Parser isolation (per spec Anti-Goal):** new top-level helper `parseBusSchedule(rawText)` lives next to `parseAmtrakText`'s former home in `route.js`; never shares state or regex with the train parser. Backend-only (mirrors the dispatch spec, even though `parseAmtrakText` is client-side; the bus parser is small enough to live wherever the strict filter is easiest to test).
+- **Strict SUNY drop:** the parser MUST drop any entry whose destination string matches `/SUNY/i`. Only entries mentioning "Greyhound Bus Terminal" or "Trailways Bus Terminal" survive. SUNY entries are never re-routed (per spec Anti-Goal).
+- **Hardcoded coords:** every surviving bus is pinned to `[-73.7487, 42.6450]` (`DOWNTOWN_BUS_TERMINAL_COORDS`). No per-bus lat/lng inference.
+- **localStorage key:** `busConfigInbound` holding `{ savedDate, buses }` (parallels `trainConfigInbound`). Lazy-wiped at dispatch click using the existing `liveArray(cfg)` helper so a stale prior-day save can't reach the backend.
+- **Payload key:** `inboundBuses` on the POST body, as the spec dictates. Defended at the route-handler boundary with the same `Array.isArray` belt-and-suspenders coercion the trains keys use (L1).
+- **Frontend save flow:** re-use the existing textarea (`trainRawText` state) per spec Anti-Goal "DO NOT build a new BYOD text area UI." When the radio is `busInbound`, "Save" routes raw text through `parseBusSchedule` (mirroring how the train save runs `parseAmtrakText`) and persists `{ savedDate, buses }` to `busConfigInbound`. Train state untouched.
+- **Direction state:** the existing two-option radio (`inbound` / `outbound`) extends to a third option `busInbound`. Anchor word is "Bus Inbound" so the radio label stays grammatically uniform with the train labels.
+- **relativeTime:** stamp `relativeTime` via `computeRelativeTimeString(parseTimeLabel(bus.arrivalTime), byodStartMin, "arrival")` so EventCard's existing relative-time render survives unchanged.
+
+### Build Steps
+- [x] 0. Append this Sprint 67 section to `tasks/todo.md` (this step).
+- [x] 1. Create `test-bus-parser.js` at project root with the DOM-line-break fixture and the 3-valid / 1-SUNY-dropped assertions.
+- [x] 2. Run `node test-bus-parser.js`; 7/7 PASS BEFORE touching `route.js` or `page.js`.
+- [x] 3. `app/api/dispatch/route.js`: added `parseBusSchedule(rawText)` (regex-based, strict `/SUNY/i` drop, isolated from `parseAmtrakText` per Anti-Goal). Added `DOWNTOWN_BUS_TERMINAL_COORDS = { lat: 42.6450, lng: -73.7487 }`. Destructured `inboundBuses` from the request body with defensive `typeof === "string"` coercion. Injected bus events into `structuredEvents` inside the existing `if (activePlatforms.rideshare && includeAmtrak)` block: `type:"event"`, `categories:["BYOD Bus","Inbound",bus.operator]`, `lat/lng = DOWNTOWN_BUS_TERMINAL_COORDS`, `leaveBy + arrivalTime = parsed time`, `relativeTime` via `computeRelativeTimeString`, `volume:1`, `egressMod:2.0`. Window-gated by the existing `isTrainInWindow`.
+- [x] 4. `app/api/dispatch/route.js`: added a `/BYOD Bus/i` early-return branch (`return 5`) at the top of `yieldRateFor`'s `type === "event"` block so buses earn a real `densityScore` without falling through to nightlife / mega-event rates.
+- [x] 5. `app/api/dispatch/route.js`: extended the SPRINT 62 RADAR CHECK log with `byodBuses` + `BYOD bus events` counts alongside the train counts.
+- [x] 6. `app/page.js`: extended the direction radio to three options (`inbound` / `outbound` / `busInbound`). Added `busConfigInbound` useState `{ savedDate, rawText }` (rawText, not pre-parsed — backend owns the regex). Extended the mount-time hydrate `useEffect` with a `busConfigInbound` branch that accepts the `{ savedDate, rawText }` shape.
+- [x] 7. `app/page.js`: extended `handleSaveTrains` with a `direction === "busInbound"` early branch — persists `{ savedDate, rawText }` to `localStorage["busConfigInbound"]`, updates `busConfigInbound` state, returns early. Existing inbound/outbound branches untouched.
+- [x] 8. `app/page.js`: in `handleClick`, appended `body.inboundBuses` (raw text string when today's save is live, "" otherwise). Same lazy auto-wipe as the trains.
+- [x] 9. Verification: `node test-bus-parser.js` 7/7 PASS; `node --check` clean on `route.js`; regression `test-dual-amtrak.js` 26/26, `test-amtrak-outbound.js` 16/16, `test-relative-time.js` 22/22, `test-time-gate.js` 21/21, `test-peak-overlap.js` 28/28 all still green.
+
+### Decision Revision (recorded mid-sprint)
+- Original decision: "Push as `type:'bus'` per spec §3.B Standardization line."
+- Revised: push as `type:"event"` with `categories:["BYOD Bus","Inbound",operator]`, mirroring BYOD trains exactly. Reason: confirmed with user before any code edits. The literal `type:"bus"` would have required parallel changes in `scoreable` / `yieldRateFor` / TRANSIT_TYPES / PIN_HEX — violating lesson L2 ("don't invent a new shape"). The category-tag approach inherits the scoreable branch, ROI filter, and emerald "Inbound" pin for free. The spec's "frontend can style them if needed" phrasing leaves room for a later sprint to add bus-specific styling via the `BYOD Bus` category. Per-user clarification: `yieldRateFor` returns a flat `5` for any `type:"event"` carrying the `BYOD Bus` category (checked FIRST so it can't fall through to nightlife/mega-event rates).
+- Original decision: "Backend `parseBusSchedule(rawText)` parses the body's raw text."
+- Followed verbatim. The Amtrak pipeline parses client-side (Sprint 59) and ships an array; this sprint diverges from that pattern because the spec explicitly placed `parseBusSchedule` inside the backend section. The frontend just persists raw text to localStorage; backend parses on every dispatch. Justified because (a) the spec is explicit, and (b) parser logic + the strict SUNY filter live in ONE place that's easy to TDD.
+
+### Post-close fix (Golden Half-Hour participation)
+- User asked "did you consider bus also for Golden Half-Hour" — exposed an analytical gap. The Sprint 66 Peak Overlap engine reads `mergedPayload.itinerary` AFTER `buildItinerary` runs, so bus events automatically participate IF they survive the Sprint 27 `densityScore >= 10.0` filter. Math at the original yield=5 / capacity=80 default: `5/80 * 1.0 * 100 = 6.25` baseline → below the floor → pruned on every non-peak dispatch.
+- Fix: added `CAPACITY_DICTIONARY["byod bus"] = 20` (motorcoach pax-pool bound). New baseline: `5/20 * 1.0 * 100 = 25` — clears the floor with headroom even at the deepest 0.4× time decay (`10` final score, still ≥ 10). Buses now always reach both the radar and the Golden Half-Hour engine.
+- New lesson logged: L10 — "When adding a new scoreable surge type, do the densityScore math BEFORE shipping." Trace baseline (mod=1.0) AND time-decayed (decay=0.4) results in the sprint plan's Decisions section so the gap can't repeat.
+
+### Status: CLOSED 2026-05-30 — `test-bus-parser.js` 7/7 PASS at project root proves the strict `/SUNY/i` drop works. Backend ships every surviving bus as a synthetic `type:"event"` carrying `categories:["BYOD Bus","Inbound",operator]` at `[-73.7487, 42.6450]` with `leaveBy`, `arrivalTime`, and `relativeTime` populated. `yieldRateFor` returns `5` for any BYOD Bus event; `CAPACITY_DICTIONARY["byod bus"] = 20` so baseline density = 25 (clears the Sprint 27 floor → guarantees radar + Golden Half-Hour participation). Frontend has a 3-option radio (`Amtrak Inbound | Amtrak Outbound | Bus Inbound`) sharing the existing textarea; `busConfigInbound` localStorage key holds `{ savedDate, rawText }` independently of `trainConfigInbound` / `trainConfigOutbound` so saving a bus dump cannot wipe a train dump (and vice-versa). Dispatch payload carries `inboundBuses` as a string; backend lazy-coerces to `parseBusSchedule(...)` or `[]`. SPRINT 62 RADAR CHECK log now surfaces `byodBuses` + `BYOD bus events`. All five regression suites still green.
+
+### Acceptance Criteria
+- `test-bus-parser.js` exists and exits with 0 failures.
+- The SUNY 8:15 pm entry is strictly dropped (Assertion 2).
+- The surviving 3 entries (7:55 pm Greyhound, 11:15 pm Trailways, 12:20 am Trailways) reach the backend and are injected as synthetic `type: "event"` items at `[-73.7487, 42.6450]`.
+- Frontend `localStorage["busConfigInbound"]` holds `{ savedDate, buses }` and is fully independent of `trainConfigInbound` / `trainConfigOutbound`.
+- The dispatch radar paints the downtown terminal pin emerald (via the existing Inbound categories rule).
+
+### Anti-Goals
+- DO NOT map SUNY buses to uptown coordinates; drop them entirely.
+- DO NOT merge `parseBusSchedule` with `parseAmtrakText` or share regex state.
+- DO NOT build a new BYOD textarea UI — re-use the existing textarea and rely on the radio toggle.
+- DO NOT modify `trainConfigInbound` / `trainConfigOutbound` state or storage when saving a bus dump.
+- DO NOT mark this sprint complete until `test-bus-parser.js` passes AND both Sprint 65 / 66 regression suites still pass.
+
 ### Status: CLOSED 2026-05-30 — `test-relative-time.js` 16/16 PASS (future arrival + future departure + zero delta both verbs + past both verbs + cross-midnight forward + cross-midnight backward + non-finite inputs return null). `route.js` adds `computeRelativeTimeString(targetMinutes, startMinutes, kind = "arrival")` next to `formatTimeLabel` (same wrap convention as Sprint 61: delta < -360 → +1440 / delta > 720 → -1440, no clamping). `aggregateTrainArrivalsByHour` stamps `relativeTime` on each live-Amtraker bucket using the hour-boundary minute. The single BYOD loop stamps `relativeTime` on both branches — inbound uses `parseTimeLabel(train.time)` + `"arrival"`, outbound uses `parseTimeLabel(train.time)` (the train's actual departure, NOT the shifted `leaveBy`) + `"departure"`. `components/DispatchCards.jsx` `TrainCard` + `EventCard` render `data.relativeTime` as a `text-sm text-neutral-400` line, conditional on presence (older payloads still render cleanly). No `useEffect` / `setInterval` / client-side clock math introduced. `node --check` clean on `route.js` + `page.js`; regression `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 all still green. Live `npm run dev` browser smoke-test of the rendered indicator line not yet exercised.

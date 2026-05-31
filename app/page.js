@@ -155,6 +155,14 @@ export default function Home() {
     savedDate: null,
     trains: [],
   });
+  // Sprint 67: BYOD Bus Inbound. Holds the raw pasted bus schedule text
+  // alongside the savedDate so the lazy auto-wipe (savedDate !== today → "")
+  // can collapse stale dumps without touching either train state. Backend
+  // (parseBusSchedule) does the regex; client just persists the raw text.
+  const [busConfigInbound, setBusConfigInbound] = useState({
+    savedDate: null,
+    rawText: "",
+  });
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -206,6 +214,23 @@ export default function Home() {
     };
     hydrate("trainConfigInbound", setTrainConfigInbound);
     hydrate("trainConfigOutbound", setTrainConfigOutbound);
+    // Sprint 67: BYOD Bus Inbound hydration. Shape is { savedDate, rawText }
+    // (NOT { savedDate, trains }) because the backend parser does the regex,
+    // so the local hydrate helper above can't be reused as-is.
+    try {
+      const raw = localStorage.getItem("busConfigInbound");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.rawText === "string") {
+          setBusConfigInbound({
+            savedDate: typeof parsed.savedDate === "string" ? parsed.savedDate : null,
+            rawText: parsed.rawText,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("busConfigInbound hydrate failed:", e.message);
+    }
   }, []);
 
   function handleViewModeChange(mode) {
@@ -300,6 +325,17 @@ export default function Home() {
   function handleSaveTrains() {
     setTrainSaveStatus("saving");
     try {
+      // Sprint 67: BYOD Bus Inbound branch. The backend owns parseBusSchedule
+      // (it's the sole consumer), so the client just persists the raw text
+      // alongside today's date. Train states are untouched on a bus save.
+      if (direction === "busInbound") {
+        const payload = { savedDate: todayLocalISO(), rawText: trainRawText };
+        localStorage.setItem("busConfigInbound", JSON.stringify(payload));
+        setBusConfigInbound(payload);
+        setTrainSaveStatus("saved");
+        setTimeout(() => setTrainSaveStatus("idle"), 2000);
+        return;
+      }
       const trains = parseAmtrakText(trainRawText, direction);
       const payload = { savedDate: todayLocalISO(), trains };
       const key = direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
@@ -400,6 +436,16 @@ export default function Home() {
           : [];
       body.inboundTrains = liveArray(trainConfigInbound);
       body.outboundTrains = liveArray(trainConfigOutbound);
+      // Sprint 67: BYOD Bus Inbound. Same lazy auto-wipe as the trains —
+      // a stale rawText from a prior day collapses to "" so the backend
+      // parseBusSchedule short-circuits to []. Backend owns the regex; the
+      // payload key matches Sprint 67 §3.B exactly.
+      body.inboundBuses =
+        busConfigInbound &&
+        busConfigInbound.savedDate === today &&
+        typeof busConfigInbound.rawText === "string"
+          ? busConfigInbound.rawText
+          : "";
 
       const res = await fetch("/api/dispatch", {
         method: "POST",
@@ -537,11 +583,15 @@ export default function Home() {
                 obviously a property of the same dump the driver pastes
                 next. Persisted in trainConfig alongside the trains. */}
             <div className="flex flex-col gap-1">
-              <span className="text-sm text-neutral-400">Train Direction</span>
-              <div className="flex gap-4">
+              <span className="text-sm text-neutral-400">BYOD Mode</span>
+              {/* Sprint 67: third radio option routes the "Save" button +
+                  textarea contents to the new BYOD Bus pipeline (downtown
+                  terminal anchor, strict SUNY drop on the backend). */}
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
                 {[
-                  { value: "inbound", label: "Inbound (Arriving)" },
-                  { value: "outbound", label: "Outbound (Departing)" },
+                  { value: "inbound", label: "Amtrak Inbound" },
+                  { value: "outbound", label: "Amtrak Outbound" },
+                  { value: "busInbound", label: "Bus Inbound" },
                 ].map((opt) => (
                   <label key={opt.value} className="flex items-center gap-2 text-sm">
                     <input
