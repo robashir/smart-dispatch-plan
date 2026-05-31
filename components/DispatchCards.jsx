@@ -12,12 +12,18 @@ function formatDensity(score) {
 
 export function FlightCard({ data }) {
   const density = formatDensity(data.densityScore);
+  // Sprint 68: prefer human-readable city names (originLabels) when the
+  // backend supplied them; fall back to the raw IATA list for older payloads.
+  const labels =
+    Array.isArray(data.originLabels) && data.originLabels.length > 0
+      ? data.originLabels
+      : data.origins;
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-blue-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-blue-400 mb-1">Flight Surge</div>
       <div className="text-2xl font-bold mb-2">Leave by {data.leaveBy}</div>
       <div className="text-lg">{data.volume} Arrival{data.volume === 1 ? "" : "s"} at {data.hub}</div>
-      <div className="text-sm text-neutral-400 mt-1">From: {data.origins.join(", ")}</div>
+      <div className="text-sm text-neutral-400 mt-1">From: {labels.join(", ")}</div>
       {density && <div className="text-sm font-semibold text-blue-300 mt-2">{density}</div>}
     </div>
   );

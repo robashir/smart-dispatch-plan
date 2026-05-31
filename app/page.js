@@ -163,6 +163,13 @@ export default function Home() {
     savedDate: null,
     rawText: "",
   });
+  // Sprint 68: BYOD Flight Inbound. Same shape as busConfigInbound — backend
+  // (parseFlightText) owns the regex + dictionary translation, client just
+  // persists the raw text alongside today's date for the lazy auto-wipe.
+  const [flightConfigInbound, setFlightConfigInbound] = useState({
+    savedDate: null,
+    rawText: "",
+  });
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -230,6 +237,23 @@ export default function Home() {
       }
     } catch (e) {
       console.warn("busConfigInbound hydrate failed:", e.message);
+    }
+    // Sprint 68: BYOD Flight hydration. Same { savedDate, rawText } shape
+    // as bus — the local hydrate helper above expects { savedDate, trains }
+    // so it can't be reused as-is.
+    try {
+      const raw = localStorage.getItem("flightConfigInbound");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.rawText === "string") {
+          setFlightConfigInbound({
+            savedDate: typeof parsed.savedDate === "string" ? parsed.savedDate : null,
+            rawText: parsed.rawText,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("flightConfigInbound hydrate failed:", e.message);
     }
   }, []);
 
@@ -332,6 +356,17 @@ export default function Home() {
         const payload = { savedDate: todayLocalISO(), rawText: trainRawText };
         localStorage.setItem("busConfigInbound", JSON.stringify(payload));
         setBusConfigInbound(payload);
+        setTrainSaveStatus("saved");
+        setTimeout(() => setTrainSaveStatus("idle"), 2000);
+        return;
+      }
+      // Sprint 68: BYOD Flight Inbound branch. Backend (parseFlightText)
+      // owns the regex + dictionary, so client just persists raw text.
+      // Train + bus states untouched on a flight save.
+      if (direction === "flightInbound") {
+        const payload = { savedDate: todayLocalISO(), rawText: trainRawText };
+        localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
+        setFlightConfigInbound(payload);
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -445,6 +480,15 @@ export default function Home() {
         busConfigInbound.savedDate === today &&
         typeof busConfigInbound.rawText === "string"
           ? busConfigInbound.rawText
+          : "";
+      // Sprint 68: BYOD Flight Inbound. Same lazy auto-wipe — stale raw
+      // text from a prior day collapses to "" so the backend parser
+      // short-circuits to []. Backend owns the regex + dictionary lookup.
+      body.inboundFlights =
+        flightConfigInbound &&
+        flightConfigInbound.savedDate === today &&
+        typeof flightConfigInbound.rawText === "string"
+          ? flightConfigInbound.rawText
           : "";
 
       const res = await fetch("/api/dispatch", {
@@ -592,6 +636,7 @@ export default function Home() {
                   { value: "inbound", label: "Amtrak Inbound" },
                   { value: "outbound", label: "Amtrak Outbound" },
                   { value: "busInbound", label: "Bus Inbound" },
+                  { value: "flightInbound", label: "Flight Inbound" },
                 ].map((opt) => (
                   <label key={opt.value} className="flex items-center gap-2 text-sm">
                     <input

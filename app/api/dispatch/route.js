@@ -66,6 +66,51 @@ const HIGH_VALUE_STATIONS = ["NYP", "BOS", "WAS", "PHL"];
 const LEISURE_HUBS = ["MCO", "LAS", "MIA", "CUN", "RSW", "OGG"];
 const LEISURE_AIRLINES = ["NK", "F9", "B6", "WN", "SY"];
 
+// Sprint 68: BYOD Flight Arrivals dictionary. Maps raw city names visible
+// on the ALB live-arrivals board to IATA codes that already belong to
+// HIGH_VALUE_HUBS ∪ LEISURE_HUBS — so the existing aggregator whitelist
+// accepts every translated record without a separate filter. Cities NOT
+// in this dictionary are silently dropped by parseFlightText (per spec §4).
+const HUB_CITY_PATTERNS = {
+  Orlando: "MCO",
+  Atlanta: "ATL",
+  Chicago: "ORD",
+  "Dallas-Fort Worth": "DFW",
+  "Dallas/Fort Worth": "DFW",
+  Dallas: "DFW",
+  Denver: "DEN",
+  "Los Angeles": "LAX",
+  "Las Vegas": "LAS",
+  Miami: "MIA",
+  Cancun: "CUN",
+  "Fort Myers": "RSW",
+  Maui: "OGG",
+  "New York (JFK)": "JFK",
+  "New York (LGA)": "LGA",
+  LaGuardia: "LGA",
+};
+
+// Sprint 68: longest-match-first key order so "Dallas-Fort Worth" wins
+// over "Dallas" and "New York (LGA)" wins over "New York". Computed once
+// at module load — the dictionary is static.
+const HUB_CITY_KEYS_LONGEST_FIRST = Object.keys(HUB_CITY_PATTERNS).sort(
+  (a, b) => b.length - a.length
+);
+
+// Sprint 68: reverse map (IATA → first city name from the dictionary).
+// Used by aggregateArrivalsByHour to stamp `originLabels` on each emitted
+// bucket so FlightCard can render "Orlando" instead of "MCO" (spec §4
+// city-name passthrough). Live records benefit from the same lookup —
+// any IATA NOT in the map falls back to the raw code.
+const HUB_IATA_TO_CITY = (() => {
+  const out = {};
+  for (const city of Object.keys(HUB_CITY_PATTERNS)) {
+    const iata = HUB_CITY_PATTERNS[city];
+    if (!(iata in out)) out[iata] = city;
+  }
+  return out;
+})();
+
 // Sprint 20: spatial anchor for the airport. Used with haversineMiles +
 // the 20 mph city-speed assumption to compute the driver's leaveBy time.
 const ALB_COORDS = { lat: 42.7483, lng: -73.8017 };
@@ -780,7 +825,14 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
     const depIata = f.departure?.iata;
     if (!depIata || !HIGH_VALUE_HUBS.includes(depIata)) continue;
 
-    const fingerprint = `${scheduled}|${depIata}|${f.departure?.airport || ""}`;
+    // Sprint 68: relaxed fingerprint — `HH:MM_IATA` (local-hour:minute
+    // portion of the ISO scheduled string + IATA). Replaces the Sprint 4.1
+    // strict `scheduled|iata|airport-name` form so live + BYOD records for
+    // the same physical plane dedupe even when their `departure.airport`
+    // strings differ ("Orlando International" vs "Orlando").
+    const fpTimeMatch = scheduled.match(/T(\d{2}):(\d{2})/);
+    const fpTimeKey = fpTimeMatch ? `${fpTimeMatch[1]}:${fpTimeMatch[2]}` : scheduled;
+    const fingerprint = `${fpTimeKey}_${depIata}`;
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
 
@@ -852,6 +904,11 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
       hourBucket: hour,
       volume: codes.length,
       origins: codes,
+      // Sprint 68: human-readable origin labels for FlightCard (city name
+      // when the IATA is in the dictionary, raw IATA otherwise). Older
+      // payloads that don't carry this field still render via the
+      // `origins` fallback inside FlightCard.
+      originLabels: codes.map((c) => HUB_IATA_TO_CITY[c] || c),
       leaveBy: formatLeaveBy(leaveByDate),
       hub: "ALB",
       // Sprint 29: bucket carries the MAX fatigueMod across its members.
@@ -949,6 +1006,102 @@ function parseBusSchedule(rawText) {
     results.push({ arrivalTime, arrivalTimeRaw, destination, operator });
   }
   return results;
+}
+
+// Sprint 68: BYOD Flight Arrivals parser. Splits the pasted ALB live-board
+// text by lines, finds a `H:MM AM/PM` time on each, looks up the longest
+// matching dictionary city key (case-insensitive containment), and emits a
+// synthetic flight record in the SAME shape AviationStack returns so the
+// existing aggregator handles it without a branch. Cities NOT in
+// HUB_CITY_PATTERNS are silently dropped (Sprint 68 §4 strict filter).
+//
+// The scheduled ISO embeds the airport-LOCAL offset (derived from offsetMin)
+// so the existing `T(\d{2}):(\d{2})` extraction inside aggregateArrivalsByHour
+// reads the same LOCAL hour for both live + BYOD records — that's what
+// makes the relaxed `HH:MM_IATA` fingerprint dedupe overlapping planes.
+//
+// Validated by test-flight-byod.js (15/15) BEFORE wiring into the route.
+function parseFlightText(rawText, offsetMin = 0) {
+  if (typeof rawText !== "string" || !rawText.trim()) return [];
+
+  const now = new Date();
+  const local = new Date(now.getTime() - offsetMin * 60 * 1000);
+  const y = local.getUTCFullYear();
+  const m = String(local.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(local.getUTCDate()).padStart(2, "0");
+  const datePart = `${y}-${m}-${d}`;
+
+  // offsetMin convention (per Sprint 3.1 / line 1941): positive for places
+  // WEST of UTC (EDT = +240). ISO offset is the inverse → "-04:00" for EDT.
+  const sign = offsetMin >= 0 ? "-" : "+";
+  const absOff = Math.abs(offsetMin);
+  const offH = String(Math.floor(absOff / 60)).padStart(2, "0");
+  const offM = String(absOff % 60).padStart(2, "0");
+  const isoOffset = `${sign}${offH}:${offM}`;
+
+  // Sprint 68 Dictionary Scan Overhaul: chunk → scan → match → push.
+  // Mobile ALB pastes drop one cell per line (Flight \n City \n Gate \n
+  // Status \n Time). Buffer lines until a time line closes the block,
+  // then run a dictionary scan against the whole buffered block. Desktop
+  // horizontal pastes also work because the whole row is one line that
+  // already contains the time.
+  //
+  // Time regex carries `\s*` before `[ap]m` so BOTH "10:07am" (mobile,
+  // no space) and "3:45 PM" (desktop, space + uppercase + M) match
+  // without breaking the spec's literal `\d{1,2}:\d{2}[ap]m` shape.
+  const TIME_RE = /(\d{1,2}):(\d{2})\s*([ap])m/i;
+
+  const blocks = [];
+  let buf = [];
+  for (const line of rawText.split(/\r?\n/)) {
+    buf.push(line);
+    if (TIME_RE.test(line)) {
+      blocks.push(buf.join("\n"));
+      buf = [];
+    }
+  }
+  // Any trailing buffer without a time line is silently dropped.
+
+  const flights = [];
+  for (const block of blocks) {
+    const timeMatch = block.match(TIME_RE);
+    if (!timeMatch) continue;
+    const parsedTime = timeMatch[0];
+
+    let matchedIata = null;
+    let parsedCity = null;
+    const blockLower = block.toLowerCase();
+    for (const city of HUB_CITY_KEYS_LONGEST_FIRST) {
+      if (blockLower.includes(city.toLowerCase())) {
+        matchedIata = HUB_CITY_PATTERNS[city];
+        parsedCity = city;
+        break;
+      }
+    }
+    if (!matchedIata) continue;
+
+    // Sprint 68 Visibility Patch (retained per Dictionary Scan Overhaul
+    // §2): surfaces the dictionary-key match + raw time substring so the
+    // driver can confirm in the terminal that the block resolved.
+    console.log("BYOD PARSE RESULT: ", { parsedCity, parsedTime });
+
+    let hour = Number(timeMatch[1]);
+    const min = timeMatch[2];
+    const ampm = timeMatch[3].toLowerCase() === "p" ? "PM" : "AM";
+    if (ampm === "PM" && hour < 12) hour += 12;
+    if (ampm === "AM" && hour === 12) hour = 0;
+    const hourStr = String(hour).padStart(2, "0");
+
+    const scheduled = `${datePart}T${hourStr}:${min}:00${isoOffset}`;
+    flights.push({
+      flight_status: "scheduled",
+      arrival: { scheduled },
+      departure: { iata: matchedIata, airport: parsedCity },
+      airline: { iata: null },
+      flight: { iata: null, number: null },
+    });
+  }
+  return flights;
 }
 
 // Sprint 54: BYOD Time Gate. Returns true when a BYOD-parsed train's
@@ -1865,6 +2018,12 @@ export async function POST(request) {
       // frontend textarea (when the radio is "busInbound"). Parsed server-
       // side by parseBusSchedule which drops SUNY drop-off entries.
       inboundBuses: inboundBusesRaw = "",
+      // Sprint 68: BYOD Flight Arrivals. Raw pasted ALB live-board text
+      // from the same textarea (when the radio is "flightInbound"). Parsed
+      // server-side by parseFlightText, merged with rawFlights before the
+      // existing aggregator runs. Fault-tolerant: if either source is empty
+      // the surviving one still drives the bucket math.
+      inboundFlights: inboundFlightsRaw = "",
     } = body;
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
@@ -2028,12 +2187,23 @@ export async function POST(request) {
     const milesToAirport = haversineMiles(latitude, longitude, ALB_COORDS.lat, ALB_COORDS.lng);
     const minutesToAirport = Math.ceil((milesToAirport / 20) * 60);
 
+    // Sprint 68: BYOD Flight Arrivals merge. Parse the pasted ALB text into
+    // a synthetic flight array matching the AviationStack shape, then merge
+    // with rawFlights BEFORE the aggregator runs. The relaxed `HH:MM_IATA`
+    // fingerprint inside aggregateArrivalsByHour de-dupes overlapping
+    // records (one physical plane shows up exactly once even if both
+    // sources reported it). Defensive `typeof === "string"` coercion at
+    // the boundary (per L1) so a malformed payload can't crash the parser.
+    const byodFlights =
+      typeof inboundFlightsRaw === "string" ? parseFlightText(inboundFlightsRaw, offsetMin) : [];
+    const mergedRawFlights = [...rawFlights, ...byodFlights];
+
     // Sprint 27: aggregators return RAW volumes (no rideMod scaling). The
     // finalRideMod / finalFoodMod multipliers ride alongside in mergedPayload
     // and are applied exclusively inside buildItinerary (hidden surgeScore
     // for sort + strict <1.0 filter). Kills the Sprint 23 squaring bug.
     let flightsByHour = aggregateArrivalsByHour({
-      flights: rawFlights,
+      flights: mergedRawFlights,
       localStart,
       localEnd,
       offsetMin,

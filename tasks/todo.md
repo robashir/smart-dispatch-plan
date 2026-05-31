@@ -3067,3 +3067,91 @@ Expand the BYOD pipeline to capture downtown Albany Bus Terminal surges (Greyhou
 - DO NOT mark this sprint complete until `test-bus-parser.js` passes AND both Sprint 65 / 66 regression suites still pass.
 
 ### Status: CLOSED 2026-05-30 — `test-relative-time.js` 16/16 PASS (future arrival + future departure + zero delta both verbs + past both verbs + cross-midnight forward + cross-midnight backward + non-finite inputs return null). `route.js` adds `computeRelativeTimeString(targetMinutes, startMinutes, kind = "arrival")` next to `formatTimeLabel` (same wrap convention as Sprint 61: delta < -360 → +1440 / delta > 720 → -1440, no clamping). `aggregateTrainArrivalsByHour` stamps `relativeTime` on each live-Amtraker bucket using the hour-boundary minute. The single BYOD loop stamps `relativeTime` on both branches — inbound uses `parseTimeLabel(train.time)` + `"arrival"`, outbound uses `parseTimeLabel(train.time)` (the train's actual departure, NOT the shifted `leaveBy`) + `"departure"`. `components/DispatchCards.jsx` `TrainCard` + `EventCard` render `data.relativeTime` as a `text-sm text-neutral-400` line, conditional on presence (older payloads still render cleanly). No `useEffect` / `setInterval` / client-side clock math introduced. `node --check` clean on `route.js` + `page.js`; regression `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-time-gate.js` 21/21 all still green. Live `npm run dev` browser smoke-test of the rendered indicator line not yet exercised.
+
+## Sprint 68 — BYOD Flight Arrivals Engine
+
+### Epic
+Protect the dispatch engine against AviationStack outages (and ghost flights the free tier misses) by letting the driver paste the visible ALB live-arrivals board into the existing BYOD textarea. Backend parses the text → maps city names to IATA codes → drops anything outside the existing high-value / leisure hub union → merges with the live `rawFlights` array → relaxed fingerprint (`HH:MM_IATA`) de-dupes overlapping records → the same `aggregateArrivalsByHour` pipeline runs once over the merged stream. Single text source: AviationStack or BYOD or both can fail without crashing the dispatch.
+
+### Decisions (locked before coding, per CLAUDE.md §2)
+- **"UTC ISO string" reading:** the spec example fingerprint `15:45_MCO` is the LOCAL 24-hour time (3:45 PM = 15:45 in EDT), NOT UTC (which would be 19:45). The live AviationStack records embed the airport's offset in the scheduled string and the existing `T(\d{2}):(\d{2})` extraction reads LOCAL time. For BYOD + live merge to dedupe correctly, the BYOD parser MUST emit an ISO carrying the airport-local offset so both records yield the same fingerprint. Reading "UTC ISO string" as "ISO-8601 formatted timestamp string," not "Z-zoned UTC."
+- **Parser signature:** `parseFlightText(rawText, offsetMin = 0)` — `offsetMin` is the existing dispatch-request offset (positive for places west of UTC). The parser stamps today's date (computed from `Date.now()` shifted by `offsetMin`) + the parsed `HH:MM` + the airport's local ISO offset derived from `offsetMin`.
+- **Dictionary location & shape:** `HUB_CITY_PATTERNS` lives in `route.js` next to `HIGH_VALUE_HUBS` / `LEISURE_HUBS`. Plain object `{ cityString: IATA }`. Every value MUST already be a member of `HIGH_VALUE_HUBS ∪ LEISURE_HUBS` so the existing `aggregateArrivalsByHour` whitelist accepts it without a separate filter.
+- **Strict drop:** a parsed line whose city does not appear in the dictionary is silently dropped — no logging, no fallback. Mirrors the `parseBusSchedule` SUNY-strict-drop convention.
+- **Longest-match-first dictionary matching:** dictionary keys sorted by length descending so `"Dallas-Fort Worth"` wins over `"Dallas"` and `"New York (LGA)"` wins over `"New York"`. Case-insensitive substring containment (not `\b`-anchored) because city keys contain `(`, `)`, `/`, and `-` which break `\b`.
+- **City name passthrough (spec §4):** BYOD parsed flights carry `departure.airport = cityString`. To make FlightCard render "Orlando" instead of "MCO" without per-record bucket logic, add a single `HUB_IATA_TO_CITY` reverse map (derived from `HUB_CITY_PATTERNS` at module load) and have the aggregator emit `originLabels` alongside `origins` (label = `HUB_IATA_TO_CITY[iata] || iata`). FlightCard reads `originLabels` when present, falls back to `origins` (older payloads + downstream `originLabels`-unaware consumers keep working).
+- **Relaxed fingerprint:** `${HH}:${MM}_${depIata}` extracted from the scheduled string. Replaces the old `scheduled|depIata|departure.airport` fingerprint that was too strict for BYOD+live merge (a BYOD record with airport name "Orlando" vs a live record with airport name "Orlando International" would have produced different fingerprints under the old format).
+- **Merge site:** parse BYOD text into a synthetic flight array using the SAME shape AviationStack returns (`{ flight_status, arrival: { scheduled }, departure: { iata, airport }, airline: { iata: null }, flight: { iata: null, number: null } }`), then `[...rawFlights, ...byodFlights]` BEFORE the existing aggregator call. Single aggregator pass; no duplicate logic.
+- **Payload key:** `inboundFlights` on the POST body (per spec §3.D). Defensive `typeof === "string"` coercion at the route-handler boundary.
+- **localStorage key:** `flightConfigInbound` holding `{ savedDate, rawText }` — mirrors `busConfigInbound` exactly (backend owns the regex). Lazy auto-wipe at dispatch click using the existing `savedDate === today` check.
+- **Radio: 4th option.** Extend the existing 3-option BYOD direction radio (`inbound` / `outbound` / `busInbound`) to a 4th `flightInbound`. Same textarea is reused; the radio decides which localStorage key the Save button writes to.
+- **Anti-goals (per spec §6):** no new textarea, no new external API, no fuzzy matching for dedupe, no UI redesign.
+
+### Build Steps
+- [x] 0. Append this Sprint 68 section to `tasks/todo.md`.
+- [x] 1. Create `test-flight-byod.js` at project root with assertions for: parser extracts known cities, drops unmapped cities, longest-match wins, relaxed fingerprint dedupes BYOD+live correctly, empty/non-string returns [].
+- [x] 2. Run `node test-flight-byod.js`; confirm 0 failures BEFORE touching `route.js` or `page.js`. (15/15 PASS.)
+- [x] 3. `app/api/dispatch/route.js`: add `HUB_CITY_PATTERNS` + `HUB_IATA_TO_CITY` next to `LEISURE_HUBS`. Add `parseFlightText(rawText, offsetMin)` helper next to the existing `parseBusSchedule`.
+- [x] 4. `app/api/dispatch/route.js`: replace the strict fingerprint in `aggregateArrivalsByHour` with the relaxed `HH:MM_IATA` form. Add `originLabels` to the emitted bucket (city-when-known, IATA-when-not).
+- [x] 5. `app/api/dispatch/route.js`: destructure `inboundFlights` from the POST body with defensive `typeof === "string"` coercion. Parse BYOD text → merge into a single `mergedRawFlights` array BEFORE the existing `aggregateArrivalsByHour` call.
+- [x] 6. `components/DispatchCards.jsx`: FlightCard reads `data.originLabels` when present, falls back to `data.origins`.
+- [x] 7. `app/page.js`: extend the BYOD direction radio with a 4th `flightInbound` option. Add `flightConfigInbound` useState `{ savedDate, rawText }`. Extend the mount-time hydrate `useEffect` with a `flightConfigInbound` branch.
+- [x] 8. `app/page.js`: extend `handleSaveTrains` with a `direction === "flightInbound"` early branch — persists `{ savedDate, rawText }` to `localStorage["flightConfigInbound"]`, updates state, returns early. Train + bus branches untouched.
+- [x] 9. `app/page.js`: in `handleClick`, append `body.inboundFlights` (raw text when today's save is live, "" otherwise). Same lazy auto-wipe as the bus payload.
+- [x] 10. Verification: `node --check` clean on `route.js` + `page.js` (DispatchCards.jsx needs the JSX transform so `node --check` cannot validate it — change is a trivial `data.originLabels` fallback). `node test-flight-byod.js` 15/15 PASS. Regression `test-bus-parser.js` 7/7 + `test-dual-amtrak.js` 26/26 + `test-amtrak-outbound.js` 16/16 + `test-relative-time.js` 22/22 + `test-time-gate.js` 21/21 + `test-peak-overlap.js` 28/28 all still green.
+
+### Visibility Patch (Hotfix)
+- [x] V1. `app/api/dispatch/route.js` `parseFlightText`: add `console.log("BYOD PARSE RESULT: ", { parsedCity, parsedTime })` immediately after the `if (!timeMatch) continue;` guard and BEFORE any time-normalization or dictionary lookup. `parsedTime = timeMatch[0]` (raw matched substring); `parsedCity = line` (the full line content the dictionary-loop scans against — current parser has no city-extraction regex, so the raw line IS what the lookup sees).
+- [x] V2. Mirror the same telemetry line into the test scaffold's inlined `parseFlightText` copy in `test-flight-byod.js` so the byte-identical invariant holds (test scaffold note: "The route.js port MUST be byte-identical or this test stops being authoritative.").
+- [x] V3. Run `node test-flight-byod.js`; confirm (a) 15/15 still PASS and (b) `BYOD PARSE RESULT:` lines appear in the output for EVERY candidate line — including the silently-dropped "Boston", "Burlington", "Philadelphia" fixtures, which is the exact debug use-case driving this patch (driver pastes "Chicago O Hare" and wants to see WHY the dictionary lookup missed it).
+- Patch boundary held: NO regex changes, NO dictionary changes — purely telemetry per Sprint 68 Hotfix §4 Anti-Goals.
+
+### Dictionary Scan Overhaul (Hotfix #2)
+Telemetry from the Visibility Patch exposed the real bug: mobile-browser pastes from the ALB arrivals board arrive as a VERTICAL stack of newline-delimited cells (`Flight \n City \n Gate \n Status \n Time`), not the horizontal `TIME AIRLINE FLIGHT CITY STATUS` rows the original parser assumed. The line-by-line scan was searching ONE cell (the time cell) for the city, found none, and silently dropped every flight. Overhaul abandons positional regex groups and replaces them with chunking + dictionary substring scan.
+
+#### Decisions (locked before coding, per CLAUDE.md §2)
+- **Spec ambiguity in time regex (called out before coding):** spec §2 specifies the literal regex `/\d{1,2}:\d{2}[ap]m/i` (NO whitespace between digits and am/pm), but spec §3 also requires "Format Agnostic" handling of "spaces, tabs, or newlines." The literal regex rejects desktop "3:45 PM" (space + uppercase + M). Minimum-deviation choice: `/(\d{1,2}):(\d{2})\s*([ap])m/i` — adds `\s*` so both mobile "10:07am" and desktop "3:45 PM" parse, plus capture groups for 24-hour conversion. Honors §3 without expanding the dictionary or adding normalizers.
+- **Chunking strategy:** buffer-until-time per spec §2 advice ("safer to split by lines and buffer them until you hit a time string"). Each block ends at the first line containing a time match; trailing buffers with no time are silently dropped. Works for BOTH vertical mobile pastes (time at end of cell stack) AND horizontal desktop pastes (whole row is one line that already contains the time).
+- **Dictionary scan:** iterate `HUB_CITY_KEYS_LONGEST_FIRST` (preserved sort so "Dallas-Fort Worth" wins over "Dallas") with `block.toLowerCase().includes(key.toLowerCase())`; FIRST match wins, break loop. `parsedCity` carries the dictionary KEY (e.g., "Chicago"), not the raw text ("Chicago O Hare") — so FlightCard renders the canonical name.
+- **Strict drop:** no dictionary city OR no time line → block silently dropped, no console output, no exception (mirrors Sprint 67 SUNY-drop convention).
+- **Retain telemetry:** `console.log("BYOD PARSE RESULT: ", { parsedCity, parsedTime })` moved to fire immediately BEFORE push (per overhaul spec §2) — only on successful matches, so the terminal log no longer noisy with every candidate line. Dropped blocks remain silent.
+- **Dictionary untouched:** `HUB_CITY_PATTERNS` unchanged per overhaul spec §3 implicit constraint (no widening of accepted cities; Baltimore + Detroit stay out-of-scope).
+
+#### Build Steps
+- [x] O1. Rewrite `test-flight-byod.js` with a vertical mobile-paste fixture (`MOBILE_BOARD` — Chicago O Hare 10:07am, Baltimore 11:30am drop, Orlando 12:45pm, Detroit 2:30pm drop, Atlanta 3:15pm) AND a horizontal desktop-paste fixture (`DESKTOP_BOARD`) to lock the format-agnostic acceptance criterion. Replace the inlined parser copy with the new chunking + dictionary-scan logic.
+- [x] O2. Run `node test-flight-byod.js`; confirm 20/20 PASS BEFORE touching `route.js`. Telemetry log fires only on successful matches (Chicago / Orlando / Atlanta for mobile; Orlando / Chicago / Cancun for desktop; Dallas-Fort Worth for longest-match-first; Orlando for the fingerprint round-trip).
+- [x] O3. Port the overhauled `parseFlightText` body into `app/api/dispatch/route.js` byte-identically to the test scaffold copy.
+- [x] O4. Run `node --check app/api/dispatch/route.js` (clean) + `node test-flight-byod.js` (20/20 PASS) + full regression suite: `test-bus-parser.js` 7/7, `test-dual-amtrak.js` 26/26, `test-amtrak-outbound.js` 16/16, `test-relative-time.js` 22/22, `test-time-gate.js` 21/21, `test-peak-overlap.js` 28/28.
+
+#### Acceptance Criteria
+- ✅ "Chicago O Hare" extracted from vertical paste, mapped to ORD via dictionary scan.
+- ✅ "Baltimore" + "Detroit" silently dropped (no dictionary key match).
+- ✅ Time "10:07am" extracted from the bottom cell of the same block.
+- ✅ Telemetry log `BYOD PARSE RESULT: { parsedCity: 'Chicago', parsedTime: '10:07am' }` fires immediately before the successful push.
+- ✅ Same parser handles horizontal desktop "3:45 PM" rows (format-agnostic per §3).
+- ✅ Longest-match-first preserved ("Dallas-Fort Worth" wins over "Dallas").
+- ✅ All six prior regression suites still green.
+
+#### Anti-Goals (held)
+- ✅ No `HUB_CITY_PATTERNS` changes — Baltimore + Detroit stay out-of-scope.
+- ✅ No new external APIs.
+- ✅ No fuzzy matching for dedupe — relaxed `HH:MM_IATA` fingerprint preserved.
+- ✅ Dictionary scan replaces positional regex groups; no new normalizer for city names.
+
+#### Status: CLOSED 2026-05-31 — `test-flight-byod.js` 20/20 PASS (5 new mobile-paste assertions + 2 new desktop-paste assertions + Dallas-Fort Worth longest-match + 2 strict-drop blocks + 3 edge cases + 5 fingerprint-dedupe assertions). Mobile "Chicago O Hare" 10:07am, Orlando 12:45pm, Atlanta 3:15pm parsed; Baltimore + Detroit silently dropped. Telemetry log fires only on successful matches (no longer noisy on every candidate line). `route.js` port byte-identical to the test scaffold. `node --check` clean. All six prior regression suites still green. Live `npm run dev` mobile-paste smoke-test not yet exercised.
+
+### Status: CLOSED 2026-05-30 — `test-flight-byod.js` 15/15 PASS at project root proves the parser extracts the 7 dictionary cities (Boston + Burlington + Philadelphia silently dropped), longest-match-first correctly resolves "Dallas-Fort Worth" without losing to the "Dallas" substring, scheduled ISO carries the airport-local offset (so `T15:45` reads as 3:45 PM EDT for both BYOD and live records), and the relaxed `15:45_MCO` fingerprint dedupes overlapping BYOD + live records into 1 entry while preserving distinct planes on different IATAs or different times. `route.js` adds `HUB_CITY_PATTERNS` + `HUB_IATA_TO_CITY` reverse map + `parseFlightText` (inline copy byte-identical to the TDD scaffold), swaps the Sprint 4.1 strict fingerprint for the Sprint 68 relaxed `HH:MM_IATA` form inside `aggregateArrivalsByHour`, emits `originLabels` on each bucket (city-when-known, IATA-when-not), destructures `inboundFlights` from the POST body with `typeof === "string"` coercion at the boundary (per L1), and merges BYOD + live into one `mergedRawFlights` array BEFORE the aggregator runs (single pass). `components/DispatchCards.jsx` `FlightCard` now reads `data.originLabels` when present, falls back to `data.origins` so payloads from servers without the Sprint 68 change still render. `app/page.js` adds a 4th radio option `flightInbound`, a `flightConfigInbound` useState + hydration branch, a `direction === "flightInbound"` early branch in `handleSaveTrains` that persists `{ savedDate, rawText }` to `localStorage["flightConfigInbound"]` (train + bus states untouched on a flight save), and a body.inboundFlights field on dispatch with the same lazy auto-wipe as the bus payload. `node --check` clean on `route.js` + `page.js`. All six prior regression suites still green. Live `npm run dev` browser smoke-test of the flight-merge surface on a real ALB live-board paste not yet exercised.
+
+### Acceptance Criteria
+- `test-flight-byod.js` exists and exits with 0 failures.
+- `parseFlightText` extracts flights, translates cities to IATA codes, drops unmapped regional flights silently.
+- Live flights + BYOD flights merge into one `rawFlights` array; the relaxed `scheduled_time_utc + departure_iata` fingerprint mathematically dedupes overlapping records (same plane shows up exactly once).
+- If AviationStack returns []  / 500s, or the BYOD text is empty, dispatch continues flawlessly with the surviving data source.
+- Frontend `localStorage["flightConfigInbound"]` holds `{ savedDate, rawText }` and is fully independent of `trainConfigInbound` / `trainConfigOutbound` / `busConfigInbound`.
+
+### Anti-Goals
+- DO NOT build a new textarea — re-use the existing BYOD `<textarea>`.
+- DO NOT introduce a new external flight API; AviationStack remains the sole live source.
+- DO NOT use fuzzy matching for dedupe — strict `HH:MM_IATA` only.
+- DO NOT modify `trainConfigInbound` / `trainConfigOutbound` / `busConfigInbound` state when saving a flight dump.
+- DO NOT mark this sprint complete until `test-flight-byod.js` passes AND all prior regression suites still pass.
