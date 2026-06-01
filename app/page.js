@@ -386,6 +386,45 @@ export default function Home() {
     }
   }
 
+  // Sprint 68 UX Overhaul: Drop-box model for the BYOD textarea. On every
+  // radio toggle change, auto-save the current textarea content to the
+  // OUTGOING toggle's localStorage (without touching the Save button's
+  // status flicker), then blank the textarea so the next mode starts on
+  // a clean slate. Saved data lives only in background state — it is
+  // NEVER rehydrated into the textarea (per spec "No Rehydration").
+  // Auto-save is skipped when the textarea is empty / whitespace-only so
+  // a no-op toggle click can't wipe existing saved data.
+  function handleDirectionChange(newDir) {
+    if (newDir === direction) return;
+    const text = trainRawText;
+    if (text && text.trim()) {
+      const today = todayLocalISO();
+      try {
+        if (direction === "busInbound") {
+          const payload = { savedDate: today, rawText: text };
+          localStorage.setItem("busConfigInbound", JSON.stringify(payload));
+          setBusConfigInbound(payload);
+        } else if (direction === "flightInbound") {
+          const payload = { savedDate: today, rawText: text };
+          localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
+          setFlightConfigInbound(payload);
+        } else {
+          const trains = parseAmtrakText(text, direction);
+          const payload = { savedDate: today, trains };
+          const key =
+            direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
+          localStorage.setItem(key, JSON.stringify(payload));
+          if (direction === "outbound") setTrainConfigOutbound(payload);
+          else setTrainConfigInbound(payload);
+        }
+      } catch (e) {
+        console.warn("BYOD toggle-switch auto-save failed:", e.message);
+      }
+    }
+    setTrainRawText("");
+    setDirection(newDir);
+  }
+
   // Sprint 45: persist costPerMile on every change so the driver configures
   // it once. Mirrors handleViewModeChange — the setter + persistence stay
   // colocated to avoid drift between state and storage.
@@ -644,7 +683,7 @@ export default function Home() {
                       name="trainDirection"
                       value={opt.value}
                       checked={direction === opt.value}
-                      onChange={() => setDirection(opt.value)}
+                      onChange={() => handleDirectionChange(opt.value)}
                       disabled={isBusy}
                       className="accent-yellow-400 disabled:opacity-60"
                     />
@@ -656,9 +695,16 @@ export default function Home() {
             {/* Sprint 53: BYOD Amtrak Pipeline. Per-shift raw text dump
                 from the Amtrak booking page (NYP → ALB). Backend regex
                 parses train number + arrival time + seat-availability
-                status into synthetic events. Not persisted. */}
+                status into synthetic events. Not persisted.
+                Sprint 68 UX Overhaul: label now reflects the active radio. */}
             <label className="text-sm text-neutral-400">
-              Paste Amtrak Status (NYP → ALB)
+              {direction === "flightInbound"
+                ? "Paste Flight Status"
+                : direction === "busInbound"
+                ? "Paste Bus Status"
+                : direction === "outbound"
+                ? "Paste Amtrak Outbound Status"
+                : "Paste Amtrak Inbound Status"}
             </label>
             <textarea
               value={trainRawText}

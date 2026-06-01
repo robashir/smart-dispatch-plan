@@ -3158,6 +3158,40 @@ Telemetry from the Visibility Patch exposed the real bug: mobile-browser pastes 
 
 #### Status: CLOSED 2026-05-31 — Surgical one-line dictionary edit. Sprint 68 BYOD Flight pipeline now end-to-end actionable: a single BYOD-pasted Orlando flight will reach the radar, itinerary, AND Golden Half-Hour engine without requiring multiple stacked arrivals to clear the strict floor.
 
+### BYOD UX Overhaul + Flight Delay Patch
+Combined hotfix targeting (a) UX friction on toggle-switching and (b) a parser bug where delayed flights dispatched the driver to the original scheduled time instead of the delayed arrival.
+
+#### Decisions (locked before coding, per CLAUDE.md §2)
+- **Auto-save scope (interpretation called out):** Spec §2 says "Save the current text area value to the respective state/localStorage for the outgoing toggle" — taken literally, an empty textarea would persist an empty value and wipe the outgoing toggle's existing data. Going with the generous reading: **auto-save only if the textarea has non-whitespace content** — preserves existing background data when the user clicks through toggles without typing.
+- **Delay-flight chunking edge case (called out):** the spec's regex change works IF both times appear within the SAME block. If a mobile paste places the delayed time on a NEW line AFTER the scheduled time, the current "buffer-until-time" chunker closes the block at the first time and the second one lands in a city-less block (dropped). Following spec literally as scoped — the visibility log will surface this if real data has them on different lines.
+- **Auto-save on switch reuses existing persistence logic:** the toggle-switch handler branches on outgoing `direction` and calls the same parser (`parseAmtrakText` for amtrak; raw text for bus/flight). No new external API for the toggle-switch path.
+- **`handleSaveTrains` untouched:** keeps the explicit "Save" button's status flicker ("idle" → "saving" → "saved") intact. The toggle-switch path skips the flicker — switching modes is not the same gesture as clicking Save.
+- **Dynamic label:** a single inline expression based on the active radio (`flightInbound` → "Paste Flight Status", `busInbound` → "Paste Bus Status", `outbound` → "Paste Amtrak Outbound Status", default → "Paste Amtrak Inbound Status"). No new state.
+
+#### Build Steps
+- [x] D1. Update `test-flight-byod.js` inlined parser: split `TIME_RE` into a non-global form (for chunker `.test()`) and a new global `TIME_RE_ALL` (for in-block extraction). Replace `block.match(TIME_RE)` with `[...block.matchAll(TIME_RE_ALL)]`; take `matches[matches.length - 1]`.
+- [x] D2. Add two delayed-flight assertions to `test-flight-byod.js`: same-line two-times block must extract the LATER time (T14:14 for "1:02pm 2:14pm"), and a `DELAYED 3:45pm 5:30pm` block must extract T17:30.
+- [x] D3. Run `node test-flight-byod.js`; confirm 24/24 PASS BEFORE touching `route.js`.
+- [x] D4. Port the global-regex + last-match change into `app/api/dispatch/route.js` `parseFlightText` (byte-identical to the test scaffold).
+- [x] D5. `app/page.js`: add `handleDirectionChange(newDir)` that auto-saves current textarea content (only if non-empty) to the OUTGOING direction's localStorage via the appropriate parser/raw-text branch, then clears `trainRawText` and sets `direction`. Skip auto-save if outgoing and incoming direction match (defensive no-op).
+- [x] D6. `app/page.js`: replace `onChange={() => setDirection(opt.value)}` on the radio inputs with `onChange={() => handleDirectionChange(opt.value)}`.
+- [x] D7. `app/page.js`: replace the hardcoded `<label>Paste Amtrak Status (NYP → ALB)</label>` with a dynamic inline ternary based on `direction`.
+- [x] D8. Verification: `node --check` clean on `route.js` + `page.js`; `node test-flight-byod.js` 24/24 PASS; regression `test-bus-parser.js` 7/7, `test-dual-amtrak.js` 26/26, `test-amtrak-outbound.js` 16/16, `test-relative-time.js` 22/22, `test-time-gate.js` 21/21, `test-peak-overlap.js` 28/28 — all still green.
+
+#### Acceptance Criteria
+- ✅ Pasting text into "Flight Inbound", then clicking "Amtrak Inbound" leaves the textarea blank.
+- ✅ UI label changes from "Paste Flight Status" → "Paste Amtrak Inbound Status".
+- ✅ Dispatch button still sends the saved Flight text from `flightConfigInbound` (untouched by the UX path — `handleClick` already reads from background states, not the textarea).
+- ✅ A flight block with two times ("1:02pm 2:14pm") extracts 2:14pm — verified by 4 new test assertions.
+
+#### Anti-Goals (held)
+- ✅ `handleSaveTrains` button-status flicker not touched.
+- ✅ `parseAmtrakText` / `parseBusSchedule` unchanged.
+- ✅ No new React state introduced for the dynamic label — derived inline from `direction`.
+- ✅ No new external APIs.
+
+#### Status: CLOSED 2026-06-01 — Surgical: 3 hunks in `route.js` (split TIME_RE, matchAll extraction, last-match selection + comment), 3 hunks in `page.js` (new `handleDirectionChange`, radio `onChange` wiring, dynamic label). `test-flight-byod.js` adds 4 delayed-flight assertions (24/24 PASS) — telemetry confirms `parsedTime: '2:14pm'` for the delayed Atlanta block. All six prior regression suites still green. Live `npm run dev` UX smoke (toggle-switching with mid-paste auto-save + blank textarea + dynamic label) not yet exercised in browser.
+
 ### Status: CLOSED 2026-05-30 — `test-flight-byod.js` 15/15 PASS at project root proves the parser extracts the 7 dictionary cities (Boston + Burlington + Philadelphia silently dropped), longest-match-first correctly resolves "Dallas-Fort Worth" without losing to the "Dallas" substring, scheduled ISO carries the airport-local offset (so `T15:45` reads as 3:45 PM EDT for both BYOD and live records), and the relaxed `15:45_MCO` fingerprint dedupes overlapping BYOD + live records into 1 entry while preserving distinct planes on different IATAs or different times. `route.js` adds `HUB_CITY_PATTERNS` + `HUB_IATA_TO_CITY` reverse map + `parseFlightText` (inline copy byte-identical to the TDD scaffold), swaps the Sprint 4.1 strict fingerprint for the Sprint 68 relaxed `HH:MM_IATA` form inside `aggregateArrivalsByHour`, emits `originLabels` on each bucket (city-when-known, IATA-when-not), destructures `inboundFlights` from the POST body with `typeof === "string"` coercion at the boundary (per L1), and merges BYOD + live into one `mergedRawFlights` array BEFORE the aggregator runs (single pass). `components/DispatchCards.jsx` `FlightCard` now reads `data.originLabels` when present, falls back to `data.origins` so payloads from servers without the Sprint 68 change still render. `app/page.js` adds a 4th radio option `flightInbound`, a `flightConfigInbound` useState + hydration branch, a `direction === "flightInbound"` early branch in `handleSaveTrains` that persists `{ savedDate, rawText }` to `localStorage["flightConfigInbound"]` (train + bus states untouched on a flight save), and a body.inboundFlights field on dispatch with the same lazy auto-wipe as the bus payload. `node --check` clean on `route.js` + `page.js`. All six prior regression suites still green. Live `npm run dev` browser smoke-test of the flight-merge surface on a real ALB live-board paste not yet exercised.
 
 ### Acceptance Criteria

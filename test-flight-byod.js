@@ -59,7 +59,11 @@ function parseFlightText(rawText, offsetMin = 0) {
   const offM = String(absOff % 60).padStart(2, "0");
   const isoOffset = `${sign}${offH}:${offM}`;
 
+  // Two regexes: one non-global for chunking line detection (.test stays
+  // stateless), one global for in-block extraction so we can capture ALL
+  // times in a delayed-flight block and pick the LATEST one.
   const TIME_RE = /(\d{1,2}):(\d{2})\s*([ap])m/i;
+  const TIME_RE_ALL = /(\d{1,2}):(\d{2})\s*([ap])m/gi;
 
   // Chunking: buffer lines until a time line closes the block. Mobile
   // ALB board pastes each cell on its own line (Flight \n City \n Gate
@@ -79,8 +83,13 @@ function parseFlightText(rawText, offsetMin = 0) {
 
   const flights = [];
   for (const block of blocks) {
-    const timeMatch = block.match(TIME_RE);
-    if (!timeMatch) continue;
+    // Delay-flight patch: extract ALL times in the block via the global
+    // regex, then take the LAST one. ALB live boards show delayed flights
+    // with two times (e.g., "1:02pm 2:14pm") — using the FIRST match would
+    // dispatch the driver to the original scheduled time, too early.
+    const allTimes = [...block.matchAll(TIME_RE_ALL)];
+    if (allTimes.length === 0) continue;
+    const timeMatch = allTimes[allTimes.length - 1];
     const parsedTime = timeMatch[0];
 
     let matchedIata = null;
@@ -262,6 +271,38 @@ assert("Block with no dict city → []", parseFlightText(NO_CITY_BLOCK, EDT_OFFS
 assert("Empty string → []", parseFlightText("", EDT_OFFSET_MIN), []);
 assert("Whitespace-only → []", parseFlightText("   \n\n   ", EDT_OFFSET_MIN), []);
 assert("Non-string → []", parseFlightText(null, EDT_OFFSET_MIN), []);
+
+// --- DELAY-FLIGHT PATCH ---
+// Two times on the same line (1:02pm scheduled, 2:14pm delayed): parser
+// must take the LAST match so the driver isn't dispatched too early.
+const DELAYED_BLOCK = `WN0007
+Atlanta
+B3
+DELAYED 1:02pm → 2:14pm`;
+const parsedDelayed = parseFlightText(DELAYED_BLOCK, EDT_OFFSET_MIN);
+assert("Delayed flight: 1 record parsed", parsedDelayed.length, 1);
+assert(
+  "Delayed flight: scheduled ISO carries T14:14 (NOT T13:02)",
+  /T14:14:00/.test(parsedDelayed[0].arrival.scheduled),
+  true
+);
+assert(
+  "Delayed flight: scheduled ISO does NOT carry T13:02",
+  /T13:02:00/.test(parsedDelayed[0].arrival.scheduled),
+  false
+);
+
+// Two times on adjacent lines within the same block boundary (mobile
+// stacks the delay below the schedule but both appear before block break).
+const DELAYED_MULTILINE = `WN0008
+Orlando
+DELAYED 3:45pm 5:30pm`;
+const parsedDelayedMulti = parseFlightText(DELAYED_MULTILINE, EDT_OFFSET_MIN);
+assert(
+  "Delayed multi-time line: takes 5:30pm not 3:45pm",
+  /T17:30:00/.test(parsedDelayedMulti[0].arrival.scheduled),
+  true
+);
 
 // --- Relaxed fingerprint dedupe (unchanged from Sprint 68 base) ---
 const liveRecord = {

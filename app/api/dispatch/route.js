@@ -1056,7 +1056,11 @@ function parseFlightText(rawText, offsetMin = 0) {
   // Time regex carries `\s*` before `[ap]m` so BOTH "10:07am" (mobile,
   // no space) and "3:45 PM" (desktop, space + uppercase + M) match
   // without breaking the spec's literal `\d{1,2}:\d{2}[ap]m` shape.
+  // Two regexes kept apart: the non-global form is used for stateless
+  // .test() during chunking, and a separate global form is used inside
+  // each block to extract EVERY time (delay patch — pick the latest).
   const TIME_RE = /(\d{1,2}):(\d{2})\s*([ap])m/i;
+  const TIME_RE_ALL = /(\d{1,2}):(\d{2})\s*([ap])m/gi;
 
   const blocks = [];
   let buf = [];
@@ -1071,8 +1075,15 @@ function parseFlightText(rawText, offsetMin = 0) {
 
   const flights = [];
   for (const block of blocks) {
-    const timeMatch = block.match(TIME_RE);
-    if (!timeMatch) continue;
+    // Sprint 68 Delay-Flight Patch: ALB live boards show delayed flights
+    // with two times in the same cell ("1:02pm 2:14pm"). Pull EVERY time
+    // in the block via the global regex, then pick the LAST match so the
+    // driver is dispatched to the delayed arrival, not the original
+    // scheduled one. Single-time blocks still work (matches[length-1] is
+    // the only match).
+    const allTimes = [...block.matchAll(TIME_RE_ALL)];
+    if (allTimes.length === 0) continue;
+    const timeMatch = allTimes[allTimes.length - 1];
     const parsedTime = timeMatch[0];
 
     let matchedIata = null;
