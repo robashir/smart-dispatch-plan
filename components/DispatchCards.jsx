@@ -1,17 +1,19 @@
 // Sprint 24: typed UI cards for the deterministic itinerary array.
 // Each card is a pure function component receiving { data } per PO spec.
 
-// Sprint 48: Normalized Density Engine. Replaces the unbounded surgeScore
-// with a 0-100+ percent-of-capacity reading. Cards expose it as
-// "Density: X%" so the driver can compare apples-to-apples across surge
-// families without doing arithmetic in their head.
-function formatDensity(score) {
+// Sprint 70: Raw Yield Engine. The `densityScore` field now carries
+// "expected riders" (volume × yield × mod) instead of a percent-of-capacity
+// reading. Cards expose a platform-aware expected-demand label so food and
+// grocery hotspots don't read like rideshare work.
+function formatExpectedDemand(score, type) {
   if (!Number.isFinite(score)) return null;
-  return `Density: ${Math.round(score)}%`;
+  if (type === "food") return `Expected Food Deliveries: ${Math.round(score)}`;
+  if (type === "grocery") return `Expected Grocery Deliveries: ${Math.round(score)}`;
+  return `Expected Riders: ${Math.round(score)}`;
 }
 
 export function FlightCard({ data }) {
-  const density = formatDensity(data.densityScore);
+  const density = formatExpectedDemand(data.densityScore, data.type);
   // Sprint 68: prefer human-readable city names (originLabels) when the
   // backend supplied them; fall back to the raw IATA list for older payloads.
   const labels =
@@ -30,7 +32,7 @@ export function FlightCard({ data }) {
 }
 
 export function TrainCard({ data }) {
-  const density = formatDensity(data.densityScore);
+  const density = formatExpectedDemand(data.densityScore, data.type);
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-emerald-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-emerald-400 mb-1">Train Surge</div>
@@ -51,7 +53,7 @@ export function TrainCard({ data }) {
 // surge window opens (Standard 2.0x / Mega-Venue 2.5x). Purple accent so it
 // reads distinct from FlightCard (blue) / TrainCard (emerald) / HotspotCard (rose).
 export function EventCard({ data }) {
-  const density = formatDensity(data.densityScore);
+  const density = formatExpectedDemand(data.densityScore, data.type);
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">Event Egress</div>
@@ -82,7 +84,7 @@ export function EventCard({ data }) {
 }
 
 export function HotspotCard({ data }) {
-  const density = formatDensity(data.densityScore);
+  const density = formatExpectedDemand(data.densityScore, data.type);
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-rose-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-rose-400 mb-1">

@@ -3207,3 +3207,406 @@ Combined hotfix targeting (a) UX friction on toggle-switching and (b) a parser b
 - DO NOT use fuzzy matching for dedupe — strict `HH:MM_IATA` only.
 - DO NOT modify `trainConfigInbound` / `trainConfigOutbound` / `busConfigInbound` state when saving a flight dump.
 - DO NOT mark this sprint complete until `test-flight-byod.js` passes AND all prior regression suites still pass.
+
+## Sprint 68 — The Density Profiler (Scenario Simulator)
+Standalone backend CLI that feeds 6 hardcoded scenarios into the live scoring logic and exports `density-report.csv` to project root. Lets the driver calibrate `densityScore` weights without touching the production UI.
+
+### Decisions (locked before coding, per CLAUDE.md §2)
+- **§5 Anti-Goal override (explicit user OK):** route.js IS allowed a surgical, behavior-preserving edit — prepend `export` to the scoring helpers (`densityScore`, `yieldRateFor`, `capacityFor`, `computeWeatherModifiers`, `computeTemporalModifiers`). Next.js only looks for the `POST` named export, so extra named exports do not affect runtime. This satisfies §3B ("import the actual production functions; do not duplicate the math") AND eliminates drift risk.
+- **JSON import compatibility:** route.js line 4 uses bundler-style `import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json"` — pure Node ESM (v22+) requires the `with { type: "json" }` attribute. Add the attribute inline. Webpack 5 (Next 14) already supports import attributes, so the Next.js build is unaffected.
+- **Script extension:** create `scripts/simulate-scenarios.js`. Use ESM (top-level `import`) — Next.js project root has no `"type": "module"` in package.json, so a `.js` script there defaults to CJS. Workaround: rename to `.mjs` OR run with `node --input-type=module`. **Chosen:** keep `.js` per spec §3A, but use a CJS-shim entry that calls dynamic `import()` to load route.js asynchronously (works regardless of package `type` setting).
+- **Item shapes per scenario (called out):** each scenario builds a representative scoreable `item` object matching the shape `densityScore` expects (`type`, `volume`, `categories`, `egressMod`, etc.). Per L10, each scenario's baseline densityScore at `finalMod = 1.0` is auditable from the CSV.
+- **CSV columns:** `Scenario Name, Base Score, Weather Modifier, Event/Holiday Modifier, Final Density Score` per spec §3C. "Base Score" = densityScore with `finalRideMod=1.0, finalFoodMod=1.0`. "Final Density Score" = densityScore with the combined modifier applied.
+- **No 3rd-party CSV libs (anti-goal §5):** use `fs.writeFileSync` + manual `join(",")` per row.
+
+### Build Steps
+- [x] S1. Append this Sprint 68 section to `tasks/todo.md` BEFORE the first edit (per L8).
+- [x] S2. Prepend `export` to: `function yieldRateFor`, `function capacityFor`, `function densityScore`, `function computeWeatherModifiers`, `function computeTemporalModifiers` inside `app/api/dispatch/route.js`. No other changes to those bodies.
+- [x] S3. Convert `import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json";` to `import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json" with { type: "json" };` for pure-Node-ESM compatibility.
+- [x] S4. `node --check app/api/dispatch/route.js` — confirm clean.
+- [x] S5. Create `scripts/simulate-scenarios.js` (CJS shim → dynamic `import()` of route.js) with the 6 hardcoded scenarios.
+- [x] S6. Run `node scripts/simulate-scenarios.js`; confirm 0 errors and `density-report.csv` written to project root with exactly 6 data rows + 1 header row.
+
+#### Status: CLOSED 2026-06-01 — `app/api/dispatch/route.js` carries 5 `export` keywords (yieldRateFor / capacityFor / densityScore / computeWeatherModifiers / computeTemporalModifiers) and a `with { type: "json" }` import attribute on the nightlife dictionary line. Next.js still only consumes the `POST` export at runtime; `node --check` clean. `scripts/simulate-scenarios.js` (CJS shim) dynamically imports route.js and runs 6 scenarios through the LIVE math. Output: `density-report.csv` with rows — Calm Tuesday 12.2, Friday Bar Rush 131.25, MVP Arena Egress 13.5, Severe Winter Snowstorm 9.15, Thanksgiving Eve 18.29, Perfect Storm 17.63. Exit code 0. Per-item yield/capacity/base trace logged to terminal per L10 auditability.
+
+## Sprint 68.5 — Simulator Spike (Raw Yield Math)
+Time-boxed technical Spike to evaluate `score = volume × yield × modifiers` (capacity-free) in the simulator BEFORE any production refactor. Directly addresses [L11] — density-ratio normalization over-rewards micro-venues, under-ranks mega-events.
+
+### Decisions (locked before coding, per CLAUDE.md §2)
+- **Two clarifications confirmed with PO:**
+  1. No `exceljs` install. Emit a CSV with Excel-readable formula strings (cells beginning with `=` are evaluated as live formulas when the file is opened in Excel). Output extension stays `.csv`, NOT `.xlsx` per spec §3B — spec deviation explicitly accepted by PO to avoid the new dep. Filename: `density-report-spike.csv`.
+  2. Per-item rows (not per-scenario aggregate). Perfect Storm gets 3 rows. Lets the PO see "exactly what numbers Trains and Food clusters output" per spec §4.
+- **New script, not edit-in-place:** create `scripts/simulate-scenarios-spike.js`. Keeps the Sprint 68 `scripts/simulate-scenarios.js` regenerable so the PO can diff old-math vs new-math output side-by-side per spec §3B ("leaving the original report intact for comparison"). Spec §3A's "Modify the script" reading is honored in spirit — the simulator approach is modified, just via a sibling file.
+- **No production-code touches:** ZERO edits to `app/api/dispatch/route.js`. The spike imports `yieldRateFor`, `computeWeatherModifiers`, `computeTemporalModifiers` from route.js but defines its own local scoring function — `rawYieldScore(item, finalMod) = (volume) × yieldRateFor(item) × finalMod`. `densityScore` and `capacityFor` are NOT imported (per spec §3A "completely ignore the CAPACITY_DICTIONARY and any division logic").
+- **CSV column layout (8 data cols + 1 formula col):** `Scenario, Item Description, Item Type, Volume, Yield Rate, Temporal Mod, Weather Mod, Holiday Mod, Total Score`. The `Total Score` column carries a STRING formula like `=D2*E2*F2*G2*H2` so Excel computes it live AND the PO can tweak any input cell to re-explore.
+- **Mod-side selection:** rides/events use ride-side temporal+weather mods; food/grocery use food-side. All 6 Sprint 68.5 scenarios happen to be ride-side, so this is a forward-compatibility note only.
+
+### Build Steps
+- [x] P1. Append this Sprint 68.5 section to `tasks/todo.md` BEFORE the first edit (per L8).
+- [ ] P2. Create `scripts/simulate-scenarios-spike.js`. CJS shim → dynamic `import()` of route.js → import only `yieldRateFor`, `computeWeatherModifiers`, `computeTemporalModifiers` → reuse the 6 scenario definitions from Sprint 68 → loop with raw-yield math → emit `density-report-spike.csv` with per-item rows + formula strings.
+- [ ] P3. Run `node scripts/simulate-scenarios-spike.js`; confirm exit 0 and 8 data rows + 1 header in `density-report-spike.csv`.
+- [ ] P4. Spot-check 2 rows: script-printed total === formula evaluation. (Verify by hand-computing `D × E × F × G × H` against the script's per-row console log.)
+
+### Acceptance Criteria
+- `node scripts/simulate-scenarios-spike.js` exits 0.
+- `density-report-spike.csv` exists at project root with 1 header + 8 per-item data rows.
+- The `Total Score` column is an Excel formula string starting with `=`, referencing the row's own cells. Opens cleanly in Excel.
+- `density-report.csv` (the Sprint 68 baseline) is untouched.
+- No edits to `app/api/dispatch/route.js`.
+
+### Anti-Goals (held)
+- ✅ No edits to `route.js` or any other production file.
+- ✅ No `exceljs` / no third-party libs.
+- ✅ No tweaks to the 10.0 density floor or the $0.25 ROI constant (production code remains as-is — spike is observational only).
+- ✅ No UI work.
+
+#### Status: CLOSED 2026-06-01 — `scripts/simulate-scenarios-spike.js` imports only `yieldRateFor` + the two mod functions from route.js (no `densityScore`, no `capacityFor` — capacity is dead for the spike). `density-report-spike.csv` written at project root with 8 per-item rows; every Total Score cell is a live Excel formula `=D{n}*E{n}*F{n}*G{n}*H{n}`. Formulas hand-verified against script-printed values for all 8 rows. Original `density-report.csv` untouched. NEW RANKING (descending): MVP Arena Egress 675 → Perfect Storm MVP 506.25 → Friday Bar Rush 105 → Thanksgiving Eve 22.5 → Calm Tuesday 15 → Snowstorm flight 11.25 → Perfect Storm trains 11.25 (×2). Inversion FIXED — arena now outranks bar by ~6.4x, mirroring real rider-volume ratio. Floor-implication observation surfaced for the PO: solo Amtrak at base 10 is right at the floor; with `timeDecayMod 0.4` (90+ min out) it drops to 4 → would be pruned. To be addressed in a future production sprint if the spike math is adopted.
+
+## Sprint 69 — Production Refactor: Yield Recalibration + Engine Pruning
+Calibration sprint that combines (a) the per-category yield rebalancing surfaced in Sprint 68.5 with (b) the deletion of three Albany-specific amplifier engines (Tourist Ripple, Campus Mod, Lobbyist Mod) that the PO ruled redundant / overstated. Capacity model + density formula REMAIN — this sprint is yield-table + engine-pruning only, NOT a switch to raw-yield production math.
+
+### Decisions (locked before coding, per CLAUDE.md §2)
+- **Keep capacity model intact.** Production densityScore formula stays `(volume × yield) / capacity × mod × 100`. Sprint 68.5 raw-yield math validated in the simulator but NOT promoted to production this sprint — that would cascade into the 10.0 floor + $0.25 ROI constant + UI label, out of scope here.
+- **Yield changes (replace YIELD_RATES wholesale):**
+  - `flight: 15` (keep), `train: 10 → 12`, `food: 5 → fallback only` (split into `FOOD_YIELDS`), `grocery: 5 → 3`, `event: 50` (keep), `mega_event: 450 → 500`, `nightlife: 20 → 25`, `residential_node: 5` (keep)
+  - NEW: `state_worker: 100` (carved out from mega_event), `bus: 5` (formalize the inline value)
+  - NEW: `FOOD_YIELDS` dict — steakhouse 15, sushi 10, burgers 8, pizza 6, diners 4, fast food 3, cafes 2, coffee 2, brunch 4, "breakfast & brunch" 4
+  - NEW: `HOSPITAL_YIELDS` dict — morning shift overlap 40, afternoon clinic shift 20, evening nursing shift 35, night admin shift 25
+- **Engines DELETED (per PO):**
+  - `computeCampusMod` + `CAMPUS_CENTERS` + all call sites + `campusMod`/`campusName` fields on hotspots
+  - `computeCorporateMod` + all call sites + `corporateMod` field on hotspots
+  - `computeTouristCluster` + the call site inside the Ticketmaster event loop
+  - `CAPACITY_DICTIONARY` keys "tourist ripple" + "airport → venue" (no longer reachable)
+- **`ESP_COORDS` / `HARRIMAN_COORDS` STAY** — still used by State Worker Commute injection.
+- **`LEISURE_HUBS` / `LEISURE_AIRLINES` STAY** — still used by per-flight `computeLeisureMod` (1.4× on bucket yield). That engine is NOT being deleted.
+- **`HUB_CITY_PATTERNS` STAY** — Sprint 68 BYOD flight dictionary, unrelated to the deletions.
+- **Tests invalidated (left in place — not the PO's ask):** `test-campus-engine.js`, `test-tourist-cluster.js`, any corporate/lobbyist test. They will fail if re-run. Status block will note this.
+- **UI safety:** verified — neither `components/**/*.jsx` nor `app/page.js` reads `campusMod`, `campusName`, `corporateMod`, or `tourist*` fields. Deletion is UI-safe.
+
+### Build Steps
+- [x] R1. Append this Sprint 69 section to `tasks/todo.md` BEFORE the first edit (per L8).
+- [ ] R2. Replace `YIELD_RATES` constant + add `FOOD_YIELDS` + `HOSPITAL_YIELDS` constants in `app/api/dispatch/route.js`.
+- [ ] R3. Update `yieldRateFor(item)` to route through new dicts: food → FOOD_YIELDS[cat0] || food fallback, event branch → state_worker check + hospital sub-shift check + nightlife check + retail check + mega/default, bus tag handling unchanged but pulls `YIELD_RATES.bus`.
+- [ ] R4. Delete `CAMPUS_CENTERS` constant + `computeCampusMod` function + the `if (type === "food") { const campusResult = ... }` block in the hotspot loop + `campusMod`/`campusName` keys in the `hotspots.push` payload + the `let campusMod = 1.0; let campusName = null;` declarations.
+- [ ] R5. Delete `computeCorporateMod` function + the `corporateMod = computeCorporateMod(...)` call + `corporateMod` key in `hotspots.push` + the `let corporateMod = 1.0;` declaration.
+- [ ] R6. Delete `computeTouristCluster` function + the `const touristCluster = computeTouristCluster({...}); if (touristCluster) { ... }` block inside the Ticketmaster event loop.
+- [ ] R7. Delete `"tourist ripple": 600` and `"airport → venue": 600` from `CAPACITY_DICTIONARY` (no longer reachable).
+- [ ] R8. Clean stale comments referencing deleted engines (Sprint 31 / 36 / 47 callouts) — surgical, not a doc rewrite.
+- [ ] R9. `node --check app/api/dispatch/route.js` — must pass.
+- [ ] R10. Re-run BOTH simulators (`scripts/simulate-scenarios.js` + `scripts/simulate-scenarios-spike.js`) to surface the new numbers in both density and raw-yield models.
+
+### Acceptance Criteria
+- `node --check app/api/dispatch/route.js` clean.
+- `grep -n "computeCampusMod\|computeCorporateMod\|computeTouristCluster\|CAMPUS_CENTERS\|campusMod\|corporateMod" app/api/dispatch/route.js` returns 0 hits.
+- `YIELD_RATES.state_worker === 100`, `YIELD_RATES.nightlife === 25`, `YIELD_RATES.mega_event === 500`, `YIELD_RATES.train === 12`, `YIELD_RATES.grocery === 3`, `YIELD_RATES.bus === 5`.
+- `FOOD_YIELDS` and `HOSPITAL_YIELDS` exist with the 10 + 4 keys listed in Decisions.
+- Both simulators run to completion; new CSVs reflect the recalibrated numbers.
+
+### Anti-Goals
+- DO NOT switch densityScore to raw-yield math (capacity stays).
+- DO NOT touch UI (`app/page.js`, `components/**`).
+- DO NOT touch the 10.0 density floor or the $0.25 ROI constant.
+- DO NOT install new dependencies.
+- DO NOT delete or modify test-*.js files (they'll just fail if re-run — that's the PO-accepted state).
+
+#### Status: CLOSED 2026-06-01 — `route.js` carries new `YIELD_RATES` (train 10→12, grocery 5→3, mega_event 450→500, nightlife 20→25, NEW state_worker:100, NEW bus:5), new `FOOD_YIELDS` dict (10 keys), new `HOSPITAL_YIELDS` dict (4 keys). `yieldRateFor` routes through the new dicts in strict-priority order (BYOD bus → state worker → hospital sub-shift → blanket hospital fallback → retail egress → nightlife → mega/default). DELETED: `computeCampusMod`, `computeCorporateMod`, `computeTouristCluster`, `CAMPUS_CENTERS`, hotspot fields `campusMod`/`campusName`/`corporateMod`, CAPACITY_DICTIONARY entries "tourist ripple" + "airport → venue". `node --check` clean. UI untouched (verified — no jsx file reads any deleted field). Sprint 68 simulator re-ran cleanly: MVP Arena 9→10 (clears the 10.0 floor — was being silently ghosted before), Friday Bar Rush 87.5→109.38 base (nightlife yield bump), Perfect Storm 15.67→18 base (train bump + arena bump). Sprint 68.5 spike re-run BLOCKED — `density-report-spike.csv` was open in Excel (EBUSY). Close the file and re-run `node scripts/simulate-scenarios-spike.js` to regenerate. Tests now invalidated and will fail if re-run: `test-campus-engine.js`, `test-tourist-cluster.js` (per PO ask — left in place).
+
+## Sprint 70 — Production Switch to Raw-Yield Math
+Promote the Sprint 68.5 spike formula into production. `densityScore = volume × yield × finalMod` — no capacity term, no ×100 percentage scaling. Kills the cross-type comparability bug (MVP Arena scoring 9% vs Friday Bar Rush scoring 87.5% on the same physical ranking surface) and the MVP-Arena-Music-vs-Sports inconsistency (yield came from egressMod, capacity came from categories[0] — two different inputs for the same venue).
+
+### Decisions (locked before coding, per CLAUDE.md §2)
+- **Formula:** `densityScore(item, finalRideMod, finalFoodMod) = (volume × yieldRateFor(item)) × mod` — no division, no ×100. Field name `densityScore` retained on items for surgical minimality (so `app/page.js`, `components/**`, peak-surge engine all still read the same property) — only the *meaning* changes from "% of venue capacity" to "expected riders".
+- **Floor stays at 10.0.** Solo flight (yield 15 × 1.0) clears; solo train (12 × 1.0) clears; both drop at time-decay 0.4 — matches current behavior shape. Solo small food (yield ≤ 6) drops, same as today. No floor recalibration needed in this sprint.
+- **DOLLAR_PER_SURGE_POINT stays at 0.25.** For a solo flight: OLD value $3.05 → NEW value $3.75 (rough parity). For mega items the ROI filter effectively becomes a no-op (a 500-yield arena scores $125 of value, far above any plausible deadhead) — acceptable, since under-pruning stadium events was the prior failure mode anyway.
+- **Peak surge banner threshold: 50 → 200.** Raw scores sum higher; a typical busy radar will exceed 200 easily, while a quiet one stays below. Re-tune if observed otherwise.
+- **DELETE:** `capacityFor` function (and its `export`), `CAPACITY_DICTIONARY`, `DEFAULT_CAPACITY`, the `estimatedCapacity` field stamping in `buildItinerary`, the Sprint 62.3 fail-safe clamp (`expectedYield > capacity * 0.9`) — all redundant.
+- **UI label changes:** `formatDensity()` → `formatExpectedRiders()` in `DispatchCards.jsx`; same swap in `DispatchMap.jsx` popup + `TopPickBanner.jsx`. Display text: "Density: X%" → "Expected Riders: N".
+- **`PeakSurgeBanner.jsx`** stays reading `totalDensity` field (no rename), threshold bumped 50 → 200.
+- **Simulator scripts unchanged.** `scripts/simulate-scenarios.js` imports `densityScore` from route.js — it'll automatically print the new numbers. `scripts/simulate-scenarios-spike.js` is now functionally identical to production but kept intact for diff-history.
+- **Test files invalidated:** `test-density-engine.js` will fail (it asserts the old percentage formula). Left in place per the Sprint 69 anti-goal pattern.
+
+### Build Steps
+- [x] T1. Append this Sprint 70 section to `tasks/todo.md` BEFORE the first edit (per L8).
+- [ ] T2. Simplify `densityScore` in route.js: drop `capacityFor` lookup + `/capacity * 100`, becomes `(volume × yieldRate) × mod`.
+- [ ] T3. Delete `capacityFor` export + `CAPACITY_DICTIONARY` + `DEFAULT_CAPACITY` constants.
+- [ ] T4. In `buildItinerary` item.map: drop `estimatedCapacity` field + the Sprint 62.3 `expectedYield > capacity * 0.9` clamp. `expectedYield` itself stays (it's the same as `volume × yieldRate`, still useful for UI display).
+- [ ] T5. Update `components/DispatchCards.jsx`: rename `formatDensity` → `formatExpectedRiders`, output format `"Expected Riders: N"`.
+- [ ] T6. Update `components/DispatchMap.jsx`: popup label `"Density: X%"` → `"Expected Riders: N"`.
+- [ ] T7. Update `components/TopPickBanner.jsx`: same label swap.
+- [ ] T8. Update `components/PeakSurgeBanner.jsx`: threshold `totalDensity <= 50` → `totalDensity <= 200`.
+- [ ] T9. `node --check app/api/dispatch/route.js` — must pass.
+- [ ] T10. Re-run `node scripts/simulate-scenarios.js`; confirm new CSV numbers match the Sprint 68.5 spike CSV exactly (proof the production switch landed correctly).
+
+### Acceptance Criteria
+- `node --check app/api/dispatch/route.js` clean.
+- `grep -n "capacityFor\|CAPACITY_DICTIONARY\|DEFAULT_CAPACITY" app/api/dispatch/route.js` returns 0 hits (other than this paper-trail mention if any).
+- New `density-report.csv` rows: Calm Tuesday 15, Friday Bar Rush 131.25, MVP Arena 750 (after Sat 10pm 1.5x — was 15 in density model), Snowstorm 11.25, Thanksgiving Eve 22.5, Perfect Storm 506.25 (arena) + 13.5 (train) ×2 = 533.25 sum.
+- UI strings "Density:" no longer present in `components/**` (grep returns only comment lines if any).
+
+### Anti-Goals
+- DO NOT rename the `densityScore` field on item objects (purely surgical — internal name preserved).
+- DO NOT delete or modify `scripts/simulate-scenarios-spike.js` (kept for diff history).
+- DO NOT delete or modify `test-density-engine.js` or any other test file (will fail if re-run — accepted state per the Sprint 69 pattern).
+- DO NOT touch Sprint 69's yield dicts (FOOD_YIELDS, HOSPITAL_YIELDS, EVENT_YIELDS).
+- DO NOT change the time-decay (0.7 / 0.4) tiers.
+
+#### Status: CLOSED 2026-06-01 — `route.js` densityScore simplified to `(volume × yieldRate) × mod`. DELETED: `capacityFor` export, `CAPACITY_DICTIONARY`, `DEFAULT_CAPACITY`, `estimatedCapacity` field, Sprint 62.3 capacity clamp. Floor (10.0) + DOLLAR_PER_SURGE_POINT (0.25) untouched. UI relabeled in 3 components: `DispatchCards.jsx` (formatDensity → formatExpectedRiders, "Density: X%" → "Expected Riders: N"), `DispatchMap.jsx` popup, `TopPickBanner.jsx`. `PeakSurgeBanner.jsx` threshold bumped 50→200 for raw-yield scale. Simulator script patched (removed `capacityFor` import + capacity column from per-item log). `node --check` clean. NEW production CSV: Calm Tuesday 15, Friday Bar Rush 131.25, MVP Arena Egress 750, Snowstorm 11.25, Thanksgiving Eve 22.5, Perfect Storm 589.5 (524 base × 1.125 final mod). MVP Arena now correctly dominates — 6.4× Friday Bar Rush, mirrors the real rider-volume ratio. Music-vs-Sports-at-MVP-Arena consistency proven: both score 750 at Sat 10pm because capacity (formerly the divergent input) is gone. `test-density-engine.js` invalidated (per anti-goal — left in place). Live `npm run dev` smoke-test of the new UI labels in browser not yet exercised.
+
+
+
+
+### Acceptance Criteria
+- `node scripts/simulate-scenarios.js` exits with code 0.
+- `density-report.csv` exists at project root and contains 6 distinct scenario rows.
+- The script imports `densityScore`, `yieldRateFor`, `capacityFor`, `computeWeatherModifiers`, `computeTemporalModifiers` from `app/api/dispatch/route.js` — no duplicated math.
+- Next.js still builds (`node --check` clean on route.js).
+
+### Anti-Goals (held)
+- No edits to `app/page.js`, `components/**`, or any other production file beyond the export keywords + JSON import-attribute on route.js.
+- No frontend UI, panel, or browser visualizer.
+- No third-party CSV / chart libs.
+
+## Sprint 71 — Static Albany POI Dictionary
+
+Build a first-pass static food/grocery POI source so Yelp is no longer required for local density hotspots.
+
+### Decisions
+- **Dictionary file:** `albany_poi_dictionary.json` at project root, mirroring `nightlife_dictionary.json` as a curated local data asset.
+- **Shape:** `{ food: [...], grocery: [...] }`, where every POI normalizes to the existing Yelp business shape: `name`, `lat`, `lng`, `price`, `categories`, `address1`, `rating`, `reviewCount`, optional `activeWindows`.
+- **Compatibility:** Keep `computeHotspots()` unchanged. Static POIs must feed the same array shape that `fetchYelpBusinesses()` returns today.
+- **Runtime behavior:** Prefer Yelp when `YELP_API_KEY` exists, but fall back to static POIs when Yelp is missing or returns no usable businesses. This lets the app keep live Yelp quality when configured while removing the hard dependency.
+- **Scope:** Starter dictionary targets high-signal Albany-area demand corridors, not a complete restaurant directory.
+
+### Build Steps
+- [x] S1. Append this Sprint 71 plan before code edits.
+- [x] S2. Create `albany_poi_dictionary.json` with an initial high-signal food/grocery seed.
+- [x] S3. Import/load the static dictionary in `app/api/dispatch/route.js`.
+- [x] S4. Add static POI normalization, active-window filtering, and distance filtering.
+- [x] S5. Update `getLocalDensityData()` to use static fallback when Yelp is unavailable or empty.
+- [x] S6. Run `node --check app/api/dispatch/route.js`.
+
+### Acceptance Criteria
+- Dispatch no longer loses food/grocery hotspots solely because `YELP_API_KEY` is missing.
+- `computeHotspots()` remains the single clustering/scoring path for food/grocery.
+- Static POIs outside 5 km of the driver are not considered.
+- Static POIs can be time-gated with `activeWindows`, but entries without windows are considered always eligible.
+
+### Anti-Goals
+- Do not remove Yelp yet.
+- Do not change UI files.
+- Do not install new dependencies.
+- Do not attempt a complete 400+ restaurant database in this sprint.
+## Sprint 72 — Temporal Modifier Rebalance
+
+Reduce double-counting in the temporal scoring layer now that rideshare demand is mostly covered by explicit engines.
+
+### Decisions
+- **Remove generic commute ride boosts:** weekday morning/evening `rideMod = 1.5` double-counts hospital shifts, state worker commute, transit, and event engines.
+- **Keep rideshare temporal only as a mild late-night behavior modifier:** Friday/Saturday late night and Saturday/Sunday early AM use `rideMod = 1.15`, not `1.5`.
+- **Soften late-night food suppression:** `foodMod = 0.8`, not `0.5`, so pizza/wings/diners/late-night food are not globally crushed.
+- **Extend dinner:** dinner food window becomes 5:00 PM-8:59 PM (`hour <= 20`).
+- **Add weekend brunch shoulder:** Saturday/Sunday 10:00 AM-10:59 AM uses `foodMod = 1.3`; the existing daily lunch rule still makes 11:00 AM-1:59 PM `1.5`.
+
+### Build Steps
+- [x] S1. Append this Sprint 72 plan before edits.
+- [x] S2. Update `computeTemporalModifiers()` in `app/api/dispatch/route.js`.
+- [x] S3. Update `test-time.js` expectations and add coverage for weekend brunch, extended dinner, and neutral commute ride modifiers.
+- [x] S4. Run `node test-time.js`.
+- [x] S5. Run `node --check app/api/dispatch/route.js`.
+
+### Acceptance Criteria
+- Weekday commute windows no longer increase `rideMod`.
+- Late-night ride modifier is `1.15`.
+- Late-night food modifier is `0.8`.
+- Weekend 10 AM brunch returns `foodMod = 1.3`.
+- Dinner through 8 PM hour returns `foodMod = 1.5`.
+
+### Anti-Goals
+- Do not change weather modifiers.
+- Do not change explicit hospital/state/transit/event engines.
+- Do not change UI.
+## Sprint 73 — DoorDash POI Enrichment
+
+Use the attached DoorDash Albany takeout PDF as an app-specific demand overlay for the static POI dictionary.
+
+### Decisions
+- **New data file:** `doordash_poi_enrichment.json` at project root. It stores DoorDash-visible merchant metadata from the PDF: name, rating, review count, categories, distance, ETA.
+- **No coordinates in DoorDash file:** the PDF does not provide lat/lng. Coordinates stay owned by `albany_poi_dictionary.json` / future geocoding passes.
+- **Merge by normalized name:** static POIs are enriched at runtime when their normalized name matches a DoorDash merchant. This keeps the static POI shape Yelp-compatible while preserving DoorDash evidence.
+- **Scoring impact:** `computeHotspots()` anchor popularity should use the best available app signal: `rating/reviewCount` first, then `doordashRating/doordashReviewCount`.
+- **Scope:** Add the overlay and use it for matching POIs. Do not geocode all missing DoorDash merchants yet.
+
+### Build Steps
+- [x] S1. Append this Sprint 73 plan before edits.
+- [x] S2. Create `doordash_poi_enrichment.json` from the attached PDF.
+- [x] S3. Import and freeze DoorDash enrichment data in `app/api/dispatch/route.js`.
+- [x] S4. Add normalized-name matching and merge DoorDash fields into static POIs.
+- [x] S5. Update hotspot anchor popularity to read DoorDash rating/review counts when native rating/review is absent.
+- [x] S6. Run JSON validation and `npm run build`.
+
+### Acceptance Criteria
+- Static POIs that match DoorDash merchants carry `deliveryApps: ["DoorDash"]`.
+- Matching POIs expose `doordashRating`, `doordashReviewCount`, `doordashEtaMinutes`, and `doordashDistanceMiles`.
+- Existing Yelp path remains unchanged.
+- Production build succeeds.
+
+### Anti-Goals
+- Do not scrape DoorDash live.
+- Do not add coordinates guessed from DoorDash distance.
+- Do not replace Yelp/static POI clustering.
+- Do not change UI in this sprint.
+
+### Follow-Up: 10 DoorDash Merchants Promoted to Static POIs
+- [x] Added coordinate-bearing food POIs for Seoul Korean, Bellini's Counter, Lo Nuestro, Wingstop, KFC, Margarita City, Red Lobster, El Pilon Market Inc, Ted's Fish Fry, and Pizza Hut.
+- [x] Updated DoorDash overlay values for those 10 to match the user's latest list.
+- [x] Verified each of the 10 now has exactly one POI dictionary match and one DoorDash enrichment match.
+- [x] Ran JSON validation and `node --check app/api/dispatch/route.js`.
+## Sprint 74 — Remove Yelp From Dispatch Path
+
+Make static Albany POIs + DoorDash enrichment the primary and only food/grocery source during live dispatch.
+
+### Decisions
+- **Dispatch-time source:** `getLocalDensityData()` should use `albany_poi_dictionary.json` filtered by driver radius, enriched by `doordash_poi_enrichment.json`.
+- **No Yelp API pull during dispatch:** stop reading `YELP_API_KEY`, stop calling `fetchYelpBusinesses()` from the POST flow.
+- **Keep Yelp fetcher temporarily:** leave `fetchYelpBusinesses()` in the file as inactive legacy/maintenance code so the change is reversible and narrow.
+- **No UI changes:** food/grocery cards and labels already consume the same `gigDemand` shape.
+
+### Build Steps
+- [x] S1. Append this Sprint 74 plan before edits.
+- [x] S2. Update `getLocalDensityData()` to ignore Yelp and always use static POIs.
+- [x] S3. Remove `YELP_API_KEY` warning/read from the dispatch POST path.
+- [x] S4. Run `node --check app/api/dispatch/route.js`.
+- [x] S5. Run `npm run build`.
+
+### Acceptance Criteria
+- Dispatch no longer calls Yelp for food/grocery data.
+- Missing `YELP_API_KEY` no longer logs a warning.
+- `gigDemand.foodHotspots` and `gigDemand.groceryHotspots` still build through `computeHotspots()`.
+- Production build succeeds.
+
+### Anti-Goals
+- Do not delete the old Yelp fetcher yet.
+- Do not change static POI data in this sprint.
+- Do not change UI.
+## Sprint 75 — Add DoorDash Batch 2 POIs
+
+Add the user's second batch of DoorDash merchants to the static POI + DoorDash enrichment data.
+
+### Decisions
+- **Coordinate-bearing POIs:** any missing merchant from the batch should be added to `albany_poi_dictionary.json`.
+- **DoorDash metadata:** every listed merchant should have/receive matching metadata in `doordash_poi_enrichment.json`.
+- **Existing POIs:** if a POI already exists, do not duplicate it; update only enrichment values unless the static metadata is missing.
+- **User-provided values:** trust the provided coordinates/categories/ratings/ETA/distance for this batch.
+
+### Build Steps
+- [x] S1. Append this Sprint 75 plan before edits.
+- [x] S2. Check which batch merchants are already present.
+- [x] S3. Add missing static POIs.
+- [x] S4. Add or update DoorDash enrichment rows.
+- [x] S5. Validate JSON and confirm every batch merchant has one POI and one enrichment match.
+
+### Acceptance Criteria
+- All listed merchants have coordinate-bearing POI entries.
+- All listed merchants have DoorDash enrichment entries.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not change backend logic.
+- Do not geocode or override beyond the user's provided batch values.
+## Sprint 76 — Add DoorDash Batch 3 POIs
+
+Add the user's third batch of DoorDash merchants to the static POI + DoorDash enrichment data.
+
+### Decisions
+- **User-provided values:** trust the provided coordinates, categories, address, DoorDash rating/reviews/ETA/distance.
+- **No duplicates:** update existing POI/enrichment rows when names already exist; add rows only when missing.
+- **Matcher safety:** keep exact-name verification after updates so similarly named merchants do not collide.
+
+### Build Steps
+- [x] S1. Append this Sprint 76 plan before edits.
+- [x] S2. Check current presence for the batch.
+- [x] S3. Add/update static POI rows.
+- [x] S4. Add/update DoorDash enrichment rows.
+- [x] S5. Validate JSON and confirm exact POI/enrichment matches for every batch merchant.
+
+### Acceptance Criteria
+- All listed merchants have coordinate-bearing POI entries.
+- All listed merchants have DoorDash enrichment entries.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not change backend logic.
+- Do not geocode or infer beyond the user's provided values.
+## Sprint 79 - Correct Promoted DoorDash Batch 1 POIs
+
+Update the first promoted DoorDash merchant batch with the user's corrected coordinates, addresses, prices, and categories.
+
+### Decisions
+- **In-place corrections:** update existing rows only; do not add duplicates.
+- **User-provided values:** trust corrected coordinates, address, categories, price, and DoorDash metadata.
+- **Verification:** confirm each corrected merchant still has exactly one static POI match and one enrichment match.
+
+### Build Steps
+- [x] S1. Append this Sprint 79 plan before edits.
+- [x] S2. Confirm current presence for all ten merchants.
+- [x] S3. Update static POI rows.
+- [x] S4. Update DoorDash enrichment rows where categories changed.
+- [x] S5. Validate JSON and exact matches.
+
+### Acceptance Criteria
+- All ten corrected merchants remain single matched POIs.
+- DoorDash enrichment metadata remains single matched for all ten.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not change backend logic.
+- Do not add new merchants in this sprint.
+## Sprint 78 - Add DoorDash Batch 5 POIs
+
+Add the user's fifth batch of DoorDash merchants to the static POI + DoorDash enrichment data.
+
+### Decisions
+- **Coordinate-bearing rows:** add/update static POIs only when lat/lng are provided.
+- **Null-coordinate rows:** keep as DoorDash enrichment-only until coordinates are available.
+- **User-provided values:** trust provided categories, address, DoorDash rating/reviews/ETA/distance.
+- **No duplicates:** update existing rows when names already exist.
+
+### Build Steps
+- [x] S1. Append this Sprint 78 plan before edits.
+- [x] S2. Check current presence for the batch.
+- [x] S3. Add/update static POI rows where coordinates exist.
+- [x] S4. Add/update DoorDash enrichment rows for all batch merchants.
+- [x] S5. Validate JSON and confirm exact enrichment matches for every batch merchant.
+
+### Acceptance Criteria
+- Coordinate-bearing merchants have static POI entries.
+- All listed merchants have DoorDash enrichment entries.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not change backend logic.
+- Do not invent coordinates for null-coordinate merchants.
+## Sprint 77 - Add DoorDash Batch 4 POIs
+
+Add the user's fourth batch of DoorDash merchants to the static POI + DoorDash enrichment data.
+
+### Decisions
+- **User-provided values:** trust the provided coordinates, categories, address, DoorDash rating/reviews/ETA/distance.
+- **No duplicates:** update existing POI/enrichment rows when names already exist; add rows only when missing.
+- **Exact verification:** confirm every batch merchant resolves to one static POI row and one enrichment row.
+
+### Build Steps
+- [x] S1. Append this Sprint 77 plan before edits.
+- [x] S2. Check current presence for the batch.
+- [x] S3. Add/update static POI rows.
+- [x] S4. Add/update DoorDash enrichment rows.
+- [x] S5. Validate JSON and confirm exact POI/enrichment matches for every batch merchant.
+
+### Acceptance Criteria
+- All listed merchants have coordinate-bearing POI entries.
+- All listed merchants have DoorDash enrichment entries.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not change backend logic.
+- Do not geocode or infer beyond the user's provided values.

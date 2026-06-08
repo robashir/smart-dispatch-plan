@@ -4,16 +4,22 @@
 // shown text matches the underlying item shape.
 // Contrast fix: every text node uses Tailwind's `!` important modifier on
 // text-black so dark-mode inheritance from globals.css can't override it.
-// Sprint 48: Normalized Density Engine. Banner reads data.densityScore
-// (the new apples-to-apples 0-100+ percent-of-capacity scale) and renders
-// it as "Density: X%" so the global recommendation is comparable across
-// surge families.
+// Sprint 70: Raw Yield Engine. Banner reads data.densityScore (now carries
+// expected demand, not a percentage) and renders a platform-aware label so
+// food/grocery recommendations don't read like rideshare work.
 export function TopPickBanner({ data }) {
   if (!data) return null;
 
-  const densityLine = Number.isFinite(data.densityScore)
-    ? `Density: ${Math.round(data.densityScore)}%`
-    : null;
+  let densityLine = null;
+  if (Number.isFinite(data.densityScore)) {
+    if (data.type === "food") {
+      densityLine = `Expected Food Deliveries: ${Math.round(data.densityScore)}`;
+    } else if (data.type === "grocery") {
+      densityLine = `Expected Grocery Deliveries: ${Math.round(data.densityScore)}`;
+    } else {
+      densityLine = `Expected Riders: ${Math.round(data.densityScore)}`;
+    }
+  }
 
   let body;
   switch (data.type) {

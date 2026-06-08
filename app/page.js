@@ -103,14 +103,14 @@ export default function Home() {
   const [hours, setHours] = useState(4);
   const [platforms, setPlatforms] = useState({
     rideshare: true,
-    food: false,
+    food: true,
     grocery: false,
   });
   // Sprint 45: Mathematical ROI Filter. Driver's vehicle cost per mile
   // (fuel + depreciation + wear). Default 0.65 = the "Safe Sedan" baseline;
   // hydrated from localStorage so the driver only configures it once.
   const [costPerMile, setCostPerMile] = useState(0.65);
-  const [routingStrategy, setRoutingStrategy] = useState("hybrid");
+  const [routingStrategy, setRoutingStrategy] = useState("profitability");
   const [activeTab, setActiveTab] = useState("transit");
   // Sprint 46: live weather modifiers from the backend's predictive engine.
   // null until the first dispatch; GlobalWeatherBanner returns null on null
@@ -305,9 +305,9 @@ export default function Home() {
       }
     }
     setEventConfig(config);
-    const firstName = Object.keys(config)[0] || "";
-    setSelectedEventName(firstName);
-    setDateInput(firstName ? config[firstName]?.date || "" : "");
+    const defaultName = pickNextUpcomingEventName(config);
+    setSelectedEventName(defaultName);
+    setDateInput(defaultName ? config[defaultName]?.date || "" : "");
   }, []);
 
   // Sprint 59: Save the selected event's new date to localStorage only.
@@ -443,6 +443,17 @@ export default function Home() {
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${dd}`;
+  }
+
+  function pickNextUpcomingEventName(config) {
+    if (!config || typeof config !== "object") return "";
+    const today = todayLocalISO();
+    const upcoming = Object.entries(config)
+      .filter(([, entry]) => /^\d{4}-\d{2}-\d{2}$/.test(entry?.date || ""))
+      .filter(([, entry]) => entry.date >= today)
+      .sort((a, b) => a[1].date.localeCompare(b[1].date));
+    if (upcoming.length > 0) return upcoming[0][0];
+    return Object.keys(config)[0] || "";
   }
 
   async function handleClick() {

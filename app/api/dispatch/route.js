@@ -1,8 +1,20 @@
 // Sprint 50: Last Call Egress Engine. 7-Day Matrix dictionary built by
 // tasks/pull-nightlife.js and hand-curated by the driver. Frozen so no
 // runtime mutation can drift the closing-time source of truth.
-import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json";
+import ALBANY_NIGHTLIFE_HOURS_RAW from "../../../nightlife_dictionary.json" with { type: "json" };
 const ALBANY_NIGHTLIFE_HOURS = Object.freeze(ALBANY_NIGHTLIFE_HOURS_RAW);
+
+// Sprint 71: Static Albany POI Dictionary. Curated local food/grocery anchors
+// in the same normalized shape as the Yelp business mapper, so computeHotspots
+// stays the single clustering/scoring path when Yelp is missing or empty.
+import ALBANY_POI_DICTIONARY_RAW from "../../../albany_poi_dictionary.json" with { type: "json" };
+const ALBANY_POI_DICTIONARY = Object.freeze(ALBANY_POI_DICTIONARY_RAW);
+
+// Sprint 73: DoorDash POI enrichment. Factual merchant metadata extracted
+// from the user's DoorDash Albany takeout PDF. It has no coordinates, so it
+// enriches matching static POIs by normalized name instead of creating pins.
+import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" with { type: "json" };
+const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
 // built by scripts/build-census-grid.js and loaded once at module-load time
@@ -250,88 +262,85 @@ const DOLLAR_PER_SURGE_POINT = 0.25;
 // capacity denominator to convert raw multiplicative volume math into a
 // universal density ratio (0-100+ percent-of-capacity). Validated in
 // isolation by test-density-engine.js before being ported here.
+// Sprint 69: Per-category recalibration. Coarse `food: 5` and `hospital: 30`
+// kept as fallback only — real lookups now resolve through FOOD_YIELDS and
+// HOSPITAL_YIELDS dicts below. `state_worker` and `bus` carved out from
+// mega_event / inline-5 so each cohort carries its own propensity number.
 const YIELD_RATES = {
   flight: 15,
-  train: 10,
+  train: 12,
   food: 5,
-  grocery: 5,
+  grocery: 3,
   event: 50,
-  mega_event: 450,
+  mega_event: 500,
   hospital: 30,
-  // Sprint 62.3: Nightlife Decoupling. Micro-venue bar baseline. With a
-  // Sprint 50 Last Call egressMod of 3.5x, this yields ~70 — strictly
-  // below the 80 default-capacity ceiling for an unlisted small venue.
-  nightlife: 20,
-  // Sprint 63: Unified Population Density Engine. Baseline residents-per-
-  // ride yield for a synthetic `type: "ride"` injected from a high-density
-  // census grid node. Multiplied by the node's populationDensityMod inside
-  // yieldRateFor — at mod=2.0 (the injection threshold) the resulting
-  // (5*2.0)/100*100 = 10.0 densityScore exactly clears the Sprint 27 floor.
+  nightlife: 25,
+  state_worker: 100,
+  bus: 5,
   residential_node: 5,
 };
 
-// Sprint 48: Static capacity dictionary keyed by lowercased primary
-// category (foods/events) or hub name (flights/trains). Unknown keys fall
-// back to DEFAULT_CAPACITY (80) so a new Yelp category can never crash
-// the density math — it just lands in the middle of the curve until the
-// dictionary is extended.
-const DEFAULT_CAPACITY = 80;
-const CAPACITY_DICTIONARY = {
-  // Transit hubs
-  // Sprint 68 recalibration: 600 → 123. The original Sprint 48 figure
-  // modeled ALB's hourly rideshare-pool ceiling; with YIELD_RATES.flight
-  // = 15, a single arrival scored only (1×15)/600×100 = 2.5 — well below
-  // the Sprint 27 strict <10 floor, so solo flights were silently ghosted.
-  // 123 = real-world blended average seats of incoming ALB aircraft, so a
-  // single arrival now scores (1×15)/123×100 = 12.19 — clears the floor
-  // and reaches the itinerary + Golden Half-Hour engine.
-  ALB: 123,
-  Rensselaer: 300,
-  // Food / restaurant primary categories
-  "fast food": 200,
-  "pizza": 100,
-  "burgers": 100,
-  "diners": 80,
-  "steakhouse": 40,
-  "sushi": 50,
-  // Grocery primary categories
-  "supermarket": 400,
-  "grocery": 400,
-  // Ticketmaster segment names
-  "music": 1000,
-  "sports": 5000,
-  "arts": 800,
-  "theatre": 800,
-  // Synthetic injector first categories (lowercased)
-  "morning shift overlap": 200,
-  "afternoon clinic shift": 200,
-  "evening nursing shift": 150,
-  "night admin shift": 100,
-  "state worker commute": 300,
-  "nightlife egress": 250,
-  "airport → venue": 600,
-  "tourist ripple": 600,
-  // Sprint 52: Crossgates Mall active occupancy at close.
-  "retail egress": 3000,
-  // Sprint 63: Unified Population Density Engine — synthetic residential
-  // ride node capacity (population pool addressable by one driver).
-  "residential_node": 100,
-  // Sprint 67: BYOD Bus per-arrival capacity. ~55-seat motorcoach, so a
-  // single arrival's rideshare pool is bounded much tighter than the
-  // default 80. Paired with the yieldRateFor flat 5, baseline density =
-  // 5/20*100 = 25 — comfortably above the Sprint 27 strict <10 filter so
-  // buses always reach the radar and the Sprint 66 Golden Half-Hour engine.
-  "byod bus": 20,
+// Sprint 69: Per-category food yields. Replaces the blanket food=5 baseline
+// for any food hotspot whose `categories[0].toLowerCase().trim()` matches.
+// Reflects rideshare propensity per restaurant type (steakhouse drinkers
+// out-rideshare drive-thru fast-food, etc.). Unknown food categories still
+// fall back to YIELD_RATES.food.
+const FOOD_YIELDS = {
+  "steakhouse": 15,
+  "sushi": 10,
+  "burgers": 8,
+  "pizza": 6,
+  "diners": 4,
+  "fast food": 3,
+  "cafes": 2,
+  "coffee": 2,
+  "brunch": 4,
+  "breakfast & brunch": 4,
 };
 
-function yieldRateFor(item) {
+// Sprint 69: Per-shift hospital yields. Replaces the blanket hospital=30
+// baseline for the 4 HOSPITAL_SHIFTS rows. Stacking pattern mirrors the
+// existing `mod` weights on each row (morning overlap > evening nursing >
+// night admin > afternoon clinic).
+const HOSPITAL_YIELDS = {
+  "morning shift overlap": 40,
+  "afternoon clinic shift": 20,
+  "evening nursing shift": 35,
+  "night admin shift": 25,
+};
+
+// Sprint 69: Per-segment event yields. Replaces the blanket event=50 default
+// for mid-sized Ticketmaster classifications. Mega-venue sports/arena events
+// still route through mega_event (500) via the egressMod >= 2.5 branch —
+// EVENT_YIELDS is consulted AFTER that check so a stadium concert (Music +
+// mega egress) stays at 500, not 200.
+const EVENT_YIELDS = {
+  "music": 200,
+  "arts": 120,
+  "theatre": 120,
+  "arts & theatre": 120,
+};
+
+// Sprint 70: CAPACITY_DICTIONARY + DEFAULT_CAPACITY deleted. With the
+// raw-yield formula in densityScore, capacity no longer participates in
+// scoring — the venue-name vs categories[0] mismatch (e.g., MVP Arena
+// Music using music capacity 1000 vs MVP Arena Sports using sports
+// capacity 5000) cannot occur because no capacity is consulted.
+
+export function yieldRateFor(item) {
   if (item.type === "flight") return YIELD_RATES.flight;
   if (item.type === "train") return YIELD_RATES.train;
   // Sprint 63: Food baseline multiplied by populationDensityMod when the
   // hotspot's centroid sits inside a dense residential pocket.
+  // Sprint 69: per-category lookup (FOOD_YIELDS) replaces the blanket
+  // baseline. Unknown categories still fall back to YIELD_RATES.food.
   if (item.type === "food") {
     const popMod = Number(item.populationDensityMod) || 1;
-    return YIELD_RATES.food * popMod;
+    const cat0 = ((Array.isArray(item.categories) && item.categories[0]) || "")
+      .toLowerCase()
+      .trim();
+    const base = FOOD_YIELDS[cat0] ?? YIELD_RATES.food;
+    return base * popMod;
   }
   if (item.type === "grocery") return YIELD_RATES.grocery;
   // Sprint 63: Synthetic residential ride hub. Baseline yield × the node's
@@ -341,86 +350,55 @@ function yieldRateFor(item) {
     return YIELD_RATES.residential_node * popMod;
   }
   if (item.type === "event") {
-    const cat0 = (Array.isArray(item.categories) && item.categories[0]) || "";
+    const cat0 = ((Array.isArray(item.categories) && item.categories[0]) || "")
+      .toLowerCase()
+      .trim();
     const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
-    // Sprint 67: BYOD Bus surges get a flat expected yield of 5 (per spec
+    // Sprint 67: BYOD Bus surges get a flat expected yield (per spec
     // clarification). Checked FIRST so the rule can't fall through to the
     // event/egress branches and accidentally inherit a stadium-scale rate.
-    if (/BYOD Bus/i.test(catsAll)) return 5;
+    if (/BYOD Bus/i.test(catsAll)) return YIELD_RATES.bus;
+    // Sprint 69: State Worker Commute carved out from mega_event default —
+    // 50k state workers leaving ESP/Harriman are drive-own-car-dominant,
+    // not stadium-scale. Checked BEFORE the egress >= 2.5 branch since the
+    // injector stamps egressMod 2.5 for radar prominence.
+    if (cat0 === "state worker commute") return YIELD_RATES.state_worker;
+    // Sprint 69: Per-shift hospital yields (HOSPITAL_YIELDS dict). Replaces
+    // the blanket hospital=30 baseline so each of the 4 shifts carries its
+    // own propensity number tied to its `mod` weight in HOSPITAL_SHIFTS.
+    if (HOSPITAL_YIELDS[cat0] != null) return HOSPITAL_YIELDS[cat0];
     if (/shift|nursing|admin|clinic/i.test(cat0)) return YIELD_RATES.hospital;
     // Sprint 52: Crossgates Retail Egress — 150 expected rideshare yield.
     // Checked BEFORE the egress >= 2.5 mega-event branch so the 3.0x
-    // egressMod doesn't fall through to the 450 stadium-scale rate.
+    // egressMod doesn't fall through to the 500 stadium-scale rate.
     if (/retail egress/i.test(cat0)) return 150;
     // Sprint 62.3: Last Call / Nightlife Egress are MICRO venues (bars),
     // NOT stadium-scale. Checked BEFORE the egress >= 2.5 mega-event
     // branch so the 3.5x Sprint 50 egressMod doesn't fall through to
-    // the 450 mega_event rate. Base × egressMod produces a per-venue
-    // yield (20 × 3.5 = 70) that respects bar capacity (default 80).
+    // the 500 mega_event rate. Base × egressMod produces a per-venue
+    // yield (25 × 3.5 = 87.5) that nears the 80 default-capacity ceiling
+    // for an unlisted small venue.
     if (/last call|nightlife/i.test(catsAll)) {
       return YIELD_RATES.nightlife * (Number(item.egressMod) || 1);
     }
     const egress = Number(item.egressMod) || 0;
     if (egress >= 2.5) return YIELD_RATES.mega_event;
+    // Sprint 69: Per-segment event yields (music / arts / theatre). Checked
+    // AFTER mega_event so stadium-scale music events keep the 500 rate.
+    if (EVENT_YIELDS[cat0] != null) return EVENT_YIELDS[cat0];
     return YIELD_RATES.event;
   }
   return 0;
 }
 
-function capacityFor(item) {
-  if (item.type === "flight" || item.type === "train") {
-    return CAPACITY_DICTIONARY[item.hub] ?? DEFAULT_CAPACITY;
-  }
-  // Sprint 63: Synthetic residential ride hub bypasses the category lookup
-  // because the dictionary key is fixed.
-  if (item.type === "ride") return CAPACITY_DICTIONARY.residential_node ?? DEFAULT_CAPACITY;
-  const key = (
-    (Array.isArray(item.categories) && item.categories[0]) || ""
-  )
-    .toLowerCase()
-    .trim();
-  return CAPACITY_DICTIONARY[key] ?? DEFAULT_CAPACITY;
-}
+// Sprint 70: capacityFor deleted alongside the capacity dictionary.
 
-// Sprint 31: Campus Synergy Engine. Late-night (11 PM / 12 AM / 1 AM) food
-// hotspots whose cluster centroid lands within 1.5 miles of a known campus
-// earn a 1.5x campusMod. Validated in isolation by test-campus-engine.js
-// before being ported here.
-const CAMPUS_CENTERS = [
-  { name: "SUNY Albany", lat: 42.6861, lng: -73.8237 },
-  { name: "RPI", lat: 42.7298, lng: -73.6789 },
-  { name: "Siena College", lat: 42.7194, lng: -73.7532 },
-];
-
-function computeCampusMod(hotspotLat, hotspotLng, currentHour) {
-  const isLateNight = currentHour === 23 || currentHour === 0 || currentHour === 1;
-  if (!isLateNight) return { campusMod: 1.0, campusName: null };
-  for (const campus of CAMPUS_CENTERS) {
-    const distance = haversineMiles(hotspotLat, hotspotLng, campus.lat, campus.lng);
-    if (distance < 1.5) {
-      return { campusMod: 1.5, campusName: campus.name };
-    }
-  }
-  return { campusMod: 1.0, campusName: null };
-}
-
-// Sprint 36: Lobbyist Premium Engine. Strict all-of gate — Tue/Wed/Thu,
-// 17:00-20:59 wall-clock, tier "High-Value ($$$)", cluster centroid within
-// 1.5 mi of ESP. Mirrors campusMod's shape so it can chain multiplicatively
-// inside surgeScore's food branch alongside qualityMod + campusMod.
-function computeCorporateMod(hotspot, currentDay, currentHour) {
-  if (currentDay < 2 || currentDay > 4) return 1.0;
-  if (currentHour < 17 || currentHour > 20) return 1.0;
-  if (hotspot.tier !== "High-Value ($$$)") return 1.0;
-  const distance = haversineMiles(
-    hotspot.centroidLat,
-    hotspot.centroidLng,
-    ESP_COORDS.lat,
-    ESP_COORDS.lng
-  );
-  if (distance >= 1.5) return 1.0;
-  return 1.8;
-}
+// Sprint 69: Campus Synergy (Sprint 31) and Lobbyist Premium (Sprint 36)
+// engines removed. Per-category food yields (FOOD_YIELDS) and the
+// State Worker Commute injector cover the same demand patterns more
+// honestly without the multiplier-on-weak-base ghosting issue.
+// `test-campus-engine.js` and any test exercising `computeCorporateMod` are
+// now invalidated and will fail if re-run.
 
 // Sprint 32: Event Egress Engine. Project the event's end time off its
 // classification segment (Sports 3.5h, Arts/Theatre 2.5h, Music/default 3.0h),
@@ -453,55 +431,11 @@ function computeEventEgress(event, currentLocalTime) {
   return 1.0;
 }
 
-// Sprint 47: Tourist Event Clustering Engine. Pure helper — returns a single
-// synthetic `type: "event"` object (or null) when a non-cancelled flight in
-// LEISURE_HUBS lands 1-4 hours BEFORE the target event's start time. One
-// match is sufficient; the loop short-circuits so multiple matching planes
-// collapse to ONE injection. egressMod stacks 5.0 + the target event's mod
-// so the injected route dominates the Profitability sort. Ported verbatim
-// from test-tourist-cluster.js after all 19 assertions PASSed.
-function computeTouristCluster({
-  eventStartTime,
-  eventLat,
-  eventLng,
-  venueName,
-  eventEgressMod,
-  flights,
-  includeAirport,
-}) {
-  if (!(eventStartTime instanceof Date) || Number.isNaN(eventStartTime.getTime())) return null;
-  if (!Array.isArray(flights)) return null;
-
-  const eventStartMs = eventStartTime.getTime();
-  let matched = false;
-  for (const f of flights) {
-    const depIata = f?.departure?.iata;
-    if (!depIata || !LEISURE_HUBS.includes(depIata)) continue;
-    if ((f.flight_status || "").toLowerCase() === "cancelled") continue;
-    const scheduled = f?.arrival?.scheduled;
-    if (typeof scheduled !== "string") continue;
-    const arrivalMs = new Date(scheduled).getTime();
-    if (Number.isNaN(arrivalMs)) continue;
-    const hoursBefore = (eventStartMs - arrivalMs) / (1000 * 60 * 60);
-    if (hoursBefore >= 1 && hoursBefore <= 4) {
-      matched = true;
-      break;
-    }
-  }
-  if (!matched) return null;
-
-  return {
-    type: "event",
-    volume: 1,
-    location: includeAirport ? `ALB → ${venueName}` : venueName,
-    categories: includeAirport
-      ? ["Airport → Venue", "Tourist Surge"]
-      : ["Tourist Ripple", "Venue Staging"],
-    lat: eventLat,
-    lng: eventLng,
-    egressMod: 5.0 + (Number(eventEgressMod) || 0),
-  };
-}
+// Sprint 69: Tourist Event Clustering (Sprint 47) removed. The engine was
+// double-counting leisure-hub flights — riders were already surging via the
+// flight bucket's own yield + Sprint 30 leisureMod (1.4x), then the tourist
+// ripple was re-injecting them as a mega_event-scale (450) event for the
+// same passengers. `test-tourist-cluster.js` is invalidated.
 
 // Sprint 32: shared with the trigger-log so the projected end time stays
 // in lockstep with the duration table used inside computeEventEgress.
@@ -582,7 +516,7 @@ function computeSupplyDropMod(localStart, sunsetTimeStr) {
 // Heatwave → Default. Ported verbatim from test-weather.js after all
 // 16 scenarios PASSed (4 states, priority tiebreakers, graceful degradation,
 // and pure-multiplicative stacking against Sprint 18 temporal mods).
-function computeWeatherModifiers(weatherArray) {
+export function computeWeatherModifiers(weatherArray) {
   if (!Array.isArray(weatherArray) || weatherArray.length < 2) {
     return { weatherFoodMod: 1.0, weatherRideMod: 1.0 };
   }
@@ -609,28 +543,28 @@ function computeWeatherModifiers(weatherArray) {
 }
 
 // Sprint 18: Temporal Baseline Engine. Hardcoded wall-clock time blocks
-// produce deterministic multipliers applied to raw data volumes BEFORE the
-// payload reaches the LLM. Input Date's UTC fields must equal the driver's
-// wall-clock time (we pass `localStart`, which is built that way).
-// Ported verbatim from test-time.js after all 7 scenarios PASSed.
-function computeTemporalModifiers(dateObj) {
+// produce deterministic multipliers. Input Date's UTC fields must equal the
+// driver's wall-clock time (we pass `localStart`, which is built that way).
+// Sprint 72: generic commute ride boosts removed because explicit engines
+// now cover hospital, state-worker, transit, bus, and event demand. Ride-side
+// temporal scoring is kept only as a mild late-night behavior modifier.
+export function computeTemporalModifiers(dateObj) {
   const day = dateObj.getUTCDay();
   const hour = dateObj.getUTCHours();
 
   let foodMod = 1.0;
   let rideMod = 1.0;
 
-  if (day >= 1 && day <= 5 && hour >= 7 && hour <= 8) rideMod = 1.5;
+  if ((day === 6 || day === 0) && hour === 10) foodMod = 1.3;
   if (hour >= 11 && hour <= 13) foodMod = 1.5;
-  if (day >= 1 && day <= 5 && hour >= 16 && hour <= 17) rideMod = 1.5;
-  if (hour >= 17 && hour <= 19) foodMod = 1.5;
+  if (hour >= 17 && hour <= 20) foodMod = 1.5;
   if ((day === 5 || day === 6) && hour >= 22) {
-    rideMod = 1.5;
-    foodMod = 0.5;
+    rideMod = 1.15;
+    foodMod = 0.8;
   }
   if ((day === 6 || day === 0) && hour < 2) {
-    rideMod = 1.5;
-    foodMod = 0.5;
+    rideMod = 1.15;
+    foodMod = 0.8;
   }
 
   return { foodMod, rideMod };
@@ -1373,6 +1307,118 @@ async function fetchYelpBusinesses({ latitude, longitude, category, apiKey }) {
   });
 }
 
+function parseStaticPoiHHMM(value) {
+  if (typeof value !== "string") return null;
+  const m = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isInteger(h) || !Number.isInteger(min)) return null;
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return h * 60 + min;
+}
+
+function isStaticPoiActiveNow(poi, localStart) {
+  if (!Array.isArray(poi?.activeWindows) || poi.activeWindows.length === 0) return true;
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return true;
+
+  const currentDay = localStart.getUTCDay();
+  const currentMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  const prevDay = (currentDay + 6) % 7;
+
+  for (const window of poi.activeWindows) {
+    const days = Array.isArray(window?.days) ? window.days : [0, 1, 2, 3, 4, 5, 6];
+    const start = parseStaticPoiHHMM(window?.start);
+    const end = parseStaticPoiHHMM(window?.end);
+    if (start == null || end == null) continue;
+
+    if (start <= end) {
+      if (days.includes(currentDay) && currentMin >= start && currentMin <= end) return true;
+      continue;
+    }
+
+    if (days.includes(currentDay) && currentMin >= start) return true;
+    if (days.includes(prevDay) && currentMin <= end) return true;
+  }
+
+  return false;
+}
+
+function normalizePoiName(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(inc|llc|co|company)\b/g, "")
+    .trim();
+}
+
+const DOORDASH_ENRICHMENT_BY_NAME = (() => {
+  const out = new Map();
+  for (const row of DOORDASH_POI_ENRICHMENT) {
+    const key = normalizePoiName(row?.name);
+    if (key) out.set(key, row);
+  }
+  return out;
+})();
+
+function findDoorDashEnrichment(name) {
+  const key = normalizePoiName(name);
+  if (!key) return null;
+  if (DOORDASH_ENRICHMENT_BY_NAME.has(key)) return DOORDASH_ENRICHMENT_BY_NAME.get(key);
+
+  for (const [candidateKey, row] of DOORDASH_ENRICHMENT_BY_NAME.entries()) {
+    if (candidateKey.length < 6 || key.length < 6) continue;
+    if (candidateKey.includes(key) || key.includes(candidateKey)) return row;
+  }
+  return null;
+}
+
+function normalizeStaticPoi(poi, type) {
+  const normalized = {
+    name: poi.name || "Unknown",
+    lat: Number(poi.lat),
+    lng: Number(poi.lng),
+    price: poi.price || "",
+    categories: Array.isArray(poi.categories) ? poi.categories : [type === "grocery" ? "Grocery" : "Mixed"],
+    address1: poi.address1 || "",
+    rating: Number(poi.rating) || 0,
+    reviewCount: Number(poi.reviewCount) || 0,
+  };
+  const doordash = findDoorDashEnrichment(normalized.name);
+  if (!doordash) return normalized;
+
+  return {
+    ...normalized,
+    deliveryApps: ["DoorDash"],
+    doordashRating: Number(doordash.rating) || 0,
+    doordashReviewCount: Number(doordash.reviewCount) || 0,
+    doordashCategories: Array.isArray(doordash.categories) ? doordash.categories : [],
+    doordashEtaMinutes: Number(doordash.etaMinutes) || null,
+    doordashDistanceMiles: Number(doordash.distanceMiles) || null,
+  };
+}
+
+function getStaticPoiBusinesses({ latitude, longitude, category, localStart }) {
+  const type = category === "grocery" ? "grocery" : "food";
+  const rows = Array.isArray(ALBANY_POI_DICTIONARY?.[type])
+    ? ALBANY_POI_DICTIONARY[type]
+    : [];
+
+  const businesses = rows
+    .filter((poi) => isStaticPoiActiveNow(poi, localStart))
+    .map((poi) => normalizeStaticPoi(poi, type))
+    .filter((b) => Number.isFinite(b.lat) && Number.isFinite(b.lng))
+    .filter((b) => haversineMeters(latitude, longitude, b.lat, b.lng) <= 5000);
+
+  console.log(
+    `STATIC POI DATA (${type}): ${businesses.length} eligible businesses within 5km`
+  );
+  return businesses;
+}
+
 // Sprint 28: Yelp Quality Engine. Late-night fast-food categories trigger
 // the +0.5 Additive Stack bonus on the Anchor's qualityMod. Case-insensitive
 // substring match so "Fast Food", "Pizza Place", "Burger Joint", etc. all hit.
@@ -1436,10 +1482,16 @@ function computeHotspots(businesses, type, localStart) {
       .map(([c]) => c.trim());
 
     // Sprint 28: Anchor pick + Additive Stack qualityMod.
+    const popularityFor = (business) => {
+      const rating = Number(business?.rating) || Number(business?.doordashRating) || 0;
+      const reviewCount =
+        Number(business?.reviewCount) || Number(business?.doordashReviewCount) || 0;
+      return rating * reviewCount;
+    };
     let anchor = bestCluster[0];
-    let popularityScore = (Number(anchor?.rating) || 0) * (Number(anchor?.reviewCount) || 0);
+    let popularityScore = popularityFor(anchor);
     for (const b of bestCluster) {
-      const score = (Number(b.rating) || 0) * (Number(b.reviewCount) || 0);
+      const score = popularityFor(b);
       if (score > popularityScore) {
         anchor = b;
         popularityScore = score;
@@ -1460,21 +1512,12 @@ function computeHotspots(businesses, type, localStart) {
     );
 
     // Sprint 37: cluster centroid computed for ALL hotspots (food + grocery)
-    // so the Mapbox radar can pin both families. Sprint 31's campus gate +
-    // Sprint 36's lobbyist gate still consume it only for food.
+    // so the Mapbox radar can pin both families.
     const centroidLat =
       bestCluster.reduce((sum, b) => sum + b.lat, 0) / bestCluster.length;
     const centroidLng =
       bestCluster.reduce((sum, b) => sum + b.lng, 0) / bestCluster.length;
 
-    // Sprint 31: Campus Synergy. Run the spatial+temporal gate against
-    // CAMPUS_CENTERS. Only food hotspots qualify — grocery clusters are out
-    // of scope.
-    // Sprint 36: same centroid feeds the Lobbyist Premium gate (ESP 1.5-mi
-    // radius). currentDay is wall-clock-as-UTC per Sprint 3.1.
-    let campusMod = 1.0;
-    let campusName = null;
-    let corporateMod = 1.0;
     // Sprint 63: Spatial population boost — only food gets the residential
     // density multiplier (per brief: applied "when looping through
     // foodHotspots from the Yelp API data"). Grocery is intentionally
@@ -1485,28 +1528,6 @@ function computeHotspots(businesses, type, localStart) {
       if (populationDensityMod > 1.0) {
         console.log(
           `[Food Boost] ${location} at ${centroidLat.toFixed(4)},${centroidLng.toFixed(4)} received populationDensityMod=${populationDensityMod}x`
-        );
-      }
-    }
-    if (type === "food") {
-      const campusResult = computeCampusMod(centroidLat, centroidLng, hour);
-      campusMod = campusResult.campusMod;
-      campusName = campusResult.campusName;
-      if (campusMod > 1.0) {
-        console.log(
-          `CAMPUS SYNERGY TRIGGERED: ${location} | Campus: ${campusName} | Mod: ${campusMod}x`
-        );
-      }
-
-      const currentDay = localStart instanceof Date ? localStart.getUTCDay() : -1;
-      corporateMod = computeCorporateMod(
-        { tier, centroidLat, centroidLng },
-        currentDay,
-        hour
-      );
-      if (corporateMod > 1.0) {
-        console.log(
-          `CORPORATE LOBBYIST PREMIUM TRIGGERED: ${anchor?.name || "Unknown"} | Mod: ${corporateMod}x`
         );
       }
     }
@@ -1521,16 +1542,6 @@ function computeHotspots(businesses, type, localStart) {
       // Sprint 28.1: surface the Anchor's name so the React HotspotCard can
       // render "Anchored by <name>" beneath the intersection header.
       anchorName: anchor?.name,
-      // Sprint 31: campusMod (1.0 default, 1.5x for late-night campus-adjacent
-      // food clusters) and the matched campus label. Multiplied into the
-      // food branch of surgeScore alongside qualityMod.
-      campusMod,
-      campusName,
-      // Sprint 36: corporateMod (1.0 default, 1.8x for Tue/Wed/Thu 5-8 PM
-      // High-Value clusters within 1.5 mi of ESP). Chains multiplicatively
-      // into the food branch of surgeScore; grocery hotspots never set it,
-      // so the read defaults to 1.0 there.
-      corporateMod,
       // Sprint 37: cluster centroid so the Mapbox radar can drop a pin
       // on the geographic middle of the cluster.
       lat: centroidLat,
@@ -1660,28 +1671,27 @@ function computeTimeDecayMod(itemTimeLabel, currentLocalStart) {
   return 0.4;
 }
 
-// Sprint 48: Normalized Density Engine. Replaces the unbounded multiplicative
-// surgeScore with a Capacity Normalization (Density-Based) score. Each surge
-// is converted into "Expected Rideshare Yield" (volume × YIELD_RATES[type])
-// and divided by "Venue Capacity" (lookup on hub or categories[0], fallback
-// 80). The ratio is multiplied by the appropriate final mod and scaled by
-// 100 so the output reads as a whole-percentage integer (0.85 → 85.0). All
-// pre-Sprint-48 per-item multipliers (fatigueMod, leisureMod, qualityMod,
-// campusMod, corporateMod, egressMod) still travel on the
-// items themselves and remain visible in the merged payload — they're
-// intentionally absent from the density formula because the density ratio
-// is now the single sort signal and the multipliers were already baked
-// into the upstream volume / yield numbers they were tuned against. The
-// item-preservation rule (Sprint 48 anti-goal) means item.volume stays the
-// true physical count for the React UI.
-function densityScore(item, finalRideMod, finalFoodMod) {
+// Sprint 70: Raw Yield Engine. Replaces the Sprint 48 percentage-of-capacity
+// formula with `volume × yield × mod`. Removes the cross-type comparability
+// bug surfaced by the Sprint 68 simulator (a one-bar Last Call at density
+// 87% out-ranked a stadium egress at 9%) AND the MVP-Arena yield/capacity
+// mismatch (yield came from egressMod, capacity came from categories[0] —
+// two different inputs for the same venue). Field name `densityScore`
+// retained for surgical minimality — only the meaning changes from
+// "% of venue capacity" to "expected riders". The 10.0 filter floor at
+// buildItinerary still applies; transit baselines (flight 15, train 12)
+// clear it at full mod, drop with time-decay 0.4 — matching prior behavior.
+// All pre-Sprint-48 per-item multipliers (fatigueMod, leisureMod, qualityMod,
+// egressMod) still travel on the items and remain visible in the merged
+// payload — they're intentionally absent from the score formula because
+// the multipliers were already baked into the upstream volume / yield
+// numbers they were tuned against.
+export function densityScore(item, finalRideMod, finalFoodMod) {
   const yieldRate = yieldRateFor(item);
-  const capacity = capacityFor(item);
-  if (yieldRate <= 0 || capacity <= 0) return 0;
+  if (yieldRate <= 0) return 0;
   const mod =
     item.type === "food" || item.type === "grocery" ? finalFoodMod : finalRideMod;
-  const numerator = (Number(item.volume) || 0) * yieldRate;
-  return (numerator / capacity) * mod * 100;
+  return (Number(item.volume) || 0) * yieldRate * mod;
 }
 
 // Sprint 23: deterministic router. Flattens flights + trains + hotspots
@@ -1736,10 +1746,11 @@ function buildItinerary(
   // generating less than 10% of venue capacity in expected yield). Any
   // item below the floor is pruned entirely. Synthetic ripple objects +
   // items with no scoreable type pass through untouched.
-  // Sprint 48: stamp expectedYield / estimatedCapacity / densityScore on
-  // every scoreable item so (a) the terminal merged-payload log surfaces
-  // the math, and (b) the React UI can render "Density: X%" without
-  // re-deriving anything.
+  // Sprint 48 + Sprint 70: stamp expectedYield / densityScore on every
+  // scoreable item so (a) the terminal merged-payload log surfaces the
+  // math, and (b) the React UI can render "Expected Riders: N" without
+  // re-deriving anything. estimatedCapacity is gone with the capacity
+  // dictionary.
   // Sprint 60: Ghost Mode is permanently dead — the Sprint 27 strict
   // < 10.0 cutoff is now always enforced. isWeak is still stamped for
   // any future headless client that wants the signal, but the bypass
@@ -1754,17 +1765,14 @@ function buildItinerary(
         it.type === "event" ||
         it.type === "ride";
       if (!scoreable) return it;
-      let expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
-      const estimatedCapacity = capacityFor(it);
-      // Sprint 62.3: Mathematical fail-safe. No future multiplier combination
-      // can ever exceed the venue's physical capacity — clamp to 90% so it
-      // stays strictly below the ceiling.
-      if (expectedYield > estimatedCapacity) expectedYield = Math.floor(estimatedCapacity * 0.9);
+      // Sprint 70: estimatedCapacity + Sprint 62.3 capacity clamp removed.
+      // expectedYield stays — same value as `volume × yieldRate`, useful
+      // for UI display alongside the headline densityScore.
+      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
       const score = decayed(it);
       return {
         ...it,
         expectedYield,
-        estimatedCapacity,
         densityScore: score,
         isWeak: score < 10.0,
       };
@@ -1922,15 +1930,20 @@ function findPeakSurgeWindow(itinerary) {
   };
 }
 
-// Returns { foodHotspots, groceryHotspots } arrays, or null when no API key
-// is configured (so dispatch can run degraded).
+// Returns { foodHotspots, groceryHotspots } arrays. Sprint 74: dispatch-time
+// food/grocery density is fully local now: static Albany POIs, enriched by
+// DoorDash metadata during normalization. Yelp is no longer called here.
 // Sprint 28: localStart threaded through for the late-night Anchor bonus.
-async function getLocalDensityData(latitude, longitude, apiKey, localStart) {
-  if (!apiKey) return null;
+async function getLocalDensityData(latitude, longitude, localStart) {
   const [foodBiz, groceryBiz] = await Promise.all([
-    fetchYelpBusinesses({ latitude, longitude, category: "restaurants", apiKey }),
-    fetchYelpBusinesses({ latitude, longitude, category: "grocery", apiKey }),
+    Promise.resolve(
+      getStaticPoiBusinesses({ latitude, longitude, category: "restaurants", localStart })
+    ),
+    Promise.resolve(
+      getStaticPoiBusinesses({ latitude, longitude, category: "grocery", localStart })
+    ),
   ]);
+
   const foodHotspots = computeHotspots(foodBiz, "food", localStart);
   const groceryHotspots = computeHotspots(groceryBiz, "grocery", localStart);
   console.log(
@@ -2136,11 +2149,6 @@ export async function POST(request) {
       console.warn("FLIGHT_API_KEY not set — skipping AviationStack fetch");
     }
 
-    const yelpApiKey = process.env.YELP_API_KEY;
-    if (!yelpApiKey) {
-      console.warn("YELP_API_KEY not set — skipping Yelp density fetch");
-    }
-
     const [events, weatherResult, rawFlights, rawTrains, gigDemand] = await Promise.all([
       fetchTicketmasterEvents({
         latitude,
@@ -2152,7 +2160,7 @@ export async function POST(request) {
       fetchWeatherWindowed({ latitude, longitude, hours: hoursNum }),
       flightApiKey ? fetchAlbArrivals({ apiKey: flightApiKey }) : Promise.resolve([]),
       fetchAlbTrainArrivals(),
-      getLocalDensityData(latitude, longitude, yelpApiKey, localStart),
+      getLocalDensityData(latitude, longitude, localStart),
     ]);
 
     // Sprint 41: fetchWeatherWindowed now returns { weatherWindowed, sunsetTime }
@@ -2268,10 +2276,9 @@ export async function POST(request) {
           localStart
         );
 
-        // Sprint 47: the egress filter is no longer a hard `continue` — events
-        // that haven't entered their egress window can still trigger Tourist
-        // Clustering below (the tourist signal hinges on flights 1-4h before
-        // event START, not on proximity to event END).
+        // Sprint 69: with Tourist Clustering deleted, this branch can revert
+        // to a strict `continue` on egressMod <= 1.0. Kept as-is (if block)
+        // for surgical minimality — behaviour is identical.
         if (egressMod > 1.0) {
           const duration = eventDurationHours(segmentName);
           const projectedEnd = startTime
@@ -2292,25 +2299,6 @@ export async function POST(request) {
           });
         }
 
-        // Sprint 47: Tourist Event Clustering. Inject ONE synthetic event per
-        // target venue when a non-cancelled leisure-hub flight lands 1-4h
-        // before this event's start time. egressMod stacks 5.0 + the target
-        // event's mod so the injected route dominates the Profitability sort.
-        const touristCluster = computeTouristCluster({
-          eventStartTime: startTime,
-          eventLat: venueCoords.lat,
-          eventLng: venueCoords.lng,
-          venueName: venueName || "Unknown Venue",
-          eventEgressMod: egressMod,
-          flights: rawFlights,
-          includeAirport,
-        });
-        if (touristCluster) {
-          structuredEvents.push(touristCluster);
-          console.log(
-            `TOURIST CLUSTER INJECTED: ${touristCluster.location} | egressMod ${touristCluster.egressMod}x`
-          );
-        }
       }
     }
 
