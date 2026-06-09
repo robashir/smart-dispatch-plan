@@ -126,6 +126,8 @@ const HUB_IATA_TO_CITY = (() => {
 // Sprint 20: spatial anchor for the airport. Used with haversineMiles +
 // the 20 mph city-speed assumption to compute the driver's leaveBy time.
 const ALB_COORDS = { lat: 42.7483, lng: -73.8017 };
+const ALB_CURB_BUFFER_MINUTES = 25;
+const DEFAULT_AIRPORT_DRIVE_MINUTES = 15;
 
 // Sprint 37: spatial anchor for Albany-Rensselaer Amtrak station. Used to
 // pin train surge buckets on the Mapbox radar.
@@ -324,6 +326,8 @@ const FOOD_YIELDS = {
   "breakfast & brunch": 4,
 };
 
+const MORNING_FOOD_MIN_YIELD = 4;
+
 // Sprint 69: Per-shift hospital yields. Replaces the blanket hospital=30
 // baseline for the 4 HOSPITAL_SHIFTS rows. Stacking pattern mirrors the
 // existing `mod` weights on each row (morning overlap > evening nursing >
@@ -353,7 +357,13 @@ const EVENT_YIELDS = {
 // Music using music capacity 1000 vs MVP Arena Sports using sports
 // capacity 5000) cannot occur because no capacity is consulted.
 
-export function yieldRateFor(item) {
+function isMorningYieldWindow(localStart) {
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return false;
+  const minutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  return minutes >= 6 * 60 && minutes < 11 * 60;
+}
+
+export function yieldRateFor(item, localStart = null) {
   if (item.type === "flight") return YIELD_RATES.flight;
   if (item.type === "train") return YIELD_RATES.train;
   // Sprint 63: Food baseline multiplied by populationDensityMod when the
@@ -362,11 +372,21 @@ export function yieldRateFor(item) {
   // baseline. Unknown categories still fall back to YIELD_RATES.food.
   if (item.type === "food") {
     const popMod = Number(item.populationDensityMod) || 1;
+    const hasMorningDaypart =
+      Array.isArray(item.dayparts) &&
+      item.dayparts.some((d) => {
+        const tag = String(d).toLowerCase();
+        return tag === "breakfast" || tag === "morning" || tag === "brunch";
+      });
     const cat0 = ((Array.isArray(item.categories) && item.categories[0]) || "")
       .toLowerCase()
       .trim();
     const base = FOOD_YIELDS[cat0] ?? YIELD_RATES.food;
-    return base * popMod;
+    const adjustedBase =
+      hasMorningDaypart && isMorningYieldWindow(localStart)
+        ? Math.max(base, MORNING_FOOD_MIN_YIELD)
+        : base;
+    return adjustedBase * popMod;
   }
   if (item.type === "grocery") return YIELD_RATES.grocery;
   // Sprint 63: Synthetic residential ride hub. Baseline yield × the node's
@@ -923,17 +943,40 @@ function computeLeisureMod(departureIata, airlineIata) {
 // shift downstream positionals (the airport-egress math was the highest-
 // risk site for that drift). `rideMod` is accepted defensively even though
 // the Sprint 27 body never reads it.
+function effectiveArrivalIso(flight) {
+  return flight?.arrival?.actual || flight?.arrival?.estimated || flight?.arrival?.scheduled || null;
+}
+
+function normalizeFlightStatus(flight) {
+  const raw = String(flight?.flight_status || flight?.status || "").trim();
+  if (!raw) return "Scheduled";
+  if (/cancel/i.test(raw)) return "Cancelled";
+  if (/delay/i.test(raw)) return "Delayed";
+  if (/on[_\s-]?time/i.test(raw)) return "On Time";
+  return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function isoLocalTimeKey(iso) {
+  const match = String(iso || "").match(/T(\d{2}):(\d{2})/);
+  return match ? `${match[1]}:${match[2]}` : String(iso || "");
+}
+
+function flightIdentifier(flight) {
+  return flight?.flight?.iata || flight?.flight?.number || flight?.flight?.icao || null;
+}
+
 function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rideMod = 1.0, minutesToAirport = 0 }) {
-  const originsByHour = {};
-  const earliestShiftedByHour = {};
-  const fatigueModByHour = {};
-  const leisureModByHour = {};
+  const rows = [];
   const seen = new Set();
+  const driveMinutes =
+    Number.isFinite(minutesToAirport) && minutesToAirport > 0
+      ? minutesToAirport
+      : DEFAULT_AIRPORT_DRIVE_MINUTES;
   for (const f of flights) {
-    const status = (f.flight_status || "").toLowerCase();
-    if (status === "cancelled") continue;
-    const scheduled = f.arrival?.scheduled;
-    if (!scheduled) continue;
+    const status = normalizeFlightStatus(f);
+    if (/cancel/i.test(status)) continue;
+    const effectiveIso = effectiveArrivalIso(f);
+    if (!effectiveIso) continue;
 
     const depIata = f.departure?.iata;
     if (!depIata || !HIGH_VALUE_HUBS.includes(depIata)) continue;
@@ -943,22 +986,24 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
     // strict `scheduled|iata|airport-name` form so live + BYOD records for
     // the same physical plane dedupe even when their `departure.airport`
     // strings differ ("Orlando International" vs "Orlando").
-    const fpTimeMatch = scheduled.match(/T(\d{2}):(\d{2})/);
-    const fpTimeKey = fpTimeMatch ? `${fpTimeMatch[1]}:${fpTimeMatch[2]}` : scheduled;
-    const fingerprint = `${fpTimeKey}_${depIata}`;
-    if (seen.has(fingerprint)) continue;
-    seen.add(fingerprint);
+    const ident = flightIdentifier(f);
+    const fpTimeKey = isoLocalTimeKey(effectiveIso);
+    const fingerprints = [`${fpTimeKey}_${depIata}`];
+    if (ident) fingerprints.push(`${ident}_${depIata}_${fpTimeKey}`);
+    if (fingerprints.some((fp) => seen.has(fp))) continue;
+    for (const fp of fingerprints) seen.add(fp);
 
-    const arrivalUtc = new Date(scheduled);
+    const arrivalUtc = new Date(effectiveIso);
     if (Number.isNaN(arrivalUtc.getTime())) continue;
 
-    // Sprint 20: +30 min egress shift BEFORE bucketing. Passengers don't
+    // Sprint 87: +25 min curb shift BEFORE windowing. Passengers don't
     // hit the curb when the plane lands — they deplane, gather bags, and
-    // walk out ~30 min later. The driver should be dispatched to the curb,
+    // walk out immediately. The driver should be dispatched to the curb,
     // not the runway.
-    const shiftedUtc = new Date(arrivalUtc.getTime() + 30 * 60 * 1000);
+    const shiftedUtc = new Date(arrivalUtc.getTime() + ALB_CURB_BUFFER_MINUTES * 60 * 1000);
 
     // Shift into the same "wall-clock-as-UTC" frame the rest of the file uses.
+    const arrivalLocal = new Date(arrivalUtc.getTime() - offsetMin * 60 * 1000);
     const shiftedLocal = new Date(shiftedUtc.getTime() - offsetMin * 60 * 1000);
     if (shiftedLocal < localStart || shiftedLocal >= localEnd) continue;
 
@@ -966,26 +1011,16 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
     const ampm = h >= 12 ? "PM" : "AM";
     h = h % 12 || 12;
     const label = `${h} ${ampm}`;
-    if (!originsByHour[label]) originsByHour[label] = [];
-    originsByHour[label].push(depIata);
-
-    if (!earliestShiftedByHour[label] || shiftedLocal < earliestShiftedByHour[label]) {
-      earliestShiftedByHour[label] = shiftedLocal;
-    }
 
     // Sprint 29: compute per-flight fatigue; log every trigger so the PO
     // can spot each contributor; carry the MAX across the bucket so one
     // late-night delay marks the whole hour.
     const fatigueMod = computeFatigueMod(f);
     if (fatigueMod > 1.0) {
-      const ident = f.flight?.iata || f.flight?.number || depIata;
       const delayMin = Number(f.arrival?.delay) || 0;
       console.log(
-        `AVIATION FATIGUE TRIGGERED: ${ident} | Delay: ${delayMin}m | Mod: ${fatigueMod}x`
+        `AVIATION FATIGUE TRIGGERED: ${ident || depIata} | Delay: ${delayMin}m | Mod: ${fatigueMod}x`
       );
-    }
-    if (!fatigueModByHour[label] || fatigueMod > fatigueModByHour[label]) {
-      fatigueModByHour[label] = fatigueMod;
     }
 
     // Sprint 30: leisureMod fires only when origin hub AND airline both
@@ -993,14 +1028,46 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
     const airlineIata = f.airline?.iata;
     const leisureMod = computeLeisureMod(depIata, airlineIata);
     if (leisureMod > 1.0) {
-      const ident = f.flight?.iata || f.flight?.number || depIata;
       console.log(
-        `LEISURE HUB TRIGGERED: ${ident} | Hub: ${depIata} | Mod: ${leisureMod}x`
+        `LEISURE HUB TRIGGERED: ${ident || depIata} | Hub: ${depIata} | Mod: ${leisureMod}x`
       );
     }
-    if (!leisureModByHour[label] || leisureMod > leisureModByHour[label]) {
-      leisureModByHour[label] = leisureMod;
-    }
+
+    const scheduledIso = f.arrival?.scheduled || effectiveIso;
+    const scheduledUtc = new Date(scheduledIso);
+    const explicitDelay = Number(f.arrival?.delay);
+    const delayMinutes =
+      Number.isFinite(explicitDelay) && explicitDelay > 0
+        ? explicitDelay
+        : !Number.isNaN(scheduledUtc.getTime()) && scheduledIso !== effectiveIso
+          ? Math.max(0, Math.round((arrivalUtc.getTime() - scheduledUtc.getTime()) / 60000))
+          : null;
+    const leaveByDate = new Date(shiftedLocal.getTime() - driveMinutes * 60 * 1000);
+    const originLabel = HUB_IATA_TO_CITY[depIata] || f.departure?.airport || depIata;
+
+    rows.push({
+      type: "flight",
+      hourBucket: label,
+      volume: 1,
+      flightNumber: ident,
+      origin: depIata,
+      origins: [depIata],
+      originLabel,
+      originLabels: [originLabel],
+      status,
+      arrivalTime: formatLeaveBy(arrivalLocal),
+      curbTime: formatLeaveBy(shiftedLocal),
+      leaveBy: formatLeaveBy(leaveByDate),
+      driveMinutes,
+      curbBufferMinutes: ALB_CURB_BUFFER_MINUTES,
+      delayMinutes,
+      arrivalConfidence: f.arrival?.actual ? "actual" : f.arrival?.estimated ? "estimated" : "displayed",
+      hub: "ALB",
+      fatigueMod,
+      leisureMod,
+      lat: ALB_COORDS.lat,
+      lng: ALB_COORDS.lng,
+    });
   }
 
   // Sprint 20: leaveBy = earliest shifted arrival in bucket − minutesToAirport.
@@ -1008,32 +1075,7 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
   // Sprint 27: emit the RAW codes.length as volume. Multiplier application
   // lives exclusively inside buildItinerary now (kills the double-scaling
   // "squaring" bug from Sprint 23).
-  const buckets = [];
-  for (const [hour, codes] of Object.entries(originsByHour)) {
-    const earliest = earliestShiftedByHour[hour];
-    const leaveByDate = new Date(earliest.getTime() - minutesToAirport * 60 * 1000);
-    buckets.push({
-      type: "flight",
-      hourBucket: hour,
-      volume: codes.length,
-      origins: codes,
-      // Sprint 68: human-readable origin labels for FlightCard (city name
-      // when the IATA is in the dictionary, raw IATA otherwise). Older
-      // payloads that don't carry this field still render via the
-      // `origins` fallback inside FlightCard.
-      originLabels: codes.map((c) => HUB_IATA_TO_CITY[c] || c),
-      leaveBy: formatLeaveBy(leaveByDate),
-      hub: "ALB",
-      // Sprint 29: bucket carries the MAX fatigueMod across its members.
-      fatigueMod: fatigueModByHour[hour] || 1.0,
-      // Sprint 30: bucket carries the MAX leisureMod across its members.
-      leisureMod: leisureModByHour[hour] || 1.0,
-      // Sprint 37: ALB coords so the Mapbox radar can pin each flight bucket.
-      lat: ALB_COORDS.lat,
-      lng: ALB_COORDS.lng,
-    });
-  }
-  return buckets;
+  return rows.sort((a, b) => parseTimeLabel(a.leaveBy) - parseTimeLabel(b.leaveBy));
 }
 
 // Sprint 4.5 + Hotfix: live Amtrak arrivals for Albany-Rensselaer (station code ALB).
@@ -1195,6 +1237,10 @@ function parseFlightText(rawText, offsetMin = 0) {
     let matchedIata = null;
     let parsedCity = null;
     const blockLower = block.toLowerCase();
+    const statusMatch = block.match(/\b(cancelled|canceled|delayed|on\s*time)\b/i);
+    const parsedStatus = statusMatch
+      ? statusMatch[1].toLowerCase().replace(/\s+/g, "_").replace("canceled", "cancelled")
+      : "scheduled";
     for (const city of HUB_CITY_KEYS_LONGEST_FIRST) {
       if (blockLower.includes(city.toLowerCase())) {
         matchedIata = HUB_CITY_PATTERNS[city];
@@ -1218,7 +1264,7 @@ function parseFlightText(rawText, offsetMin = 0) {
 
     const scheduled = `${datePart}T${hourStr}:${min}:00${isoOffset}`;
     flights.push({
-      flight_status: "scheduled",
+      flight_status: parsedStatus,
       arrival: { scheduled },
       departure: { iata: matchedIata, airport: parsedCity },
       airline: { iata: null },
@@ -1555,6 +1601,7 @@ function normalizeStaticPoi(poi, type) {
     lng: Number(poi.lng),
     price: poi.price || "",
     categories: Array.isArray(poi.categories) ? poi.categories : [type === "grocery" ? "Grocery" : "Mixed"],
+    dayparts: Array.isArray(poi.dayparts) ? poi.dayparts : [],
     address1: poi.address1 || "",
     rating: Number(poi.rating) || 0,
     reviewCount: Number(poi.reviewCount) || 0,
@@ -1573,20 +1620,129 @@ function normalizeStaticPoi(poi, type) {
   };
 }
 
+const FOOD_DAYPART_POLICIES = [
+  {
+    label: "morning breakfast filter",
+    startMin: 6 * 60,
+    endMin: 11 * 60,
+    tags: ["breakfast", "morning", "brunch"],
+    categories: [],
+  },
+  {
+    label: "lunch filter",
+    startMin: 11 * 60,
+    endMin: 14 * 60,
+    tags: ["lunch", "brunch"],
+    categories: [
+      "sandwiches",
+      "salads",
+      "fast food",
+      "pizza",
+      "american",
+      "mexican",
+      "chinese",
+      "indian",
+      "thai",
+      "korean",
+      "vietnamese",
+      "japanese",
+      "mediterranean",
+      "halal",
+      "wings",
+      "burgers",
+      "latin american",
+    ],
+  },
+  {
+    label: "dinner filter",
+    startMin: 17 * 60,
+    endMin: 21 * 60,
+    tags: ["dinner"],
+    categories: [
+      "pizza",
+      "italian",
+      "american",
+      "mexican",
+      "chinese",
+      "indian",
+      "thai",
+      "korean",
+      "vietnamese",
+      "japanese",
+      "sushi",
+      "seafood",
+      "steakhouse",
+      "mediterranean",
+      "halal",
+      "wings",
+      "burgers",
+      "latin american",
+      "dominican",
+      "colombian",
+      "salvadoran",
+      "caribbean",
+      "jamaican",
+      "southern",
+      "barbecue",
+    ],
+  },
+  {
+    label: "late-night filter",
+    startMin: 21 * 60,
+    endMin: 2 * 60,
+    tags: ["late-night", "late night"],
+    categories: ["pizza", "fast food", "wings", "burgers", "halal", "sandwiches", "mexican", "american", "desserts"],
+  },
+];
+
+function getFoodDaypartPolicy(localStart) {
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return false;
+  const minutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  return FOOD_DAYPART_POLICIES.find((policy) => {
+    if (policy.startMin < policy.endMin) {
+      return minutes >= policy.startMin && minutes < policy.endMin;
+    }
+    return minutes >= policy.startMin || minutes < policy.endMin;
+  });
+}
+
+function hasBreakfastDaypart(poi) {
+  if (!Array.isArray(poi?.dayparts)) return false;
+  return poi.dayparts.some((d) => {
+    const tag = String(d).toLowerCase();
+    return tag === "breakfast" || tag === "morning" || tag === "brunch";
+  });
+}
+
+function matchesFoodDaypart(poi, policy) {
+  if (!policy) return false;
+  const dayparts = Array.isArray(poi?.dayparts) ? poi.dayparts : [];
+  const categories = Array.isArray(poi?.categories) ? poi.categories : [];
+  const haystack = [...dayparts, ...categories].map((v) => String(v).toLowerCase().trim());
+  return haystack.some((value) =>
+    [...policy.tags, ...policy.categories].some((needle) => value.includes(needle))
+  );
+}
+
 function getStaticPoiBusinesses({ latitude, longitude, category, localStart }) {
   const type = category === "grocery" ? "grocery" : "food";
   const rows = Array.isArray(ALBANY_POI_DICTIONARY?.[type])
     ? ALBANY_POI_DICTIONARY[type]
     : [];
 
-  const businesses = rows
+  const businessesAll = rows
     .filter((poi) => isStaticPoiActiveNow(poi, localStart))
     .map((poi) => normalizeStaticPoi(poi, type))
     .filter((b) => Number.isFinite(b.lat) && Number.isFinite(b.lng))
     .filter((b) => haversineMeters(latitude, longitude, b.lat, b.lng) <= 5000);
+  const activeDaypartPolicy = type === "food" ? getFoodDaypartPolicy(localStart) : null;
+  const businesses =
+    activeDaypartPolicy && businessesAll.some((b) => matchesFoodDaypart(b, activeDaypartPolicy))
+      ? businessesAll.filter((b) => matchesFoodDaypart(b, activeDaypartPolicy))
+      : businessesAll;
 
   console.log(
-    `STATIC POI DATA (${type}): ${businesses.length} eligible businesses within 5km`
+    `STATIC POI DATA (${type}): ${businesses.length} eligible businesses within 5km${activeDaypartPolicy ? ` (${activeDaypartPolicy.label})` : ""}`
   );
   return businesses;
 }
@@ -1653,6 +1809,18 @@ function computeHotspots(businesses, type, localStart) {
       .slice(0, 2)
       .map(([c]) => c.trim());
 
+    const daypartCounts = {};
+    for (const b of bestCluster) {
+      for (const d of b.dayparts || []) {
+        const key = String(d).trim();
+        if (key) daypartCounts[key] = (daypartCounts[key] || 0) + 1;
+      }
+    }
+    const topDayparts = Object.entries(daypartCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([d]) => d);
+
     // Sprint 28: Anchor pick + Additive Stack qualityMod.
     const popularityFor = (business) => {
       const rating = Number(business?.rating) || Number(business?.doordashRating) || 0;
@@ -1669,6 +1837,11 @@ function computeHotspots(businesses, type, localStart) {
         popularityScore = score;
       }
     }
+    const nearbyNames = bestCluster
+      .filter((b) => b !== anchor && b?.name)
+      .sort((a, b) => popularityFor(b) - popularityFor(a))
+      .slice(0, 3)
+      .map((b) => b.name);
     let qualityMod = 1.0;
     if (popularityScore > 5000) qualityMod += 0.3;
     const hour = localStart instanceof Date ? localStart.getUTCHours() : -1;
@@ -1710,10 +1883,12 @@ function computeHotspots(businesses, type, localStart) {
       volume: bestCluster.length,
       tier,
       categories: topCats.length > 0 ? topCats : ["Mixed"],
+      dayparts: topDayparts,
       qualityMod,
       // Sprint 28.1: surface the Anchor's name so the React HotspotCard can
       // render "Anchored by <name>" beneath the intersection header.
       anchorName: anchor?.name,
+      nearbyNames,
       // Sprint 37: cluster centroid so the Mapbox radar can drop a pin
       // on the geographic middle of the cluster.
       lat: centroidLat,
@@ -1858,8 +2033,8 @@ function computeTimeDecayMod(itemTimeLabel, currentLocalStart) {
 // payload — they're intentionally absent from the score formula because
 // the multipliers were already baked into the upstream volume / yield
 // numbers they were tuned against.
-export function densityScore(item, finalRideMod, finalFoodMod) {
-  const yieldRate = yieldRateFor(item);
+export function densityScore(item, finalRideMod, finalFoodMod, localStart = null) {
+  const yieldRate = yieldRateFor(item, localStart);
   if (yieldRate <= 0) return 0;
   const mod =
     item.type === "food" || item.type === "grocery" ? finalFoodMod : finalRideMod;
@@ -1909,7 +2084,7 @@ function buildItinerary(
   // hybrid in-group sort) so a 2-hours-out surge can no longer outrank a
   // "now" surge.
   const decayed = (it) =>
-    densityScore(it, finalRideMod, finalFoodMod) *
+    densityScore(it, finalRideMod, finalFoodMod, currentLocalStart) *
     computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
 
   // Sprint 27 + Sprint 48: strict density filter. With the Normalized
@@ -1940,7 +2115,7 @@ function buildItinerary(
       // Sprint 70: estimatedCapacity + Sprint 62.3 capacity clamp removed.
       // expectedYield stays — same value as `volume × yieldRate`, useful
       // for UI display alongside the headline densityScore.
-      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it);
+      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
       const score = decayed(it);
       return {
         ...it,

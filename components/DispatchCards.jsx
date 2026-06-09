@@ -19,13 +19,37 @@ export function FlightCard({ data }) {
   const labels =
     Array.isArray(data.originLabels) && data.originLabels.length > 0
       ? data.originLabels
-      : data.origins;
+      : Array.isArray(data.origins)
+        ? data.origins
+        : [];
+  const isFlightLevel = Boolean(data.arrivalTime || data.curbTime || data.originLabel);
+  const originText = data.originLabel || labels.join(", ");
+  const flightTitle = data.flightNumber
+    ? `${data.flightNumber} from ${originText}`
+    : `Flight from ${originText || data.hub}`;
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-blue-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-blue-400 mb-1">Flight Surge</div>
       <div className="text-2xl font-bold mb-2">Leave by {data.leaveBy}</div>
-      <div className="text-lg">{data.volume} Arrival{data.volume === 1 ? "" : "s"} at {data.hub}</div>
-      <div className="text-sm text-neutral-400 mt-1">From: {labels.join(", ")}</div>
+      {isFlightLevel ? (
+        <>
+          <div className="text-lg">{flightTitle}</div>
+          <div className="text-sm text-neutral-300 mt-1">
+            Arrival {data.arrivalTime} | Curb {data.curbTime}
+          </div>
+          <div className="text-sm text-neutral-400 mt-1">
+            Status: {data.status || "Scheduled"}
+            {Number.isFinite(data.delayMinutes) && data.delayMinutes > 0
+              ? ` | Delay ${data.delayMinutes}m`
+              : ""}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="text-lg">{data.volume} Arrival{data.volume === 1 ? "" : "s"} at {data.hub}</div>
+          <div className="text-sm text-neutral-400 mt-1">From: {labels.join(", ")}</div>
+        </>
+      )}
       {density && <div className="text-sm font-semibold text-blue-300 mt-2">{density}</div>}
     </div>
   );
@@ -85,6 +109,7 @@ export function EventCard({ data }) {
 
 export function HotspotCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
+  const nearbyNames = Array.isArray(data.nearbyNames) ? data.nearbyNames.filter(Boolean) : [];
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-rose-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-rose-400 mb-1">
@@ -93,6 +118,9 @@ export function HotspotCard({ data }) {
       <div className="text-2xl font-bold mb-2">{data.location}</div>
       {data.anchorName && (
         <div className="text-sm italic text-neutral-400 mb-2">Anchored by {data.anchorName}</div>
+      )}
+      {nearbyNames.length > 0 && (
+        <div className="text-sm text-neutral-400 mb-2">Nearby: {nearbyNames.join(", ")}</div>
       )}
       <div className="text-lg">{data.tier}</div>
       <div className="text-sm text-neutral-400 mb-2">Volume: {data.volume}</div>

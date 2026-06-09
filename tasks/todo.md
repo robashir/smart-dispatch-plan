@@ -3537,6 +3537,247 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 90 - Hotspot Nearby Merchant Names
+
+Show up to three additional merchant names inside each food/grocery hotspot card so the driver can see what else is in the cluster beyond the anchor.
+
+### Decisions
+- **Backend-owned list:** compute nearby merchant names from the same `bestCluster` used for volume.
+- **Exclude anchor:** `nearbyNames` should list other merchants, not repeat the anchor.
+- **Compact UI:** render one small line under the anchor to avoid bloating cards.
+
+### Build Steps
+- [x] S1. Append this Sprint 90 plan before edits.
+- [x] S2. Add `nearbyNames` to computed hotspots.
+- [x] S3. Render `nearbyNames` in `HotspotCard`.
+- [x] S4. Validate route syntax and production build.
+
+### Acceptance Criteria
+- Hotspot payloads include up to three other merchant names.
+- Cards show those names under the anchor when available.
+- Cards without nearby names render unchanged.
+
+### Anti-Goals
+- Do not change hotspot scoring.
+- Do not change clustering radius.
+- Do not edit POI data.
+## Sprint 89 - Morning-Only Breakfast Yield Floor
+
+Restrict the breakfast/brunch yield floor to the morning window so coffee and breakfast places use their normal lower yield during lunch and dinner.
+
+### Decisions
+- **Morning only:** keep the breakfast floor from 6:00 AM-10:59 AM.
+- **Lunch/dinner normal yield:** breakfast/brunch POIs use category yield at lunch/dinner unless another rule boosts them.
+- **No filter rollback:** keep Sprint 88 daypart candidate filtering.
+
+### Build Steps
+- [x] S1. Append this Sprint 89 plan before edits.
+- [x] S2. Pass dispatch local start into food yield scoring.
+- [x] S3. Apply `MORNING_FOOD_MIN_YIELD` only during the morning window.
+- [x] S4. Update the daypart validator.
+- [x] S5. Validate route syntax, validator, and production build.
+
+### Acceptance Criteria
+- Breakfast coffee yield is floored to 4 in the morning.
+- Breakfast coffee yield returns to normal coffee yield at lunch/dinner.
+- Existing lunch/dinner/late-night candidate filters remain active.
+
+### Anti-Goals
+- Do not change POI dictionary rows.
+- Do not change UI.
+- Do not change non-food scoring.
+## Sprint 88 - Lunch Dinner Late-Night Food Daypart Filters
+
+Extend the breakfast-only food filter into broader daypart-aware food selection for lunch, dinner, and late-night windows.
+
+### Decisions
+- **Generic policy:** keep morning breakfast behavior, then add lunch, dinner, and late-night policies.
+- **Fallback behavior:** if no nearby POI matches the active daypart, keep all nearby food POIs so dispatch does not go blank.
+- **Category inference:** lunch/dinner/late-night can match common meal categories even when a POI has no explicit `dayparts` tags.
+- **Food only:** grocery selection remains unchanged.
+
+### Build Steps
+- [x] S1. Append this Sprint 88 plan before edits.
+- [x] S2. Add generic food daypart policy helpers.
+- [x] S3. Apply the active daypart filter inside `getStaticPoiBusinesses()`.
+- [x] S4. Update the food daypart validator.
+- [x] S5. Validate route syntax, validator, and production build.
+
+### Acceptance Criteria
+- Morning still keeps breakfast/morning/brunch POIs when available.
+- Lunch prefers lunch-friendly POIs when available.
+- Dinner prefers dinner-friendly POIs when available.
+- Late-night prefers late-night-friendly POIs when available.
+- Non-food/grocery behavior is unchanged.
+
+### Anti-Goals
+- Do not add or remove restaurants in this sprint.
+- Do not change food yield numbers.
+- Do not change UI.
+## Sprint 87 - Production Flight-Level Airport Demand
+
+Move production airport demand from hourly buckets to individual high-value flight rows, using the airport board's displayed/updated arrival time as the effective arrival.
+
+### Decisions
+- **Displayed arrival wins:** use actual, then estimated, then scheduled arrival for dispatch timing.
+- **Individual rows:** keep `flightsByHour` as the payload key for compatibility, but emit one row per high-value flight.
+- **Curb timing:** passenger curb time is effective arrival + 25 minutes.
+- **Driver timing:** leave-by is curb time minus computed drive time, falling back to 15 minutes if driver distance is unavailable.
+- **BYOD status:** parse simple board statuses like delayed, cancelled, and on time; cancelled flights are dropped.
+
+### Build Steps
+- [x] S1. Append this Sprint 87 plan before edits.
+- [x] S2. Update flight aggregation to emit individual flight rows.
+- [x] S3. Update BYOD flight status parsing.
+- [x] S4. Update the flight card for individual flight details with legacy fallback.
+- [x] S5. Validate syntax/build and run the flight simulator.
+
+### Acceptance Criteria
+- Delayed flights move based on the displayed/estimated arrival.
+- Cancelled flights are ignored.
+- Each visible flight card shows origin, status, arrival, curb, and leave-by timing.
+- Existing itinerary scoring continues to consume `flightsByHour` without a broad rename.
+
+### Anti-Goals
+- Do not add CSV reports.
+- Do not change train, bus, food, grocery, or event logic.
+- Do not automate live flight scraping beyond the current BYOD/live merge.
+## Sprint 86 - Flight-Level Demand Simulator
+
+Build a standalone simulator comparing current hourly flight buckets against a proposed individual-flight model before changing production dispatch.
+
+### Decisions
+- **No production behavior change:** add a script only.
+- **Side-by-side comparison:** same fake flights feed hourly and individual-flight models.
+- **Delay aware:** individual model uses actual/estimated arrival before scheduled arrival.
+- **Edge cases:** include delayed into window, delayed out of window, cancelled, duplicate live/BYOD, and same-hour spread.
+
+### Build Steps
+- [x] S1. Append this Sprint 86 plan before edits.
+- [x] S2. Add `scripts/simulate-flight-level.js`.
+- [x] S3. Include fake high-value hub flights and edge cases.
+- [x] S4. Print hourly bucket output and individual-flight output.
+- [x] S5. Run the simulator and verify output.
+
+### Acceptance Criteria
+- Simulator runs with `node scripts/simulate-flight-level.js`.
+- Output shows old hourly buckets and proposed flight-level rows.
+- Delays move flights into/out of the window correctly in the proposed model.
+- Cancelled and duplicate flights are dropped.
+
+### Anti-Goals
+- Do not change `aggregateArrivalsByHour()` yet.
+- Do not change UI.
+- Do not write CSV reports.
+## Sprint 83 - Morning Breakfast Food Boost
+
+Use explicit `dayparts` tags to rank breakfast/morning restaurants higher during morning food-delivery windows.
+
+### Decisions
+- **Morning core:** 6:00 AM-9:29 AM gives breakfast/morning hotspots `1.35x`.
+- **Late-morning shoulder:** 9:30 AM-10:59 AM gives breakfast/brunch/morning hotspots `1.15x`.
+- **Food only:** apply only to food hotspots, never grocery.
+- **Hotspot-level field:** attach `daypartDemandMod` in `computeHotspots()` and consume it in `yieldRateFor()`.
+
+### Build Steps
+- [x] S1. Append this Sprint 83 plan before edits.
+- [x] S2. Add a daypart demand helper.
+- [x] S3. Attach `daypartDemandMod` to food hotspots.
+- [x] S4. Apply `daypartDemandMod` in food yield scoring.
+- [x] S5. Validate route syntax and production build.
+
+### Acceptance Criteria
+- Breakfast/morning food hotspots receive `1.35x` from 6:00-9:29 AM.
+- Breakfast/brunch/morning food hotspots receive `1.15x` from 9:30-10:59 AM.
+- Non-breakfast hotspots stay at `1.0x`.
+- Grocery hotspots stay at `1.0x`.
+
+### Anti-Goals
+- Do not alter temporal food lunch/dinner modifiers.
+- Do not change UI.
+- Do not add new POIs.
+
+### Follow-Up
+- Superseded by Sprint 84: morning food now filters to breakfast/morning/brunch POIs instead of applying a broad boost.
+## Sprint 84 - Morning Breakfast-Only Food Filter
+
+Change morning food delivery selection from boosting breakfast POIs to filtering morning food candidates to breakfast/morning/brunch restaurants.
+
+### Decisions
+- **Morning window:** 6:00 AM-10:59 AM.
+- **Breakfast-only:** if any nearby food POI has `dayparts` containing `breakfast`, `morning`, or `brunch`, keep only those POIs.
+- **Fallback:** if zero breakfast-tagged POIs are nearby, keep the normal food list so dispatch does not go blank.
+- **No double count:** remove the Sprint 83 daypart boost multiplier.
+
+### Build Steps
+- [x] S1. Append this Sprint 84 plan before edits.
+- [x] S2. Add morning-window and breakfast-daypart helpers.
+- [x] S3. Apply the filter in `getStaticPoiBusinesses()` for food only.
+- [x] S4. Remove the daypart boost multiplier from scoring.
+- [x] S5. Update the food daypart validator.
+- [x] S6. Validate route syntax and production build.
+
+### Acceptance Criteria
+- Morning food candidates exclude pizza/burgers/Korean/Italian/etc. when breakfast-tagged POIs are available.
+- Morning food candidates fall back to all food only when no breakfast-tagged POIs are nearby.
+- Grocery candidates are unchanged.
+- Food scoring no longer applies `daypartDemandMod`.
+
+### Anti-Goals
+- Do not remove `dayparts` from hotspot output.
+- Do not change lunch/dinner temporal modifiers.
+- Do not change UI.
+## Sprint 85 - Breakfast Yield Floor
+
+Ensure morning breakfast-only food hotspots survive the itinerary score floor.
+
+### Decisions
+- **Breakfast floor:** food hotspots with `breakfast`, `morning`, or `brunch` dayparts use a minimum base food yield of `4`.
+- **No non-breakfast lift:** coffee/cafe categories without breakfast dayparts keep their normal low yields.
+- **No filter rollback:** keep Sprint 84's breakfast-only morning candidate filter.
+
+### Build Steps
+- [x] S1. Append this Sprint 85 plan before edits.
+- [x] S2. Add `MORNING_FOOD_MIN_YIELD = 4`.
+- [x] S3. Apply the floor in `yieldRateFor()` for breakfast-tagged food hotspots.
+- [x] S4. Extend the food daypart validator with yield-floor cases.
+- [x] S5. Validate route syntax and production build.
+
+### Acceptance Criteria
+- Breakfast-tagged coffee/cafe hotspots score from base yield `4`, not `2`.
+- Non-breakfast coffee/cafe hotspots still score from base yield `2`.
+- Breakfast-only morning filtering remains active.
+
+### Anti-Goals
+- Do not bring non-breakfast restaurants back into morning food candidates.
+- Do not change UI.
+## Sprint 82 - Breakfast Daypart Classification
+
+Add explicit breakfast/morning daypart tags to obvious restaurant POIs and preserve them through hotspot aggregation.
+
+### Decisions
+- **Optional field:** use `dayparts` on POI rows, e.g. `["breakfast", "morning"]`.
+- **Conservative tagging:** only obvious coffee, cafe, brunch, diner, breakfast, bakery, and bagel-style restaurants get tagged.
+- **Backend passthrough:** normalized POIs and computed hotspots should preserve daypart tags for future scoring/UI.
+- **No scoring change yet:** do not alter yield math or temporal modifiers in this sprint.
+
+### Build Steps
+- [x] S1. Append this Sprint 82 plan before edits.
+- [x] S2. Add `dayparts` to obvious breakfast/morning food POIs.
+- [x] S3. Preserve `dayparts` in static POI normalization.
+- [x] S4. Aggregate hotspot `dayparts` from cluster members.
+- [x] S5. Validate JSON and route syntax.
+
+### Acceptance Criteria
+- Breakfast-style POIs carry explicit `dayparts` tags.
+- Food hotspots can expose aggregate `dayparts`.
+- JSON validation passes.
+- Route syntax check passes.
+
+### Anti-Goals
+- Do not add or remove restaurants.
+- Do not change scoring weights yet.
+- Do not change UI.
 ## Sprint 81 - Weather Intelligence Upgrade
 
 Upgrade weather scoring from a simple three-state multiplier into a unit-safe, severity-aware weather analysis object.
