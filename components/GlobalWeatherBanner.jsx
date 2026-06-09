@@ -1,31 +1,45 @@
-// Sprint 46: Global Weather Banner — stateless "Frontend Decoder" for the
-// Sprint 19 predictive weather engine. Reads { weatherFoodMod, weatherRideMod }
-// directly and surfaces a high-contrast alert ONLY when the pair matches one
-// of the three known states. Anything else (including 1.0/1.0 Clear and any
-// unrecognized combo) renders nothing so the dashboard stays uncluttered.
+// Sprint 81: Reason-based weather banner. The backend now returns a richer
+// weather analysis object, while still preserving weatherFoodMod/weatherRideMod
+// for scoring. This component renders the decision context, not exact pairs.
 export function GlobalWeatherBanner({ weatherModifiers }) {
-  if (!weatherModifiers) return null;
-  const { weatherFoodMod, weatherRideMod } = weatherModifiers;
+  if (!weatherModifiers || weatherModifiers.condition === "clear") return null;
 
-  let copy = null;
-  let theme = "";
+  const {
+    condition,
+    severity,
+    reason,
+    weatherFoodMod,
+    weatherRideMod,
+    driverSupplyMod,
+    opportunityPressure,
+    startsInMinutes,
+  } = weatherModifiers;
 
-  if (weatherFoodMod === 1.5 && weatherRideMod === 0.75) {
-    copy = "⛈️ Active Storm: Food Delivery demand is surging (1.5x) while rideshare drops.";
-    theme = "bg-blue-900/50 text-blue-200 border border-blue-700";
-  } else if (weatherFoodMod === 1.0 && weatherRideMod === 1.5) {
-    copy = "🌩️ Pre-Surge: Impending rain detected. Rideshare demand is surging (1.5x).";
-    theme = "bg-indigo-900/50 text-indigo-200 border border-indigo-700";
-  } else if (weatherFoodMod === 1.25 && weatherRideMod === 0.9) {
-    copy = "☀️ Heatwave: Extreme heat active. Food Delivery demand is elevated (1.25x).";
-    theme = "bg-amber-900/50 text-amber-200 border border-amber-700";
-  } else {
-    return null;
-  }
+  const isSnowOrIce = condition === "snow" || condition === "ice" || condition === "pre_snow" || condition === "pre_ice";
+  const isHeat = condition === "heat";
+  const theme = isSnowOrIce
+    ? "bg-sky-950/60 text-sky-100 border border-sky-700"
+    : isHeat
+      ? "bg-amber-950/60 text-amber-100 border border-amber-700"
+      : "bg-blue-950/60 text-blue-100 border border-blue-700";
+
+  const foodPct = Math.round((Number(weatherFoodMod || 1) - 1) * 100);
+  const ridePct = Math.round((Number(weatherRideMod || 1) - 1) * 100);
+  const supplyPct = Math.round((1 - Number(driverSupplyMod || 1)) * 100);
+  const pressure = Number(opportunityPressure);
+  const startText =
+    Number.isFinite(startsInMinutes) && startsInMinutes > 0
+      ? ` Starts in about ${startsInMinutes} min.`
+      : "";
 
   return (
     <div className={`p-4 rounded-lg mb-2 text-sm font-semibold ${theme}`}>
-      {copy}
+      <div>{reason || `${severity || "Weather"} ${condition}`}.{startText}</div>
+      <div className="mt-1 text-xs font-medium opacity-90">
+        Food {foodPct >= 0 ? "+" : ""}{foodPct}%, rides {ridePct >= 0 ? "+" : ""}{ridePct}%,
+        driver supply {supplyPct > 0 ? `${supplyPct}% tighter` : "normal"}
+        {Number.isFinite(pressure) && pressure !== 1 ? `, pressure ${pressure}x` : ""}
+      </div>
     </div>
   );
 }

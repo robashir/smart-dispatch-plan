@@ -201,6 +201,32 @@ const HOSPITAL_SHIFTS = [
 //     (dispatchHour + 24) falls inside a window with hours > 24.
 //
 // Validated in isolation by test-academic-surge.js (23 assertions).
+// Sprint 80: State Worker Commute Taper. The state-worker pool is a
+// current-opportunity score, not cumulative riders across every slot.
+// Evening outbound is front-loaded: peak starts at 4:15 PM, then decays.
+const STATE_WORKER_EVENING_TAPER = [
+  { start: 975, end: 1005, factor: 1.0, label: "Peak Exit Wave" },       // 4:15 PM - 4:44 PM
+  { start: 1005, end: 1035, factor: 0.75, label: "Strong Exit Wave" },   // 4:45 PM - 5:14 PM
+  { start: 1035, end: 1065, factor: 0.5, label: "Fading Exit Wave" },    // 5:15 PM - 5:44 PM
+  { start: 1065, end: 1095, factor: 0.25, label: "Late Exit Tail" },     // 5:45 PM - 6:14 PM
+];
+
+export function computeStateWorkerCommuteTaper(dateObj) {
+  if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) {
+    return { factor: 0, label: null };
+  }
+  const day = dateObj.getUTCDay();
+  if (day < 1 || day > 5) return { factor: 0, label: null };
+
+  const wallMinutes = dateObj.getUTCHours() * 60 + dateObj.getUTCMinutes();
+  const activeWindow = STATE_WORKER_EVENING_TAPER.find(
+    (slot) => wallMinutes >= slot.start && wallMinutes < slot.end
+  );
+  return activeWindow
+    ? { factor: activeWindow.factor, label: activeWindow.label }
+    : { factor: 0, label: null };
+}
+
 function findActiveEvent(dispatchDate, dispatchHour, eventConfig) {
   if (!eventConfig || typeof eventConfig !== "object") return null;
   if (!(dispatchDate instanceof Date) || Number.isNaN(dispatchDate.getTime())) return null;
@@ -516,30 +542,171 @@ function computeSupplyDropMod(localStart, sunsetTimeStr) {
 // Heatwave → Default. Ported verbatim from test-weather.js after all
 // 16 scenarios PASSed (4 states, priority tiebreakers, graceful degradation,
 // and pure-multiplicative stacking against Sprint 18 temporal mods).
-export function computeWeatherModifiers(weatherArray) {
-  if (!Array.isArray(weatherArray) || weatherArray.length < 2) {
-    return { weatherFoodMod: 1.0, weatherRideMod: 1.0 };
-  }
-  const current = weatherArray[0];
-  const next = weatherArray[1];
-  if (!current || !next) {
-    return { weatherFoodMod: 1.0, weatherRideMod: 1.0 };
+const WEATHER_SEVERITY_RANK = {
+  none: 0,
+  clear: 0,
+  trace: 1,
+  light: 2,
+  moderate: 3,
+  heavy: 4,
+};
+
+const WEATHER_CODE_RAIN = new Set([51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99]);
+const WEATHER_CODE_SNOW = new Set([71, 73, 75, 77, 85, 86]);
+const WEATHER_CODE_ICE = new Set([56, 57, 66, 67]);
+
+function numericOrZero(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function classifyAmount(amountInches, thresholds) {
+  const amount = numericOrZero(amountInches);
+  if (amount >= thresholds.heavy) return "heavy";
+  if (amount >= thresholds.moderate) return "moderate";
+  if (amount >= thresholds.light) return "light";
+  if (amount > 0) return "trace";
+  return "none";
+}
+
+function classifyWeatherHour(row) {
+  if (!row || typeof row !== "object") {
+    return { condition: "clear", severity: "clear", rank: 0, precipChancePct: 0 };
   }
 
-  // 1. Active Storm
-  if (current.precipChancePct >= 50 || current.precipInches > 0.1) {
-    return { weatherFoodMod: 1.5, weatherRideMod: 0.75 };
+  const precipChancePct = numericOrZero(row.precipChancePct);
+  const weatherCode = Number(row.weatherCode);
+  const snowfallInches = numericOrZero(row.snowfallInches);
+  const precipInches = numericOrZero(row.precipInches);
+  const snowSeverity = classifyAmount(snowfallInches, {
+    light: 0.1,
+    moderate: 0.3,
+    heavy: 0.7,
+  });
+  const rainSeverity = classifyAmount(precipInches, {
+    light: 0.02,
+    moderate: 0.1,
+    heavy: 0.25,
+  });
+
+  if (snowSeverity !== "none" || WEATHER_CODE_SNOW.has(weatherCode) || WEATHER_CODE_ICE.has(weatherCode)) {
+    const severity = snowSeverity !== "none" ? snowSeverity : precipChancePct >= 50 ? "light" : "trace";
+    return {
+      condition: WEATHER_CODE_ICE.has(weatherCode) ? "ice" : "snow",
+      severity,
+      rank: WEATHER_SEVERITY_RANK[severity],
+      precipChancePct,
+    };
   }
-  // 2. Pre-Surge (1-hour lookahead — riders scramble to flee before the storm)
-  if (current.precipChancePct < 50 && next.precipChancePct >= 50) {
-    return { weatherFoodMod: 1.0, weatherRideMod: 1.5 };
+
+  if (rainSeverity !== "none" || WEATHER_CODE_RAIN.has(weatherCode)) {
+    const severity = rainSeverity !== "none" ? rainSeverity : precipChancePct >= 50 ? "light" : "trace";
+    return {
+      condition: "rain",
+      severity,
+      rank: WEATHER_SEVERITY_RANK[severity],
+      precipChancePct,
+    };
   }
-  // 3. Heatwave
-  if (current.tempF >= 90) {
-    return { weatherFoodMod: 1.25, weatherRideMod: 0.9 };
+
+  const tempF = Number(row.tempF);
+  if (Number.isFinite(tempF) && tempF >= 90) {
+    const severity = tempF >= 100 ? "heavy" : "moderate";
+    return {
+      condition: "heat",
+      severity,
+      rank: WEATHER_SEVERITY_RANK[severity],
+      precipChancePct,
+    };
   }
-  // 4. Default
-  return { weatherFoodMod: 1.0, weatherRideMod: 1.0 };
+
+  return { condition: "clear", severity: "clear", rank: 0, precipChancePct };
+}
+
+function weatherModsFor(condition, severity, isPrecipPreSurge = false) {
+  if (isPrecipPreSurge) {
+    return { weatherFoodMod: 1.05, weatherRideMod: 1.2, driverSupplyMod: 1.0 };
+  }
+
+  if (condition === "snow" || condition === "ice") {
+    if (severity === "heavy") return { weatherFoodMod: 1.8, weatherRideMod: 1.3, driverSupplyMod: 0.55 };
+    if (severity === "moderate") return { weatherFoodMod: 1.5, weatherRideMod: 1.2, driverSupplyMod: 0.7 };
+    if (severity === "light") return { weatherFoodMod: 1.25, weatherRideMod: 1.1, driverSupplyMod: 0.85 };
+    return { weatherFoodMod: 1.1, weatherRideMod: 1.05, driverSupplyMod: 0.9 };
+  }
+
+  if (condition === "rain") {
+    if (severity === "heavy") return { weatherFoodMod: 1.6, weatherRideMod: 1.2, driverSupplyMod: 0.75 };
+    if (severity === "moderate") return { weatherFoodMod: 1.35, weatherRideMod: 1.1, driverSupplyMod: 0.85 };
+    if (severity === "light") return { weatherFoodMod: 1.15, weatherRideMod: 1.05, driverSupplyMod: 0.95 };
+    return { weatherFoodMod: 1.05, weatherRideMod: 1.0, driverSupplyMod: 0.98 };
+  }
+
+  if (condition === "heat") {
+    return { weatherFoodMod: 1.15, weatherRideMod: 1.1, driverSupplyMod: 0.9 };
+  }
+
+  return { weatherFoodMod: 1.0, weatherRideMod: 1.0, driverSupplyMod: 1.0 };
+}
+
+function weatherReasonFor(condition, severity, isPrecipPreSurge = false) {
+  if (isPrecipPreSurge) return "Precipitation likely within the next hour";
+  if (condition === "rain") return `${severity[0].toUpperCase()}${severity.slice(1)} rain active`;
+  if (condition === "snow") return `${severity[0].toUpperCase()}${severity.slice(1)} snow active`;
+  if (condition === "ice") return `${severity[0].toUpperCase()}${severity.slice(1)} icy precipitation active`;
+  if (condition === "heat") return "Heat above 90F active";
+  return "Clear weather baseline";
+}
+export function computeWeatherModifiers(weatherArray) {
+  const fallback = {
+    weatherFoodMod: 1.0,
+    weatherRideMod: 1.0,
+    driverSupplyMod: 1.0,
+    opportunityPressure: 1.0,
+    condition: "clear",
+    severity: "clear",
+    reason: "Weather data unavailable or clear",
+    startsInMinutes: null,
+    peakHour: null,
+  };
+
+  if (!Array.isArray(weatherArray) || weatherArray.length === 0) return fallback;
+
+  const analyzed = weatherArray.map((row, index) => ({
+    ...classifyWeatherHour(row),
+    time: row?.time ?? null,
+    minutesFromNow: index * 60,
+  }));
+  const current = analyzed[0] || fallback;
+  const next = analyzed[1] || null;
+  const precipRows = analyzed.filter((row) =>
+    ["rain", "snow", "ice"].includes(row.condition) && row.rank > 0
+  );
+  const firstPrecip = precipRows[0] || null;
+  const peak = analyzed.reduce(
+    (best, row) => (row.rank > best.rank ? row : best),
+    analyzed[0] || { rank: 0, time: null }
+  );
+  const preSurge =
+    current.rank === 0 &&
+    next &&
+    ["rain", "snow", "ice"].includes(next.condition) &&
+    (next.rank >= 2 || next.precipChancePct >= 50);
+  const active = current.rank > 0 ? current : preSurge ? next : current;
+  const mods = weatherModsFor(active.condition, active.severity, preSurge);
+  const opportunityPressure = Number(
+    (mods.weatherRideMod / Math.max(mods.driverSupplyMod, 0.1)).toFixed(2)
+  );
+
+  return {
+    ...mods,
+    opportunityPressure,
+    condition: preSurge ? `pre_${active.condition}` : active.condition,
+    severity: active.severity,
+    reason: weatherReasonFor(active.condition, active.severity, preSurge),
+    startsInMinutes: firstPrecip ? firstPrecip.minutesFromNow : null,
+    peakHour: peak?.time ?? null,
+  };
 }
 
 // Sprint 18: Temporal Baseline Engine. Hardcoded wall-clock time blocks
@@ -601,7 +768,7 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
     url.searchParams.set("longitude", String(longitude));
     url.searchParams.set(
       "hourly",
-      "temperature_2m,precipitation_probability,precipitation,weathercode"
+      "temperature_2m,precipitation_probability,precipitation,snowfall,weathercode"
     );
     // Sprint 41: append &daily=sunset so the existing Open-Meteo call also
     // returns today's local sunset time. Reused by computeSupplyDropMod for
@@ -610,6 +777,7 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
     // Open-Meteo aligns to whole hours; request hours+1 so windowing always covers the user's full block.
     url.searchParams.set("forecast_hours", String(hours + 1));
     url.searchParams.set("temperature_unit", "fahrenheit");
+    url.searchParams.set("precipitation_unit", "inch");
     url.searchParams.set("timezone", "auto");
 
     const MAX_ATTEMPTS = 3;
@@ -634,6 +802,8 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
         const temps = data.hourly?.temperature_2m || [];
         const precipProb = data.hourly?.precipitation_probability || [];
         const precip = data.hourly?.precipitation || [];
+        const snowfall = data.hourly?.snowfall || [];
+        const weatherCodes = data.hourly?.weathercode || [];
 
         // Slice to exactly the user's selected window.
         const windowed = times.slice(0, hours + 1).map((t, i) => ({
@@ -641,6 +811,8 @@ async function fetchWeatherWindowed({ latitude, longitude, hours }) {
           tempF: temps[i],
           precipChancePct: precipProb[i],
           precipInches: precip[i],
+          snowfallInches: snowfall[i],
+          weatherCode: weatherCodes[i],
         }));
 
         // Sprint 41: extract today's sunset (daily.sunset[0]) alongside the
@@ -2342,26 +2514,29 @@ export async function POST(request) {
     // Empire State Plaza + Harriman Campus state workforce all clocking out
     // at once. egressMod 2.5 mirrors a Mega-Venue so it surfaces near the
     // top of Profitability without overriding the 3.0x hospital surge.
+    // Current score uses the taper factor as volume, so state_worker yield
+    // 100 becomes 100 / 75 / 50 / 25 expected riders by slot.
     const currentDay = localStart.getUTCDay();
-    const inStateCommuterWindow = wallMinutes >= 930 && wallMinutes <= 1020;
+    const stateWorkerTaper = computeStateWorkerCommuteTaper(localStart);
     if (
       activePlatforms.rideshare &&
       currentDay >= 1 &&
       currentDay <= 5 &&
-      inStateCommuterWindow
+      stateWorkerTaper.factor > 0
     ) {
+      const displayMod = Number((1 + 1.5 * stateWorkerTaper.factor).toFixed(2));
       structuredEvents.push({
         type: "event",
         location: "Empire State Plaza & Harriman Campus",
-        volume: 1,
-        egressMod: 2.5,
-        categories: ["State Worker Commute"],
+        volume: stateWorkerTaper.factor,
+        egressMod: displayMod,
+        categories: ["State Worker Commute", stateWorkerTaper.label],
         // Sprint 37: ESP coords for the Mapbox radar pin.
         lat: ESP_COORDS.lat,
         lng: ESP_COORDS.lng,
       });
       console.log(
-        "STATE COMMUTER INJECTED: Empire State Plaza & Harriman Campus | egressMod 2.5x"
+        `STATE COMMUTER INJECTED: Empire State Plaza & Harriman Campus | factor ${stateWorkerTaper.factor} | expected riders ${Math.round(stateWorkerTaper.factor * YIELD_RATES.state_worker)}`
       );
     }
 

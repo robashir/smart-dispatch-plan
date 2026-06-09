@@ -3537,6 +3537,63 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 81 - Weather Intelligence Upgrade
+
+Upgrade weather scoring from a simple three-state multiplier into a unit-safe, severity-aware weather analysis object.
+
+### Decisions
+- **Unit safety:** request precipitation in inches and add snowfall to the Open-Meteo hourly payload.
+- **Richer output:** keep `weatherFoodMod` and `weatherRideMod` for existing scoring, and add `driverSupplyMod`, `opportunityPressure`, `condition`, `severity`, `reason`, `startsInMinutes`, and `peakHour`.
+- **Severity tiers:** classify rain and snow by amount, with weather code as a backup signal.
+- **Window awareness:** current hour affects scoring now; next hour can trigger pre-positioning; the full selected window supplies advisory `startsInMinutes` and `peakHour`.
+- **Supply context:** return driver supply pressure as context first; do not multiply it into ranking yet.
+
+### Build Steps
+- [x] S1. Append this Sprint 81 plan before edits.
+- [x] S2. Add snowfall and explicit precipitation units to the Open-Meteo request.
+- [x] S3. Replace `computeWeatherModifiers()` with severity-aware weather analysis.
+- [x] S4. Update the weather banner to render reason-based weather context.
+- [x] S5. Add weather validation coverage for rain, snow, heat, pre-surge, and missing data.
+- [x] S6. Run route syntax, weather tests, and production build.
+
+### Acceptance Criteria
+- Weather payload rows include `snowfallInches` and explicit precipitation units.
+- Existing score math still reads `weatherFoodMod` and `weatherRideMod`.
+- UI banner is driven by `condition`/`severity`/`reason`, not exact numeric pairs.
+- Tests cover clear, pre-rain, rain severity, snow severity, heat, and missing data.
+
+### Anti-Goals
+- Do not change temporal modifiers.
+- Do not multiply driver supply into final ranking yet.
+- Do not add another weather API.
+## Sprint 80 - Taper State Worker Commute Scoring
+
+Replace the flat weekday state-worker evening commute block with a current-opportunity taper.
+
+### Decisions
+- **Score meaning:** the base 100 state-worker rides is a current opportunity score, not cumulative rides across all slots.
+- **Evening shape:** front-loaded taper from 4:15 PM to 6:15 PM: 1.00, 0.75, 0.50, 0.25, then 0.
+- **Morning shape:** leave morning inbound available as a centered taper for future use, but do not inject morning state-worker demand yet.
+- **No cumulative addition:** never add 100 + 75 + 50 + 25; dispatch should only score the current wall-clock slot.
+
+### Build Steps
+- [x] S1. Append this Sprint 80 plan before edits.
+- [x] S2. Add a state-worker taper helper in `app/api/dispatch/route.js`.
+- [x] S3. Replace the flat state commuter window with the tapered score.
+- [x] S4. Add/update a local validator for taper boundary cases.
+- [x] S5. Run validation and route syntax checks.
+
+### Acceptance Criteria
+- Weekday 4:15-4:44 PM scores around 100 expected riders.
+- Weekday 4:45-5:14 PM scores around 75 expected riders.
+- Weekday 5:15-5:44 PM scores around 50 expected riders.
+- Weekday 5:45-6:14 PM scores around 25 expected riders.
+- Weekday 6:15 PM and later produces no state-worker event.
+
+### Anti-Goals
+- Do not change food/grocery scoring.
+- Do not change hospital, train, bus, flight, or event injectors.
+- Do not add a UI control for this.
 ## Sprint 79 - Correct Promoted DoorDash Batch 1 POIs
 
 Update the first promoted DoorDash merchant batch with the user's corrected coordinates, addresses, prices, and categories.
