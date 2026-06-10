@@ -21,10 +21,8 @@ export function TopPickBanner({ data }) {
     }
   }
   const opportunityLine =
-    Number.isFinite(data.opportunityScore) &&
-    Number.isFinite(data.densityScore) &&
-    data.opportunityScore > data.densityScore * 1.1
-      ? `Opportunity Score: ${Math.round(data.opportunityScore)}`
+    Number.isFinite(data.opportunityScore)
+      ? `Opportunity Now: ${Math.round(data.opportunityScore)}`
       : null;
   const supplyPressure = Number(data.driverSupplyPressureMod);
   const supplyLine =

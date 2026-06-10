@@ -14,10 +14,8 @@ function formatExpectedDemand(score, type) {
 
 function formatOpportunity(data) {
   const opportunity = Number(data?.opportunityScore);
-  const demand = Number(data?.densityScore);
-  if (!Number.isFinite(opportunity) || !Number.isFinite(demand)) return null;
-  if (opportunity <= demand * 1.1) return null;
-  return `Opportunity Score: ${Math.round(opportunity)}`;
+  if (!Number.isFinite(opportunity)) return null;
+  return `Opportunity Now: ${Math.round(opportunity)}`;
 }
 
 function formatDriverSupply(data) {

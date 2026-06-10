@@ -86,12 +86,19 @@ function foodYieldForHotspot(item, localStart = null) {
   return adjustedBase * (Number(item.populationDensityMod) || 1);
 }
 
+function isByodTrainEvent(item) {
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  return /BYOD Train/i.test(catsAll);
+}
+
 function itineraryScoreFloorFor(item, localStart = null) {
+  if (isByodTrainEvent(item)) return 4;
   if (item?.type === "food" && isMorningYieldWindow(localStart)) return 4;
   return 10;
 }
 
 function shouldApplyDeadheadRoiFilter(item) {
+  if (isByodTrainEvent(item)) return false;
   return item?.type !== "food" && item?.type !== "grocery";
 }
 
@@ -178,6 +185,18 @@ const floorCases = [
     date: mk(8, 0),
     expect: 10,
   },
+  {
+    name: "BYOD train floor is four",
+    item: { type: "event", categories: ["BYOD Train", "Inbound", "On Time"] },
+    date: mk(14, 0),
+    expect: 4,
+  },
+  {
+    name: "Generic event floor stays ten",
+    item: { type: "event", categories: ["Local Anchor"] },
+    date: mk(14, 0),
+    expect: 10,
+  },
 ];
 
 const roiFilterCases = [
@@ -200,6 +219,11 @@ const roiFilterCases = [
     name: "Event keeps rideshare ROI filter",
     item: { type: "event" },
     expect: true,
+  },
+  {
+    name: "BYOD train bypasses rideshare ROI filter",
+    item: { type: "event", categories: ["BYOD Train", "Inbound", "Almost Full"] },
+    expect: false,
   },
 ];
 

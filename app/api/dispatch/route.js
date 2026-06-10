@@ -2197,12 +2197,19 @@ function opportunityScoreFor(demandScore, driverSupplyPressureMod = 1.0) {
   return demandScore * pressure;
 }
 
+function isByodTrainEvent(item) {
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  return /BYOD Train/i.test(catsAll);
+}
+
 function itineraryScoreFloorFor(item, localStart = null) {
+  if (isByodTrainEvent(item)) return 4.0;
   if (item?.type === "food" && isMorningYieldWindow(localStart)) return 4.0;
   return 10.0;
 }
 
 function shouldApplyDeadheadRoiFilter(item) {
+  if (isByodTrainEvent(item)) return false;
   return item?.type !== "food" && item?.type !== "grocery";
 }
 
@@ -2248,18 +2255,13 @@ function buildItinerary(
       ? payload.driverSupplyPressureMod
       : 1.0;
 
-  // Sprint 32.1 + Sprint 48: wrap densityScore with the Time-Decay multiplier.
-  // Applied at every call site below (strict filter + profitability sort +
-  // hybrid in-group sort) so a 2-hours-out surge can no longer outrank a
-  // "now" surge.
-  const decayed = (it) =>
-    densityScore(it, finalRideMod, finalFoodMod, currentLocalStart) *
-    computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
+  const expectedDemand = (it) =>
+    densityScore(it, finalRideMod, finalFoodMod, currentLocalStart);
+  const timeAdjustedDemand = (it) =>
+    expectedDemand(it) * computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
   const opportunity = (it) =>
-    opportunityScoreFor(
-      Number(it?.densityScore) || decayed(it),
-      driverSupplyPressureMod
-    );
+    Number(it?.opportunityScore) ||
+    opportunityScoreFor(timeAdjustedDemand(it), driverSupplyPressureMod);
 
   // Sprint 27 + Sprint 48: strict density filter. With the Normalized
   // Density Engine the score lives on a 0-100+ percent-of-capacity scale,
@@ -2290,8 +2292,11 @@ function buildItinerary(
       // expectedYield stays — same value as `volume × yieldRate`, useful
       // for UI display alongside the headline densityScore.
       const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
-      const score = decayed(it);
-      const opportunityScore = opportunityScoreFor(score, driverSupplyPressureMod);
+      const score = expectedDemand(it);
+      const opportunityScore = opportunityScoreFor(
+        timeAdjustedDemand(it),
+        driverSupplyPressureMod
+      );
       return {
         ...it,
         expectedYield,
@@ -2310,7 +2315,7 @@ function buildItinerary(
         it.type === "event" ||
         it.type === "ride";
       if (!scoreable) return true;
-      return decayed(it) >= itineraryScoreFloorFor(it, currentLocalStart);
+      return expectedDemand(it) >= itineraryScoreFloorFor(it, currentLocalStart);
     })
     // Sprint 45: Mathematical ROI Filter. After the Sprint 27 strict <1.0
     // cutoff, compute haversine distance from driver → each scoreable item

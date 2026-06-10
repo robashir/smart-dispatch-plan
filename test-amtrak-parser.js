@@ -363,6 +363,95 @@ assert("Private-room sold out is parsed separately", parseAmtrakText(PRIVATE_ROO
   privateRooms: { status: "soldOut" },
 });
 
+const JUNE_10_SAMPLE = `Departure
+Wednesday, June 10
+New York, NY to Albany-Rensselaer, NY
+NYP
+
+ALB
+
+Compare Fare Types
+
+NYP to ALB
+Lowest Fare
+
+291
+Ethan Allen Express
+DEPARTS
+2:19
+p
+
+2h 30m
+ARRIVES
+4:49
+p
+Trip Details
+
+Coach
+
+from
+
+$
+38
+Only 1 seat left
+
+
+Business
+
+Sold Out
+
+Private Rooms
+
+Not Offered
+NYP to ALB
+
+235
+Empire Service
+DEPARTS
+3:15
+p
+
+2h 32m
+ARRIVES
+5:47
+p
+Trip Details
+
+Coach
+
+from
+
+$
+91
+
+Business
+
+Not Offered
+
+Private Rooms
+
+Not Offered`;
+
+const june10Parsed = parseAmtrakText(JUNE_10_SAMPLE);
+assert(
+  "June 10 paste parses first two inbound arrivals",
+  june10Parsed.map(({ trainNumber, status, time, arrivalTime }) => ({
+    trainNumber,
+    status,
+    time,
+    arrivalTime,
+  })),
+  [
+    { trainNumber: "291", status: "Sold Out", time: "4:49 PM", arrivalTime: "4:49p" },
+    { trainNumber: "235", status: "On Time", time: "5:47 PM", arrivalTime: "5:47p" },
+  ]
+);
+assert("June 10 train 291 keeps coach/business/private availability", june10Parsed[0].availability, {
+  coach: { status: "almostFull", remaining: 1 },
+  business: { status: "soldOut" },
+  privateRooms: { status: "notOffered" },
+});
+
 const failed = results.filter((r) => !r.pass);
 if (failed.length > 0) {
   console.error(`\n${failed.length} assertion(s) failed.`);

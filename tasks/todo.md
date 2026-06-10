@@ -3537,6 +3537,117 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 100 - Expected Demand vs Opportunity Now
+
+Split true demand from urgency-adjusted opportunity so displayed rider counts are not reduced by time decay.
+
+### Decisions
+- **Expected Demand:** `densityScore` stores true estimated demand before time decay and before driver-supply pressure.
+- **Opportunity Now:** `opportunityScore` stores expected demand multiplied by time decay and driver supply pressure.
+- **Sorting/top pick:** use `opportunityScore` for actionability.
+- **Golden Half-Hour:** sum `densityScore` so it reports the highest true-demand 30-minute window.
+- **Filtering:** use expected demand floors, not time-decayed floors.
+
+### Build Steps
+- [x] S1. Append this Sprint 100 plan before edits.
+- [x] S2. Update backend itinerary scoring fields.
+- [x] S3. Update sorting/top-pick to use `opportunityScore`.
+- [x] S4. Update card/banner labels to `Opportunity Now`.
+- [x] S5. Validate focused tests and production build.
+
+### Acceptance Criteria
+- A far-out BYOD train can show `Expected Riders: 15` and `Opportunity Now: 6`.
+- Golden Half-Hour expected demand sums true demand, not time-decayed demand.
+- Sorting and top pick remain urgency-aware via `Opportunity Now`.
+- Driver supply remains separate from expected demand.
+
+### Anti-Goals
+- Do not change fare-class train yield values.
+- Do not change BYOD train time-window eligibility.
+- Do not change food/grocery POI data.
+
+## Sprint 99 - BYOD Train Time-Decay Visibility
+
+Fix saved BYOD trains disappearing from the 4-hour dispatch plan when their realistic expected-rider score is decayed below the global itinerary floor.
+
+### Decisions
+- **BYOD train floor:** driver-uploaded train events pass itinerary filtering at score >= 4.
+- **No demand inflation:** keep expected-rider scoring and time-decayed display score unchanged.
+- **Narrow scope:** only BYOD Train events get the lower floor; live trains, flights, local anchors, hospitals, and generic events keep the existing floor.
+- **Time window still owns eligibility:** trains outside the selected dispatch window remain hidden.
+
+### Build Steps
+- [x] S1. Append this Sprint 99 plan before edits.
+- [x] S2. Add BYOD Train detection helper.
+- [x] S3. Lower itinerary floor for BYOD Train events only.
+- [x] S4. Extend validator coverage.
+- [x] S5. Validate parser, food/daypart validator, route syntax, and production build.
+
+### Acceptance Criteria
+- BYOD Train with decayed score 4 survives itinerary filtering.
+- Generic train/event with decayed score 4 still uses existing behavior unless explicitly BYOD Train.
+- BYOD Train expected-rider scoring remains fare-class based.
+
+### Anti-Goals
+- Do not change live Amtraker bucket scoring.
+- Do not change train time-window gates.
+- Do not inflate train demand numbers.
+
+## Sprint 98 - BYOD Train Save Visibility
+
+Prevent silent zero-train saves from making the dispatch plan look blank, and surface saved inbound/outbound train counts in the BYOD panel.
+
+### Decisions
+- **Do not overwrite with zero parsed trains:** if Amtrak parsing returns no trains, mark save as failed and keep the previous saved train config.
+- **Mode switch auto-save follows same guard:** changing BYOD mode with unparseable Amtrak text should not wipe saved trains.
+- **Show saved counts:** display current saved inbound/outbound train counts for today's local date.
+- **Keep bus/flight raw saves unchanged:** this guard applies only to Amtrak parsed train saves.
+
+### Build Steps
+- [x] S1. Append this Sprint 98 plan before edits.
+- [x] S2. Guard explicit Amtrak save against zero parsed trains.
+- [x] S3. Guard mode-switch auto-save against zero parsed trains.
+- [x] S4. Render today's saved inbound/outbound train counts.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- Saving Amtrak text that parses zero trains does not overwrite existing saved trains.
+- The BYOD panel shows whether inbound/outbound trains are currently saved for today.
+- Bus and flight save behavior remains unchanged.
+
+### Anti-Goals
+- Do not change train scoring.
+- Do not change train time-window logic.
+- Do not change the BYOD textarea modes.
+
+## Sprint 97 - BYOD Train ROI Visibility
+
+Fix driver-uploaded Amtrak trains disappearing from the 4-hour dispatch plan after train yields were recalibrated downward and fare-class scoring made expected-rider counts more realistic.
+
+### Decisions
+- **BYOD trains are intentional inputs:** if the driver pasted and saved a train, and it passes the inbound/outbound time gate, it should be visible.
+- **Do not inflate demand:** keep the fare-class expected-rider scoring unchanged.
+- **Bypass only final ROI pruning:** skip the generic deadhead ROI filter for BYOD Train events so realistic train counts are not hidden.
+- **Keep time gates:** trains outside the dispatch window still do not render.
+
+### Build Steps
+- [x] S1. Append this Sprint 97 plan before edits.
+- [x] S2. Extend ROI filter helper to bypass BYOD Train events.
+- [x] S3. Add validator coverage for BYOD Train ROI visibility.
+- [x] S4. Add parser coverage for the user's June 10 train paste.
+- [x] S5. Validate parser, fare-yield, route syntax, and production build.
+
+### Acceptance Criteria
+- User-pasted NYP -> ALB June 10 sample parses train 291 and 235.
+- BYOD Train events are not dropped by deadhead ROI.
+- Non-BYOD event/ride/train items keep existing ROI behavior.
+- BYOD Train expected-rider scoring remains category-aware.
+
+### Anti-Goals
+- Do not change live Amtraker bucket scoring.
+- Do not raise train expected-rider yields.
+- Do not change the inbound/outbound mode UI.
+
 ## Sprint 96 - Amtrak Fare-Class Demand Scoring
 
 Distinguish BYOD Amtrak ticket availability by fare class so coach scarcity drives the strongest demand signal, business adds a smaller bonus, and private rooms add only a small long-distance signal.

@@ -129,13 +129,8 @@ function parseTimeLabel(label) {
   return h * 60 + min;
 }
 
-// Sprint 48: Normalized Density Engine. The backend already stamps
-// `densityScore` (decayed) onto every scoreable itinerary item, so the
-// banner just reads that field instead of re-running the old multiplicative
-// surgeScore math. Non-scoreable rows (ripples) carry no densityScore and
-// resolve to 0 naturally via the Number() coerce in the reduce.
-function readDensityScore(item) {
-  return Number(item.densityScore) || 0;
+function readOpportunityScore(item) {
+  return Number(item.opportunityScore) || Number(item.densityScore) || 0;
 }
 
 export default function Home() {
@@ -414,6 +409,9 @@ export default function Home() {
         return;
       }
       const trains = parseAmtrakText(trainRawText, direction);
+      if (trains.length === 0) {
+        throw new Error("No Amtrak trains parsed from pasted text.");
+      }
       const payload = { savedDate: todayLocalISO(), trains };
       const key = direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
       localStorage.setItem(key, JSON.stringify(payload));
@@ -452,6 +450,9 @@ export default function Home() {
           setFlightConfigInbound(payload);
         } else {
           const trains = parseAmtrakText(text, direction);
+          if (trains.length === 0) {
+            throw new Error("No Amtrak trains parsed from pasted text.");
+          }
           const payload = { savedDate: today, trains };
           const key =
             direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
@@ -614,6 +615,15 @@ export default function Home() {
       : "What's happening?";
 
   const isBusy = status === "locating" || status === "dispatching";
+  const todayForSavedCounts = todayLocalISO();
+  const savedInboundTrainCount =
+    trainConfigInbound?.savedDate === todayForSavedCounts && Array.isArray(trainConfigInbound.trains)
+      ? trainConfigInbound.trains.length
+      : 0;
+  const savedOutboundTrainCount =
+    trainConfigOutbound?.savedDate === todayForSavedCounts && Array.isArray(trainConfigOutbound.trains)
+      ? trainConfigOutbound.trains.length
+      : 0;
 
   // Sprint 33 + Sprint 48: global Top Pick. Run BEFORE the tab filter so
   // the banner can name a winner in the inactive tab if it deserves the
@@ -643,7 +653,7 @@ export default function Home() {
     })
     .reduce(
       (max, item) =>
-        readDensityScore(item) > readDensityScore(max || {}) ? item : max,
+        readOpportunityScore(item) > readOpportunityScore(max || {}) ? item : max,
       null
     );
 
@@ -789,6 +799,10 @@ export default function Home() {
                 per mile. Range slider 0.00–2.00 in $0.05 steps so EV /
                 Sedan / SUV defaults all snap cleanly. Persisted to
                 localStorage on every change. */}
+            <div className="text-xs text-neutral-500">
+              Saved today: Inbound {savedInboundTrainCount} | Outbound {savedOutboundTrainCount}
+            </div>
+
             <div className="flex flex-col gap-2 mt-3">
               <label className="text-sm text-neutral-400">
                 Vehicle Cost Per Mile (${costPerMile.toFixed(2)})
