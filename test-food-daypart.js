@@ -86,6 +86,11 @@ function foodYieldForHotspot(item, localStart = null) {
   return adjustedBase * (Number(item.populationDensityMod) || 1);
 }
 
+function itineraryScoreFloorFor(item, localStart = null) {
+  if (item?.type === "food" && isMorningYieldWindow(localStart)) return 4;
+  return 10;
+}
+
 function mk(hour, minute = 0) {
   return new Date(Date.UTC(2026, 5, 9, hour, minute));
 }
@@ -144,6 +149,33 @@ const yieldCases = [
   },
 ];
 
+const floorCases = [
+  {
+    name: "Morning food floor is four",
+    item: { type: "food" },
+    date: mk(8, 0),
+    expect: 4,
+  },
+  {
+    name: "Lunch food floor stays ten",
+    item: { type: "food" },
+    date: mk(12, 0),
+    expect: 10,
+  },
+  {
+    name: "Morning grocery floor stays ten",
+    item: { type: "grocery" },
+    date: mk(8, 0),
+    expect: 10,
+  },
+  {
+    name: "Morning train floor stays ten",
+    item: { type: "train" },
+    date: mk(8, 0),
+    expect: 10,
+  },
+];
+
 let allPass = true;
 console.log("=== Sprint 84 Food Daypart Filter - Test Run ===\n");
 for (const c of cases) {
@@ -154,6 +186,12 @@ for (const c of cases) {
 }
 for (const c of yieldCases) {
   const got = foodYieldForHotspot(c.item, c.date);
+  const ok = got === c.expect;
+  if (!ok) allPass = false;
+  console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${c.expect}\n  got      ${got}`);
+}
+for (const c of floorCases) {
+  const got = itineraryScoreFloorFor(c.item, c.date);
   const ok = got === c.expect;
   if (!ok) allPass = false;
   console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${c.expect}\n  got      ${got}`);

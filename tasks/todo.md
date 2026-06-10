@@ -3537,6 +3537,33 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 93 - Morning Food Itinerary Floor
+
+Lower the itinerary score floor for morning food delivery hotspots so breakfast/morning places are not hidden just because coffee/cafe clusters score below the global transit/event floor.
+
+### Decisions
+- **Morning food floor:** food items during 6:00 AM-10:59 AM pass at score >= 4.
+- **Everything else unchanged:** lunch/dinner/late-night food, grocery, transit, events, and ride hubs keep the existing score >= 10 floor.
+- **No scoring inflation:** do not raise expected deliveries; only change the visibility floor.
+
+### Build Steps
+- [x] S1. Append this Sprint 93 plan before edits.
+- [x] S2. Add item-specific itinerary floor helper.
+- [x] S3. Apply morning food floor in `buildItinerary()`.
+- [x] S4. Extend food daypart validator.
+- [x] S5. Validate route syntax, validator, and production build.
+
+### Acceptance Criteria
+- Morning food hotspot with score 4 survives itinerary filtering.
+- Morning food hotspot below 4 is still filtered.
+- Non-morning food below 10 is still filtered.
+- Non-food items keep the 10 floor.
+
+### Anti-Goals
+- Do not change POI dictionary data.
+- Do not change food yield values.
+- Do not change platform defaults.
+
 ## Sprint 92 - BYOD Train Yield Recalibration
 
 Recalibrate driver-pasted train events so one inbound train does not inherit the generic event yield of 50, and make driver supply status visible even when normal.

@@ -2059,6 +2059,11 @@ function opportunityScoreFor(demandScore, driverSupplyPressureMod = 1.0) {
   return demandScore * pressure;
 }
 
+function itineraryScoreFloorFor(item, localStart = null) {
+  if (item?.type === "food" && isMorningYieldWindow(localStart)) return 4.0;
+  return 10.0;
+}
+
 // Sprint 23: deterministic router. Flattens flights + trains + hotspots
 // into a single sorted array. Three driver-selectable strategies:
 //   chronological — ascending by time; no-time items (hotspots) sort to top
@@ -2151,7 +2156,7 @@ function buildItinerary(
         densityScore: score,
         opportunityScore,
         driverSupplyPressureMod,
-        isWeak: score < 10.0,
+        isWeak: score < itineraryScoreFloorFor(it, currentLocalStart),
       };
     })
     .filter((it) => {
@@ -2163,7 +2168,7 @@ function buildItinerary(
         it.type === "event" ||
         it.type === "ride";
       if (!scoreable) return true;
-      return decayed(it) >= 10.0;
+      return decayed(it) >= itineraryScoreFloorFor(it, currentLocalStart);
     })
     // Sprint 45: Mathematical ROI Filter. After the Sprint 27 strict <1.0
     // cutoff, compute haversine distance from driver → each scoreable item
