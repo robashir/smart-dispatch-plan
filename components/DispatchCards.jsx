@@ -12,8 +12,17 @@ function formatExpectedDemand(score, type) {
   return `Expected Riders: ${Math.round(score)}`;
 }
 
+function formatOpportunity(data) {
+  const opportunity = Number(data?.opportunityScore);
+  const demand = Number(data?.densityScore);
+  if (!Number.isFinite(opportunity) || !Number.isFinite(demand)) return null;
+  if (opportunity <= demand * 1.1) return null;
+  return `Opportunity Score: ${Math.round(opportunity)}`;
+}
+
 export function FlightCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
+  const opportunity = formatOpportunity(data);
   // Sprint 68: prefer human-readable city names (originLabels) when the
   // backend supplied them; fall back to the raw IATA list for older payloads.
   const labels =
@@ -51,12 +60,14 @@ export function FlightCard({ data }) {
         </>
       )}
       {density && <div className="text-sm font-semibold text-blue-300 mt-2">{density}</div>}
+      {opportunity && <div className="text-sm font-semibold text-blue-200 mt-1">{opportunity}</div>}
     </div>
   );
 }
 
 export function TrainCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
+  const opportunity = formatOpportunity(data);
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-emerald-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-emerald-400 mb-1">Train Surge</div>
@@ -69,6 +80,7 @@ export function TrainCard({ data }) {
         <div className="text-sm text-neutral-400 mt-1">{data.relativeTime}</div>
       )}
       {density && <div className="text-sm font-semibold text-emerald-300 mt-2">{density}</div>}
+      {opportunity && <div className="text-sm font-semibold text-emerald-200 mt-1">{opportunity}</div>}
     </div>
   );
 }
@@ -78,11 +90,17 @@ export function TrainCard({ data }) {
 // reads distinct from FlightCard (blue) / TrainCard (emerald) / HotspotCard (rose).
 export function EventCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
+  const opportunity = formatOpportunity(data);
+  const isLastCall =
+    Array.isArray(data.categories) &&
+    data.categories.some((c) => /last call|nightlife/i.test(String(c)));
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">Event Egress</div>
       <div className="text-2xl font-bold mb-2">{data.location}</div>
-      <div className="text-lg">{data.egressMod}x Surge Active</div>
+      <div className="text-lg">
+        {isLastCall ? `${data.egressMod}x Demand Window` : `${data.egressMod}x Egress Demand`}
+      </div>
       {/* Sprint 54: BYOD-parsed trains carry the raw "5:47p" arrivalTime
           field. Other event types (Hospital / State Commuter / Holiday /
           Crossgates) omit it, so the line is conditional. */}
@@ -103,12 +121,14 @@ export function EventCard({ data }) {
         ))}
       </div>
       {density && <div className="text-sm font-semibold text-purple-300 mt-2">{density}</div>}
+      {opportunity && <div className="text-sm font-semibold text-purple-200 mt-1">{opportunity}</div>}
     </div>
   );
 }
 
 export function HotspotCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
+  const opportunity = formatOpportunity(data);
   const nearbyNames = Array.isArray(data.nearbyNames) ? data.nearbyNames.filter(Boolean) : [];
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-rose-400 p-4`}>
@@ -132,6 +152,7 @@ export function HotspotCard({ data }) {
         ))}
       </div>
       {density && <div className="text-sm font-semibold text-rose-300 mt-2">{density}</div>}
+      {opportunity && <div className="text-sm font-semibold text-rose-200 mt-1">{opportunity}</div>}
     </div>
   );
 }

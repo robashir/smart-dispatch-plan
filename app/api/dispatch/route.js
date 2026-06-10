@@ -302,7 +302,7 @@ const YIELD_RATES = {
   event: 50,
   mega_event: 500,
   hospital: 30,
-  nightlife: 25,
+  nightlife: 5,
   state_worker: 100,
   bus: 5,
   residential_node: 5,
@@ -2041,6 +2041,13 @@ export function densityScore(item, finalRideMod, finalFoodMod, localStart = null
   return (Number(item.volume) || 0) * yieldRate * mod;
 }
 
+function opportunityScoreFor(demandScore, driverSupplyPressureMod = 1.0) {
+  const pressure = Number(driverSupplyPressureMod);
+  if (!Number.isFinite(demandScore) || demandScore <= 0) return 0;
+  if (!Number.isFinite(pressure) || pressure <= 1.0) return demandScore;
+  return demandScore * pressure;
+}
+
 // Sprint 23: deterministic router. Flattens flights + trains + hotspots
 // into a single sorted array. Three driver-selectable strategies:
 //   chronological — ascending by time; no-time items (hotspots) sort to top
@@ -2078,6 +2085,10 @@ function buildItinerary(
 
   const finalRideMod = Number.isFinite(payload?.finalRideMod) ? payload.finalRideMod : 1.0;
   const finalFoodMod = Number.isFinite(payload?.finalFoodMod) ? payload.finalFoodMod : 1.0;
+  const driverSupplyPressureMod =
+    Number.isFinite(payload?.driverSupplyPressureMod) && payload.driverSupplyPressureMod > 0
+      ? payload.driverSupplyPressureMod
+      : 1.0;
 
   // Sprint 32.1 + Sprint 48: wrap densityScore with the Time-Decay multiplier.
   // Applied at every call site below (strict filter + profitability sort +
@@ -2086,6 +2097,11 @@ function buildItinerary(
   const decayed = (it) =>
     densityScore(it, finalRideMod, finalFoodMod, currentLocalStart) *
     computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
+  const opportunity = (it) =>
+    opportunityScoreFor(
+      Number(it?.densityScore) || decayed(it),
+      driverSupplyPressureMod
+    );
 
   // Sprint 27 + Sprint 48: strict density filter. With the Normalized
   // Density Engine the score lives on a 0-100+ percent-of-capacity scale,
@@ -2117,10 +2133,13 @@ function buildItinerary(
       // for UI display alongside the headline densityScore.
       const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
       const score = decayed(it);
+      const opportunityScore = opportunityScoreFor(score, driverSupplyPressureMod);
       return {
         ...it,
         expectedYield,
         densityScore: score,
+        opportunityScore,
+        driverSupplyPressureMod,
         isWeak: score < 10.0,
       };
     })
@@ -2160,7 +2179,7 @@ function buildItinerary(
       }
       const distanceMiles = haversineMiles(driverLat, driverLng, it.lat, it.lng);
       const deadheadCost = distanceMiles * costPerMile;
-      const expectedValue = decayed(it) * DOLLAR_PER_SURGE_POINT;
+      const expectedValue = opportunity(it) * DOLLAR_PER_SURGE_POINT;
       if (deadheadCost > expectedValue) {
         console.log(
           `ROI FILTER DROPPED: ${it.location || it.hourBucket || it.type} | Cost: $${deadheadCost.toFixed(2)} | Value: $${expectedValue.toFixed(2)}`
@@ -2171,7 +2190,7 @@ function buildItinerary(
     });
 
   if (strategy === "profitability") {
-    return [...items].sort((a, b) => decayed(b) - decayed(a));
+    return [...items].sort((a, b) => opportunity(b) - opportunity(a));
   }
 
   if (strategy === "chronological") {
@@ -2194,7 +2213,7 @@ function buildItinerary(
     const arr = groups
       .get(key)
       .slice()
-      .sort((a, b) => decayed(b) - decayed(a));
+      .sort((a, b) => opportunity(b) - opportunity(a));
     out.push(...arr);
   }
   return out;
@@ -2541,8 +2560,10 @@ export async function POST(request) {
       const reason = ISLAMIC_HOLIDAYS.includes(ymd) ? "Eid / Eid Eve" : "Ramadan Iftar window";
       console.log(`HOLIDAY/IFTAR SUPPLY DROP ACTIVE: ${reason} | Mod: ${supplyDropMod}x`);
     }
-    finalRideMod = finalRideMod * supplyDropMod;
-    finalFoodMod = finalFoodMod * supplyDropMod;
+    const weatherSupplyPressureMod = Number(
+      (1 / Math.max(Number(weatherModifiers.driverSupplyMod) || 1, 0.1)).toFixed(2)
+    );
+    const driverSupplyPressureMod = Math.max(1.0, weatherSupplyPressureMod, supplyDropMod);
 
     // Sprint 57: Unified Event Database. The Sprint 49 finalRideMod boost
     // tied to the BYOD activeHoliday payload has been removed. Holiday +
@@ -2959,10 +2980,10 @@ export async function POST(request) {
       routingStrategy,
       temporalModifiers,
       weatherModifiers,
-      // Sprint 41: surface the universal map-wide supply-drop multiplier so
-      // the terminal log makes it obvious why finalRideMod / finalFoodMod
-      // are inflated on Eid / Iftar days.
+      // Sprint 41 + 91: surface supply pressure separately from demand so
+      // the terminal log explains opportunity ranking without fake riders.
       supplyDropMod,
+      driverSupplyPressureMod,
       finalRideMod,
       finalFoodMod,
       events: structuredEvents,

@@ -3537,6 +3537,35 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 91 - Separate Driver Shortage From Expected Riders
+
+Prevent small last-call venues from displaying unrealistic expected-rider counts, and make driver shortage affect opportunity/ranking separately from demand.
+
+### Decisions
+- **Nightlife recalibration:** lower single-bar last-call yield from 25 to 5 so a normal small bar no longer shows 88 expected riders.
+- **Separate fields:** keep `densityScore` as expected demand; add `opportunityScore` for ranking/ROI when driver supply is tight.
+- **Supply pressure:** derive `driverSupplyPressureMod` from weather driver-supply scarcity and holiday/iftar supply-drop signals.
+- **UI wording:** last-call cards should say demand window, not live Uber surge.
+
+### Build Steps
+- [x] S1. Append this Sprint 91 plan before edits.
+- [x] S2. Lower nightlife yield and update stale comments.
+- [x] S3. Add `driverSupplyPressureMod` to the merged payload.
+- [x] S4. Stamp and sort by `opportunityScore` while displaying expected demand separately.
+- [x] S5. Update event card wording and optional opportunity line.
+- [x] S6. Validate syntax and production build.
+
+### Acceptance Criteria
+- Single last-call venue expected riders drops from 88 to about 18 at 3.5x.
+- Driver shortage can raise opportunity/ranking without inflating expected riders.
+- Last-call cards no longer imply live Uber surge.
+- Build passes.
+
+### Anti-Goals
+- Do not integrate live Uber map data.
+- Do not change event injection windows.
+- Do not change flight/train/food POI dictionaries.
+
 ## Sprint 90 - Hotspot Nearby Merchant Names
 
 Show up to three additional merchant names inside each food/grocery hotspot card so the driver can see what else is in the cluster beyond the anchor.

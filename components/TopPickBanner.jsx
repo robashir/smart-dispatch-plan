@@ -20,6 +20,12 @@ export function TopPickBanner({ data }) {
       densityLine = `Expected Riders: ${Math.round(data.densityScore)}`;
     }
   }
+  const opportunityLine =
+    Number.isFinite(data.opportunityScore) &&
+    Number.isFinite(data.densityScore) &&
+    data.opportunityScore > data.densityScore * 1.1
+      ? `Opportunity Score: ${Math.round(data.opportunityScore)}`
+      : null;
 
   let body;
   switch (data.type) {
@@ -49,17 +55,23 @@ export function TopPickBanner({ data }) {
         </>
       );
       break;
-    case "event":
+    case "event": {
+      const isLastCall =
+        Array.isArray(data.categories) &&
+        data.categories.some((c) => /last call|nightlife/i.test(String(c)));
       body = (
         <>
           <div className="text-2xl font-bold !text-black">{data.location}</div>
-          <div className="text-lg !text-black">{data.egressMod}x Surge Active</div>
+          <div className="text-lg !text-black">
+            {isLastCall ? `${data.egressMod}x Demand Window` : `${data.egressMod}x Egress Demand`}
+          </div>
           {Array.isArray(data.categories) && data.categories.length > 0 && (
             <div className="text-sm opacity-80 mt-1 !text-black">{data.categories.join(", ")}</div>
           )}
         </>
       );
       break;
+    }
     case "food":
     case "grocery":
       body = (
@@ -86,6 +98,9 @@ export function TopPickBanner({ data }) {
       {body}
       {densityLine && (
         <div className="text-sm font-bold mt-2 !text-black">{densityLine}</div>
+      )}
+      {opportunityLine && (
+        <div className="text-sm font-bold mt-1 !text-black">{opportunityLine}</div>
       )}
     </div>
   );
