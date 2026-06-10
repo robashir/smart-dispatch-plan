@@ -20,9 +20,19 @@ function formatOpportunity(data) {
   return `Opportunity Score: ${Math.round(opportunity)}`;
 }
 
+function formatDriverSupply(data) {
+  const pressure = Number(data?.driverSupplyPressureMod);
+  if (!Number.isFinite(pressure) || pressure <= 0) return null;
+  if (pressure >= 1.5) return "Driver Supply: Very Tight";
+  if (pressure >= 1.2) return "Driver Supply: Tight";
+  if (pressure >= 1.1) return "Driver Supply: Slightly Tight";
+  return "Driver Supply: Normal";
+}
+
 export function FlightCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
   const opportunity = formatOpportunity(data);
+  const driverSupply = formatDriverSupply(data);
   // Sprint 68: prefer human-readable city names (originLabels) when the
   // backend supplied them; fall back to the raw IATA list for older payloads.
   const labels =
@@ -60,6 +70,7 @@ export function FlightCard({ data }) {
         </>
       )}
       {density && <div className="text-sm font-semibold text-blue-300 mt-2">{density}</div>}
+      {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-blue-200 mt-1">{opportunity}</div>}
     </div>
   );
@@ -68,6 +79,7 @@ export function FlightCard({ data }) {
 export function TrainCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
   const opportunity = formatOpportunity(data);
+  const driverSupply = formatDriverSupply(data);
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-emerald-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-emerald-400 mb-1">Train Surge</div>
@@ -80,6 +92,7 @@ export function TrainCard({ data }) {
         <div className="text-sm text-neutral-400 mt-1">{data.relativeTime}</div>
       )}
       {density && <div className="text-sm font-semibold text-emerald-300 mt-2">{density}</div>}
+      {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-emerald-200 mt-1">{opportunity}</div>}
     </div>
   );
@@ -91,15 +104,23 @@ export function TrainCard({ data }) {
 export function EventCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
   const opportunity = formatOpportunity(data);
+  const driverSupply = formatDriverSupply(data);
   const isLastCall =
     Array.isArray(data.categories) &&
     data.categories.some((c) => /last call|nightlife/i.test(String(c)));
+  const isByodTrain =
+    Array.isArray(data.categories) &&
+    data.categories.some((c) => /byod train/i.test(String(c)));
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">Event Egress</div>
       <div className="text-2xl font-bold mb-2">{data.location}</div>
       <div className="text-lg">
-        {isLastCall ? `${data.egressMod}x Demand Window` : `${data.egressMod}x Egress Demand`}
+        {isByodTrain
+          ? "Inbound Train Demand"
+          : isLastCall
+            ? `${data.egressMod}x Demand Window`
+            : `${data.egressMod}x Egress Demand`}
       </div>
       {/* Sprint 54: BYOD-parsed trains carry the raw "5:47p" arrivalTime
           field. Other event types (Hospital / State Commuter / Holiday /
@@ -121,6 +142,7 @@ export function EventCard({ data }) {
         ))}
       </div>
       {density && <div className="text-sm font-semibold text-purple-300 mt-2">{density}</div>}
+      {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-purple-200 mt-1">{opportunity}</div>}
     </div>
   );
@@ -129,6 +151,7 @@ export function EventCard({ data }) {
 export function HotspotCard({ data }) {
   const density = formatExpectedDemand(data.densityScore, data.type);
   const opportunity = formatOpportunity(data);
+  const driverSupply = formatDriverSupply(data);
   const nearbyNames = Array.isArray(data.nearbyNames) ? data.nearbyNames.filter(Boolean) : [];
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-rose-400 p-4`}>
@@ -152,6 +175,7 @@ export function HotspotCard({ data }) {
         ))}
       </div>
       {density && <div className="text-sm font-semibold text-rose-300 mt-2">{density}</div>}
+      {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-rose-200 mt-1">{opportunity}</div>}
     </div>
   );

@@ -351,6 +351,12 @@ const EVENT_YIELDS = {
   "arts & theatre": 120,
 };
 
+const BYOD_TRAIN_YIELDS = {
+  default: 10,
+  almostFull: 15,
+  soldOut: 22,
+};
+
 // Sprint 70: CAPACITY_DICTIONARY + DEFAULT_CAPACITY deleted. With the
 // raw-yield formula in densityScore, capacity no longer participates in
 // scoring — the venue-name vs categories[0] mismatch (e.g., MVP Arena
@@ -400,6 +406,11 @@ export function yieldRateFor(item, localStart = null) {
       .toLowerCase()
       .trim();
     const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
+    if (/BYOD Train/i.test(catsAll)) {
+      if (/sold out/i.test(catsAll)) return BYOD_TRAIN_YIELDS.soldOut;
+      if (/almost full/i.test(catsAll)) return BYOD_TRAIN_YIELDS.almostFull;
+      return BYOD_TRAIN_YIELDS.default;
+    }
     // Sprint 67: BYOD Bus surges get a flat expected yield (per spec
     // clarification). Checked FIRST so the rule can't fall through to the
     // event/egress branches and accidentally inherit a stadium-scale rate.

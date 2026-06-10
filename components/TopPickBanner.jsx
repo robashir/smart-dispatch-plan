@@ -26,6 +26,17 @@ export function TopPickBanner({ data }) {
     data.opportunityScore > data.densityScore * 1.1
       ? `Opportunity Score: ${Math.round(data.opportunityScore)}`
       : null;
+  const supplyPressure = Number(data.driverSupplyPressureMod);
+  const supplyLine =
+    Number.isFinite(supplyPressure) && supplyPressure > 0
+      ? supplyPressure >= 1.5
+        ? "Driver Supply: Very Tight"
+        : supplyPressure >= 1.2
+          ? "Driver Supply: Tight"
+          : supplyPressure >= 1.1
+            ? "Driver Supply: Slightly Tight"
+            : "Driver Supply: Normal"
+      : null;
 
   let body;
   switch (data.type) {
@@ -59,11 +70,18 @@ export function TopPickBanner({ data }) {
       const isLastCall =
         Array.isArray(data.categories) &&
         data.categories.some((c) => /last call|nightlife/i.test(String(c)));
+      const isByodTrain =
+        Array.isArray(data.categories) &&
+        data.categories.some((c) => /byod train/i.test(String(c)));
       body = (
         <>
           <div className="text-2xl font-bold !text-black">{data.location}</div>
           <div className="text-lg !text-black">
-            {isLastCall ? `${data.egressMod}x Demand Window` : `${data.egressMod}x Egress Demand`}
+            {isByodTrain
+              ? "Inbound Train Demand"
+              : isLastCall
+                ? `${data.egressMod}x Demand Window`
+                : `${data.egressMod}x Egress Demand`}
           </div>
           {Array.isArray(data.categories) && data.categories.length > 0 && (
             <div className="text-sm opacity-80 mt-1 !text-black">{data.categories.join(", ")}</div>
@@ -98,6 +116,9 @@ export function TopPickBanner({ data }) {
       {body}
       {densityLine && (
         <div className="text-sm font-bold mt-2 !text-black">{densityLine}</div>
+      )}
+      {supplyLine && (
+        <div className="text-sm font-semibold mt-1 !text-black">{supplyLine}</div>
       )}
       {opportunityLine && (
         <div className="text-sm font-bold mt-1 !text-black">{opportunityLine}</div>

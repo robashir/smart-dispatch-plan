@@ -3537,6 +3537,35 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 92 - BYOD Train Yield Recalibration
+
+Recalibrate driver-pasted train events so one inbound train does not inherit the generic event yield of 50, and make driver supply status visible even when normal.
+
+### Decisions
+- **Train-specific yield:** BYOD Train events use status-based expected riders: normal 10, Almost Full 15, Sold Out 22.
+- **Before generic event:** check BYOD Train before the default event branch so it cannot fall through to 50.
+- **Clear wording:** train cards should read as train demand, not generic egress/surge.
+- **Visible supply:** cards and the top banner should show Driver Supply as Normal/Tight/Very Tight.
+
+### Build Steps
+- [x] S1. Append this Sprint 92 plan before edits.
+- [x] S2. Add BYOD Train status yield handling.
+- [x] S3. Update event card and top banner wording for BYOD Train.
+- [x] S4. Render driver supply status.
+- [x] S5. Validate syntax, math, and production build.
+
+### Acceptance Criteria
+- BYOD Train Almost Full expected riders drops from 50 to 15.
+- BYOD Train normal expected riders is 10.
+- BYOD Train Sold Out expected riders is 22.
+- Driver Supply status is visible even when normal.
+- Build passes.
+
+### Anti-Goals
+- Do not change train parsing.
+- Do not change live Amtraker bucket scoring.
+- Do not change CSV report files.
+
 ## Sprint 91 - Separate Driver Shortage From Expected Riders
 
 Prevent small last-call venues from displaying unrealistic expected-rider counts, and make driver shortage affect opportunity/ranking separately from demand.
