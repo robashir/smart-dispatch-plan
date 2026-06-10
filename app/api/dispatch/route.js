@@ -182,6 +182,64 @@ const CROSSGATES_HOURS = {
 // night rows are single 8-hour shifts (2.0x); evening row is the single
 // 12-hour nursing changeover (3.0x). Boundaries validated in isolation
 // by test-hospital-engine.js before being ported here.
+const LOCAL_ANCHOR_SCHEDULES = [
+  {
+    name: "UAlbany Uptown Campus",
+    lat: 42.6868,
+    lng: -73.8238,
+    days: [1, 2, 3, 4, 5],
+    windows: [
+      { start: 480, end: 525, expected: 8, label: "Morning Campus Arrival" },
+      { start: 945, end: 990, expected: 7, label: "Afternoon Campus Exit" },
+      { start: 1245, end: 1290, expected: 6, label: "Evening Class Exit" },
+    ],
+  },
+  {
+    name: "Colonie Center / Wolf Road Corridor",
+    lat: 42.7151,
+    lng: -73.8136,
+    days: [0, 1, 2, 3, 4, 5, 6],
+    windows: [
+      { start: 630, end: 675, expected: 5, label: "Hotel Checkout" },
+      { start: 720, end: 765, expected: 5, label: "Lunch Movement" },
+      { start: 1080, end: 1125, expected: 7, label: "Dinner / Retail Movement" },
+      { start: 1275, end: 1320, expected: 6, label: "Retail Closing Pulse" },
+    ],
+  },
+  {
+    name: "Downtown Albany Office Core",
+    lat: 42.6506,
+    lng: -73.7529,
+    days: [1, 2, 3, 4, 5],
+    windows: [
+      { start: 480, end: 525, expected: 6, label: "Morning Office Arrival" },
+      { start: 720, end: 765, expected: 4, label: "Lunch Office Movement" },
+      { start: 1005, end: 1050, expected: 10, label: "Evening Office Exit" },
+    ],
+  },
+  {
+    name: "Corporate Woods Office Cluster",
+    lat: 42.6869,
+    lng: -73.7638,
+    days: [1, 2, 3, 4, 5],
+    windows: [
+      { start: 480, end: 525, expected: 5, label: "Morning Office Arrival" },
+      { start: 1005, end: 1050, expected: 8, label: "Evening Office Exit" },
+    ],
+  },
+  {
+    name: "Albany Med / University Heights",
+    lat: 42.6534,
+    lng: -73.7933,
+    days: [1, 2, 3, 4, 5],
+    windows: [
+      { start: 435, end: 480, expected: 7, label: "Campus / Clinical Arrival" },
+      { start: 915, end: 960, expected: 7, label: "Campus / Clinical Exit" },
+      { start: 1170, end: 1215, expected: 6, label: "Evening Class / Shift Exit" },
+    ],
+  },
+];
+
 const HOSPITAL_SHIFTS = [
   { start: 390, end: 450, mod: 4.0, label: "Morning Shift Overlap" },     // 6:30 AM - 7:30 AM
   { start: 900, end: 960, mod: 2.0, label: "Afternoon Clinic Shift" },    // 3:00 PM - 4:00 PM
@@ -227,6 +285,61 @@ export function computeStateWorkerCommuteTaper(dateObj) {
   return activeWindow
     ? { factor: activeWindow.factor, label: activeWindow.label }
     : { factor: 0, label: null };
+}
+
+function computeLocalAnchorPulse(anchor, dateObj) {
+  if (!anchor || !(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) return null;
+  const day = dateObj.getUTCDay();
+  if (!Array.isArray(anchor.days) || !anchor.days.includes(day)) return null;
+
+  const wallMinutes = dateObj.getUTCHours() * 60 + dateObj.getUTCMinutes();
+  let best = null;
+  for (const slot of anchor.windows || []) {
+    const expected = Number(slot.expected) || 0;
+    if (expected <= 0) continue;
+
+    let factor = 0;
+    let phase = null;
+    if (wallMinutes >= slot.start && wallMinutes < slot.end) {
+      factor = 1.0;
+      phase = "Peak";
+    } else if (wallMinutes >= slot.start - 30 && wallMinutes < slot.start) {
+      factor = 0.6;
+      phase = "Build";
+    } else if (wallMinutes >= slot.end && wallMinutes < slot.end + 30) {
+      factor = 0.6;
+      phase = "Taper";
+    }
+
+    if (factor <= 0) continue;
+    const activeExpected = Math.max(1, Math.round(expected * factor));
+    if (!best || activeExpected > best.expected) {
+      best = {
+        expected: activeExpected,
+        label: slot.label,
+        phase,
+      };
+    }
+  }
+  return best;
+}
+
+function buildLocalAnchorEvents(localStart) {
+  const events = [];
+  for (const anchor of LOCAL_ANCHOR_SCHEDULES) {
+    const pulse = computeLocalAnchorPulse(anchor, localStart);
+    if (!pulse) continue;
+    events.push({
+      type: "event",
+      location: anchor.name,
+      volume: pulse.expected,
+      egressMod: Number((1 + pulse.expected / 10).toFixed(1)),
+      categories: ["Local Anchor", pulse.label, pulse.phase],
+      lat: anchor.lat,
+      lng: anchor.lng,
+    });
+  }
+  return events;
 }
 
 function findActiveEvent(dispatchDate, dispatchHour, eventConfig) {
@@ -306,6 +419,7 @@ const YIELD_RATES = {
   state_worker: 100,
   bus: 5,
   residential_node: 5,
+  local_anchor: 1,
 };
 
 // Sprint 69: Per-category food yields. Replaces the blanket food=5 baseline
@@ -357,6 +471,31 @@ const BYOD_TRAIN_YIELDS = {
   soldOut: 22,
 };
 
+function byodTrainYieldFor(item) {
+  const availability = item?.availability;
+  if (availability && typeof availability === "object") {
+    const coach = String(availability?.coach?.status || "").toLowerCase();
+    const business = String(availability?.business?.status || "").toLowerCase();
+    const privateRooms = String(availability?.privateRooms?.status || "").toLowerCase();
+
+    let yieldValue = BYOD_TRAIN_YIELDS.default;
+    if (coach === "almostfull") yieldValue = BYOD_TRAIN_YIELDS.almostFull;
+    if (coach === "soldout") yieldValue = BYOD_TRAIN_YIELDS.soldOut;
+
+    if (business === "almostfull") yieldValue += 3;
+    if (business === "soldout") yieldValue += 4;
+    if (privateRooms === "almostfull") yieldValue += 1;
+    if (privateRooms === "soldout") yieldValue += 2;
+
+    return Math.min(yieldValue, 28);
+  }
+
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  if (/sold out/i.test(catsAll)) return BYOD_TRAIN_YIELDS.soldOut;
+  if (/almost full/i.test(catsAll)) return BYOD_TRAIN_YIELDS.almostFull;
+  return BYOD_TRAIN_YIELDS.default;
+}
+
 // Sprint 70: CAPACITY_DICTIONARY + DEFAULT_CAPACITY deleted. With the
 // raw-yield formula in densityScore, capacity no longer participates in
 // scoring — the venue-name vs categories[0] mismatch (e.g., MVP Arena
@@ -407,14 +546,13 @@ export function yieldRateFor(item, localStart = null) {
       .trim();
     const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
     if (/BYOD Train/i.test(catsAll)) {
-      if (/sold out/i.test(catsAll)) return BYOD_TRAIN_YIELDS.soldOut;
-      if (/almost full/i.test(catsAll)) return BYOD_TRAIN_YIELDS.almostFull;
-      return BYOD_TRAIN_YIELDS.default;
+      return byodTrainYieldFor(item);
     }
     // Sprint 67: BYOD Bus surges get a flat expected yield (per spec
     // clarification). Checked FIRST so the rule can't fall through to the
     // event/egress branches and accidentally inherit a stadium-scale rate.
     if (/BYOD Bus/i.test(catsAll)) return YIELD_RATES.bus;
+    if (/local anchor/i.test(catsAll)) return YIELD_RATES.local_anchor;
     // Sprint 69: State Worker Commute carved out from mega_event default —
     // 50k state workers leaving ESP/Harriman are drive-own-car-dominant,
     // not stadium-scale. Checked BEFORE the egress >= 2.5 branch since the
@@ -2064,6 +2202,10 @@ function itineraryScoreFloorFor(item, localStart = null) {
   return 10.0;
 }
 
+function shouldApplyDeadheadRoiFilter(item) {
+  return item?.type !== "food" && item?.type !== "grocery";
+}
+
 // Sprint 23: deterministic router. Flattens flights + trains + hotspots
 // into a single sorted array. Three driver-selectable strategies:
 //   chronological — ascending by time; no-time items (hotspots) sort to top
@@ -2185,6 +2327,7 @@ function buildItinerary(
         it.type === "event" ||
         it.type === "ride";
       if (!scoreable) return true;
+      if (!shouldApplyDeadheadRoiFilter(it)) return true;
       if (
         !Number.isFinite(driverLat) ||
         !Number.isFinite(driverLng) ||
@@ -2815,6 +2958,16 @@ export async function POST(request) {
       console.log("CROSSGATES EGRESS INJECTED: Retail Egress | egressMod 3.0x");
     }
 
+    if (activePlatforms.rideshare) {
+      const localAnchorEvents = buildLocalAnchorEvents(localStart);
+      for (const ev of localAnchorEvents) {
+        structuredEvents.push(ev);
+        console.log(
+          `LOCAL ANCHOR INJECTED: ${ev.location} | ${ev.categories.join(" / ")} | expected riders ${ev.volume}`
+        );
+      }
+    }
+
     // Sprint 53: BYOD Amtrak Pipeline. Run the regex parser over the
     // driver-pasted booking text and push one synthetic event per train
     // into structuredEvents (origin hardcoded NYP per spec). Reuses the
@@ -2867,6 +3020,7 @@ export async function POST(request) {
             volume: 1,
             egressMod: 2.0,
             categories: ["BYOD Train", "Outbound", train.status],
+            availability: train.availability,
             leaveBy,
             lat: ESP_COORDS.lat,
             lng: ESP_COORDS.lng,
@@ -2892,6 +3046,7 @@ export async function POST(request) {
             // Sprint 62: tag per-train BYOD inbound entries so the unified
             // radar paints them emerald alongside the live-API buckets.
             categories: ["BYOD Train", "Inbound", train.status],
+            availability: train.availability,
             origin: "NYP",
             leaveBy: train.time,
             arrivalTime: train.arrivalTime,

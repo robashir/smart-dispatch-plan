@@ -15,6 +15,50 @@
 //   time         "H:MM AM/PM"   for parseTimeLabel / time-decay engines
 //   arrivalTime  "H:MMp" raw    for the EventCard "Arrives:" line (Sprint 54)
 
+function parseFareAvailabilitySection(section = "") {
+  const text = String(section);
+  const seatMatch = text.match(/Only\s+(\d+)\s+(?:seat|room)s?\s+left/i);
+  if (/not\s+offered/i.test(text)) return { status: "notOffered" };
+  if (/sold\s+out/i.test(text)) return { status: "soldOut" };
+  if (seatMatch) return { status: "almostFull", remaining: Number(seatMatch[1]) };
+  if (/\bfrom\b|\$\s*\d+/i.test(text)) return { status: "available" };
+  return { status: "unknown" };
+}
+
+function parseFareAvailability(tail = "") {
+  const text = String(tail).replace(/\r\n/g, "\n");
+  const labels = [
+    ["coach", "Coach"],
+    ["business", "Business"],
+    ["privateRooms", "Private Rooms"],
+  ];
+  const availability = {};
+  for (const [key, label] of labels) {
+    const pattern = new RegExp(
+      `${label}\\s*([\\s\\S]*?)(?=\\n\\s*(?:Coach|Business|Private Rooms)\\s*(?:\\n|$)|$)`,
+      "i"
+    );
+    const match = text.match(pattern);
+    availability[key] = match
+      ? parseFareAvailabilitySection(match[1])
+      : { status: "unknown" };
+  }
+  return availability;
+}
+
+function deriveAmtrakStatus(availability, fallbackText = "") {
+  const statuses = [
+    availability?.coach?.status,
+    availability?.business?.status,
+    availability?.privateRooms?.status,
+  ];
+  if (statuses.includes("soldOut")) return "Sold Out";
+  if (statuses.includes("almostFull")) return "Almost Full";
+  if (/Sold Out/i.test(fallbackText)) return "Sold Out";
+  if (/Only\s+\d+\s+(?:seat|room)/i.test(fallbackText)) return "Almost Full";
+  return "On Time";
+}
+
 function parseAmtrakText(rawText) {
   if (typeof rawText !== "string" || !rawText.trim()) return [];
   // Normalize CRLF → LF so the line-anchored regex works on Windows pastes.
@@ -41,16 +85,10 @@ function parseAmtrakText(rawText) {
     // "Arrives:" line — preserves what the driver pasted verbatim.
     const arrivalTimeRaw = `${arrivalTime}${ampmLetter.toLowerCase()}`;
 
-    let status;
-    if (/Sold Out/i.test(tail)) {
-      status = "Sold Out";
-    } else if (/Only\s+\d+\s+seat/i.test(tail)) {
-      status = "Almost Full";
-    } else {
-      status = "On Time";
-    }
+    const availability = parseFareAvailability(tail);
+    const status = deriveAmtrakStatus(availability, tail);
 
-    results.push({ trainNumber, status, time, arrivalTime: arrivalTimeRaw });
+    results.push({ trainNumber, status, time, arrivalTime: arrivalTimeRaw, availability });
   }
   return results;
 }
@@ -217,15 +255,36 @@ function assert(label, actual, expected) {
 }
 
 const parsed = parseAmtrakText(SAMPLE);
+const legacyShape = parsed.map(({ trainNumber, status, time, arrivalTime }) => ({
+  trainNumber,
+  status,
+  time,
+  arrivalTime,
+}));
 
 // Whole-shape assertion — exact list of 5 trains in order.
-assert("All 5 trains parsed in order", parsed, [
+assert("All 5 trains parsed in order", legacyShape, [
   { trainNumber: "237", status: "Sold Out", time: "7:10 PM", arrivalTime: "7:10p" },
   { trainNumber: "239", status: "Sold Out", time: "8:28 PM", arrivalTime: "8:28p" },
   { trainNumber: "241", status: "Almost Full", time: "9:15 PM", arrivalTime: "9:15p" },
   { trainNumber: "243", status: "Almost Full", time: "11:59 PM", arrivalTime: "11:59p" },
   { trainNumber: "245", status: "On Time", time: "1:56 AM", arrivalTime: "1:56a" },
 ]);
+assert("Train 237 separates coach almost-full and business sold-out", parsed[0].availability, {
+  coach: { status: "almostFull", remaining: 2 },
+  business: { status: "soldOut" },
+  privateRooms: { status: "unknown" },
+});
+assert("Train 241 separates business almost-full from available coach", parsed[2].availability, {
+  coach: { status: "available" },
+  business: { status: "almostFull", remaining: 1 },
+  privateRooms: { status: "unknown" },
+});
+assert("Train 245 preserves business not offered", parsed[4].availability, {
+  coach: { status: "available" },
+  business: { status: "notOffered" },
+  privateRooms: { status: "unknown" },
+});
 
 // Empty / whitespace-only / non-string inputs all return [].
 assert("Empty string → []", parseAmtrakText(""), []);
@@ -258,8 +317,51 @@ Business
 
 Sold Out`;
 assert("Single-train slice", parseAmtrakText(SINGLE), [
-  { trainNumber: "237", status: "Sold Out", time: "7:10 PM", arrivalTime: "7:10p" },
+  {
+    trainNumber: "237",
+    status: "Sold Out",
+    time: "7:10 PM",
+    arrivalTime: "7:10p",
+    availability: {
+      coach: { status: "almostFull", remaining: 2 },
+      business: { status: "soldOut" },
+      privateRooms: { status: "unknown" },
+    },
+  },
 ]);
+
+const PRIVATE_ROOM_SAMPLE = `49
+Lake Shore Limited
+DEPARTS
+3:40
+p
+
+2h 40m
+ARRIVES
+6:20
+p
+Trip Details
+
+Coach
+
+from
+
+$
+91
+
+Business
+
+Not Offered
+
+Private Rooms
+
+Sold Out`;
+
+assert("Private-room sold out is parsed separately", parseAmtrakText(PRIVATE_ROOM_SAMPLE)[0].availability, {
+  coach: { status: "available" },
+  business: { status: "notOffered" },
+  privateRooms: { status: "soldOut" },
+});
 
 const failed = results.filter((r) => !r.pass);
 if (failed.length > 0) {

@@ -111,16 +111,23 @@ export function EventCard({ data }) {
   const isByodTrain =
     Array.isArray(data.categories) &&
     data.categories.some((c) => /byod train/i.test(String(c)));
+  const isLocalAnchor =
+    Array.isArray(data.categories) &&
+    data.categories.some((c) => /local anchor/i.test(String(c)));
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
-      <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">Event Egress</div>
+      <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">
+        {isLocalAnchor ? "Local Anchor" : "Event Egress"}
+      </div>
       <div className="text-2xl font-bold mb-2">{data.location}</div>
       <div className="text-lg">
         {isByodTrain
           ? "Inbound Train Demand"
-          : isLastCall
-            ? `${data.egressMod}x Demand Window`
-            : `${data.egressMod}x Egress Demand`}
+          : isLocalAnchor
+            ? "Routine Demand Pulse"
+            : isLastCall
+              ? `${data.egressMod}x Demand Window`
+              : `${data.egressMod}x Egress Demand`}
       </div>
       {/* Sprint 54: BYOD-parsed trains carry the raw "5:47p" arrivalTime
           field. Other event types (Hospital / State Commuter / Holiday /

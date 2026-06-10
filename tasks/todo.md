@@ -3537,6 +3537,96 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 96 - Amtrak Fare-Class Demand Scoring
+
+Distinguish BYOD Amtrak ticket availability by fare class so coach scarcity drives the strongest demand signal, business adds a smaller bonus, and private rooms add only a small long-distance signal.
+
+### Decisions
+- **Coach is primary:** coach sold out / almost sold out sets the main train expected-rider yield.
+- **Business is a bonus:** business sold out / almost full adds a moderate increment but does not dominate coach.
+- **Private rooms are small:** private-room scarcity adds only a small increment because passenger count is low.
+- **Backward compatible:** saved train rows without structured availability still use the legacy `status` field.
+- **Parser owns structure:** the frontend Amtrak parser emits `availability: { coach, business, privateRooms }` for both inbound and outbound saved trains.
+
+### Build Steps
+- [x] S1. Append this Sprint 96 plan before edits.
+- [x] S2. Add fare-class availability parser to `parseAmtrakText`.
+- [x] S3. Add category-aware BYOD train yield helper.
+- [x] S4. Thread availability into BYOD train events.
+- [x] S5. Update Amtrak parser validator coverage.
+- [x] S6. Validate parser tests, route syntax, and production build.
+
+### Acceptance Criteria
+- Coach `Only N seats left` produces a stronger expected-rider yield than business-only scarcity.
+- Coach `Sold Out` produces the strongest base yield.
+- Business sold out adds a moderate bonus.
+- Private rooms sold out adds only a small bonus.
+- Legacy saved trains without `availability` still score from `status`.
+
+### Anti-Goals
+- Do not change live Amtraker bucket scoring.
+- Do not add a new UI control.
+- Do not change outbound timing logic.
+
+## Sprint 95 - Routine Local Anchor Pulses
+
+Add narrow scheduled rideshare pulses for the five highest-signal non-Crossgates local anchors: UAlbany Uptown, Colonie/Wolf Road, Downtown Albany office core, Corporate Woods, and Albany Med / University Heights.
+
+### Decisions
+- **Expected rides are explicit:** local anchor events use `volume = expected rides` and a `Local Anchor` yield of 1, so the UI displays the intended expected-rider count.
+- **Narrow windows:** use 45-minute peak windows with 30-minute shoulders at roughly 60% of peak demand.
+- **Hotel checkout:** Colonie/Wolf hotel checkout peaks at 10:30-11:15 AM with 10:00-10:30 and 11:15-11:45 shoulders.
+- **Rideshare only:** these anchors inject only when rideshare is active.
+- **Routine demand only:** these should surface steady local pulses without overpowering flights, trains, hospitals, weather, or major events.
+
+### Build Steps
+- [x] S1. Append this Sprint 95 plan before edits.
+- [x] S2. Add local anchor schedule dictionary and taper helper.
+- [x] S3. Add yield routing for `Local Anchor` events.
+- [x] S4. Inject active local anchor events into `structuredEvents`.
+- [x] S5. Add focused schedule validator.
+- [x] S6. Validate syntax, validator, and production build.
+
+### Acceptance Criteria
+- UAlbany, Colonie/Wolf, Downtown, Corporate Woods, and University Heights can emit scheduled ride cards during their active peak/shoulder windows.
+- Hotel checkout uses 10:30-11:15 AM as the peak slot.
+- Local anchor expected riders match the configured expected ride count before weather/time modifiers.
+- Rideshare OFF suppresses local anchor injections.
+- Existing Crossgates logic remains unchanged.
+
+### Anti-Goals
+- Do not change Crossgates timing.
+- Do not change food/grocery logic.
+- Do not add a UI control.
+
+## Sprint 94 - Food Delivery ROI Visibility
+
+Fix the Food & Grocery tab staying blank after the morning score floor change by removing food/grocery hotspots from the rideshare deadhead ROI filter.
+
+### Decisions
+- **Food/grocery proximity is already constrained:** static POIs are already limited near the driver before clustering.
+- **Keep the score floor:** morning food still needs score >= 4; non-morning food and grocery still need score >= 10.
+- **Do not use rideshare ROI dollars for delivery:** food delivery opportunity is not comparable to surge-point deadhead value.
+- **Keep ROI for rideshare demand:** trains, flights, events, and ride hubs still use the existing deadhead ROI filter.
+
+### Build Steps
+- [x] S1. Append this Sprint 94 plan before edits.
+- [x] S2. Add a scoped helper for ROI-eligible item types.
+- [x] S3. Bypass the ROI filter for food/grocery only.
+- [x] S4. Extend validator coverage.
+- [x] S5. Validate syntax, validator, and production build.
+
+### Acceptance Criteria
+- Morning food hotspot with score >= 4 is not dropped by the rideshare ROI filter.
+- Food/grocery hotspots still pass through normal score-floor filtering.
+- Train/flight/event/ride items still use deadhead ROI filtering.
+- Food & Grocery list can show eligible breakfast/morning hotspots instead of going blank.
+
+### Anti-Goals
+- Do not change POI dictionary data.
+- Do not inflate food delivery expected counts.
+- Do not change active platform defaults.
+
 ## Sprint 93 - Morning Food Itinerary Floor
 
 Lower the itinerary score floor for morning food delivery hotspots so breakfast/morning places are not hidden just because coffee/cafe clusters score below the global transit/event floor.

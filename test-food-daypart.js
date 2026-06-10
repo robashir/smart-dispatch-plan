@@ -91,6 +91,10 @@ function itineraryScoreFloorFor(item, localStart = null) {
   return 10;
 }
 
+function shouldApplyDeadheadRoiFilter(item) {
+  return item?.type !== "food" && item?.type !== "grocery";
+}
+
 function mk(hour, minute = 0) {
   return new Date(Date.UTC(2026, 5, 9, hour, minute));
 }
@@ -176,6 +180,29 @@ const floorCases = [
   },
 ];
 
+const roiFilterCases = [
+  {
+    name: "Food bypasses rideshare ROI filter",
+    item: { type: "food" },
+    expect: false,
+  },
+  {
+    name: "Grocery bypasses rideshare ROI filter",
+    item: { type: "grocery" },
+    expect: false,
+  },
+  {
+    name: "Train keeps rideshare ROI filter",
+    item: { type: "train" },
+    expect: true,
+  },
+  {
+    name: "Event keeps rideshare ROI filter",
+    item: { type: "event" },
+    expect: true,
+  },
+];
+
 let allPass = true;
 console.log("=== Sprint 84 Food Daypart Filter - Test Run ===\n");
 for (const c of cases) {
@@ -192,6 +219,12 @@ for (const c of yieldCases) {
 }
 for (const c of floorCases) {
   const got = itineraryScoreFloorFor(c.item, c.date);
+  const ok = got === c.expect;
+  if (!ok) allPass = false;
+  console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${c.expect}\n  got      ${got}`);
+}
+for (const c of roiFilterCases) {
+  const got = shouldApplyDeadheadRoiFilter(c.item);
   const ok = got === c.expect;
   if (!ok) allPass = false;
   console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${c.expect}\n  got      ${got}`);

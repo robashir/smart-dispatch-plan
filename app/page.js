@@ -20,6 +20,50 @@ import EVENT_CONFIG_SEED from "../event-config.json";
 // Sprint 61: direction-aware. "outbound" anchors the time capture on the
 // DEPARTS block instead of ARRIVES so the backend's outbound branch sees
 // a departure time in `train.time`. Default stays inbound for back-compat.
+function parseFareAvailabilitySection(section = "") {
+  const text = String(section);
+  const seatMatch = text.match(/Only\s+(\d+)\s+(?:seat|room)s?\s+left/i);
+  if (/not\s+offered/i.test(text)) return { status: "notOffered" };
+  if (/sold\s+out/i.test(text)) return { status: "soldOut" };
+  if (seatMatch) return { status: "almostFull", remaining: Number(seatMatch[1]) };
+  if (/\bfrom\b|\$\s*\d+/i.test(text)) return { status: "available" };
+  return { status: "unknown" };
+}
+
+function parseFareAvailability(tail = "") {
+  const text = String(tail).replace(/\r\n/g, "\n");
+  const labels = [
+    ["coach", "Coach"],
+    ["business", "Business"],
+    ["privateRooms", "Private Rooms"],
+  ];
+  const availability = {};
+  for (const [key, label] of labels) {
+    const pattern = new RegExp(
+      `${label}\\s*([\\s\\S]*?)(?=\\n\\s*(?:Coach|Business|Private Rooms)\\s*(?:\\n|$)|$)`,
+      "i"
+    );
+    const match = text.match(pattern);
+    availability[key] = match
+      ? parseFareAvailabilitySection(match[1])
+      : { status: "unknown" };
+  }
+  return availability;
+}
+
+function deriveAmtrakStatus(availability, fallbackText = "") {
+  const statuses = [
+    availability?.coach?.status,
+    availability?.business?.status,
+    availability?.privateRooms?.status,
+  ];
+  if (statuses.includes("soldOut")) return "Sold Out";
+  if (statuses.includes("almostFull")) return "Almost Full";
+  if (/Sold Out/i.test(fallbackText)) return "Sold Out";
+  if (/Only\s+\d+\s+(?:seat|room)/i.test(fallbackText)) return "Almost Full";
+  return "On Time";
+}
+
 function parseAmtrakText(rawText, direction = "inbound") {
   if (typeof rawText !== "string" || !rawText.trim()) return [];
   const text = rawText.replace(/\r\n/g, "\n");
@@ -36,11 +80,9 @@ function parseAmtrakText(rawText, direction = "inbound") {
     const tail = match[4] || "";
     const time = `${rawTime} ${ampmLetter}M`;
     const arrivalTime = `${rawTime}${ampmLetter.toLowerCase()}`;
-    let status;
-    if (/Sold Out/i.test(tail)) status = "Sold Out";
-    else if (/Only\s+\d+\s+seat/i.test(tail)) status = "Almost Full";
-    else status = "On Time";
-    results.push({ trainNumber, status, time, arrivalTime });
+    const availability = parseFareAvailability(tail);
+    const status = deriveAmtrakStatus(availability, tail);
+    results.push({ trainNumber, status, time, arrivalTime, availability });
   }
   return results;
 }
