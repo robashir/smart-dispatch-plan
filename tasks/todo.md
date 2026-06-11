@@ -3537,6 +3537,36 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 109 - Netlify Blobs BYOD Sync
+
+Mirror locally saved BYOD train, bus, and flight data into Netlify Blobs so automated scheduled dispatch checks can use the latest uploaded data.
+
+### Decisions
+- **Blob store:** use Netlify Blobs site-wide storage with a single `latest` BYOD snapshot.
+- **Keep local-first UX:** Save buttons still update localStorage and React state immediately.
+- **Server mirror:** Save and toggle auto-save also POST the latest BYOD snapshot to `/api/byod`.
+- **Dispatch fallback:** when a dispatch request has no BYOD payload, the backend reads today's saved Blob snapshot.
+- **Privacy guard:** `/api/byod` supports same-origin writes only and does not expose a public read endpoint.
+
+### Build Steps
+- [x] S1. Append this Sprint 109 plan before edits.
+- [x] S2. Add Netlify Blobs dependency and BYOD storage helper.
+- [x] S3. Add `/api/byod` save route.
+- [x] S4. Sync BYOD saves from the client.
+- [x] S5. Make dispatch use Blob BYOD fallback for automated calls.
+- [x] S6. Validate syntax, focused tests, and production build.
+
+### Acceptance Criteria
+- Manual BYOD saves still work locally.
+- Saved BYOD data is mirrored to Netlify Blobs.
+- GitHub Actions dispatch calls can incorporate today's saved BYOD snapshot without browser localStorage.
+- Public BYOD reads are not exposed.
+
+### Anti-Goals
+- Do not automate scraping/importing source websites.
+- Do not remove localStorage persistence.
+- Do not add multi-user auth in this sprint.
+
 ## Sprint 108 - GitHub Actions Alert Scheduler
 
 Automate Telegram surge checks through GitHub Actions so the driver does not need to manually press `What's happening?` every time.

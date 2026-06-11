@@ -11,6 +11,7 @@
   "dependencies": {
     "@capacitor/android": "^8.3.3",
     "@capacitor/core": "^8.3.3",
+    "@netlify/blobs": "^10.7.9",
     "mapbox-gl": "^3.24.0",
     "next": "^14.2.15",
     "react": "^18.3.1",

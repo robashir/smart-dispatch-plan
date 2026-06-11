@@ -374,6 +374,29 @@ export default function Home() {
     }
   }
 
+  async function syncByodSnapshot(overrides = {}) {
+    const snapshot = {
+      trainConfigInbound,
+      trainConfigOutbound,
+      busConfigInbound,
+      flightConfigInbound,
+      ...overrides,
+    };
+    try {
+      const res = await fetch("/api/byod", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(snapshot),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "BYOD server sync failed.");
+      }
+    } catch (err) {
+      console.warn("BYOD server sync failed:", err.message);
+    }
+  }
+
   // Sprint 59: BYOD Amtrak Persistence — localStorage edition. Parses the
   // textarea client-side via parseAmtrakText, then writes the
   // { savedDate, trains } tuple to localStorage. Dispatch reads from
@@ -385,7 +408,7 @@ export default function Home() {
   // saved trains are left fully intact, so a driver can paste/save an
   // inbound dump, flip the radio to outbound, paste/save a different
   // dump, and dispatch with both arrays populated.
-  function handleSaveTrains() {
+  async function handleSaveTrains() {
     setTrainSaveStatus("saving");
     try {
       // Sprint 67: BYOD Bus Inbound branch. The backend owns parseBusSchedule
@@ -395,6 +418,7 @@ export default function Home() {
         const payload = { savedDate: todayLocalISO(), rawText: trainRawText };
         localStorage.setItem("busConfigInbound", JSON.stringify(payload));
         setBusConfigInbound(payload);
+        await syncByodSnapshot({ busConfigInbound: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -406,6 +430,7 @@ export default function Home() {
         const payload = { savedDate: todayLocalISO(), rawText: trainRawText };
         localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
         setFlightConfigInbound(payload);
+        await syncByodSnapshot({ flightConfigInbound: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -417,8 +442,13 @@ export default function Home() {
       const payload = { savedDate: todayLocalISO(), trains };
       const key = direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
       localStorage.setItem(key, JSON.stringify(payload));
-      if (direction === "outbound") setTrainConfigOutbound(payload);
-      else setTrainConfigInbound(payload);
+      if (direction === "outbound") {
+        setTrainConfigOutbound(payload);
+        await syncByodSnapshot({ trainConfigOutbound: payload });
+      } else {
+        setTrainConfigInbound(payload);
+        await syncByodSnapshot({ trainConfigInbound: payload });
+      }
       setTrainSaveStatus("saved");
       setTimeout(() => setTrainSaveStatus("idle"), 2000);
     } catch (err) {
@@ -436,7 +466,7 @@ export default function Home() {
   // NEVER rehydrated into the textarea (per spec "No Rehydration").
   // Auto-save is skipped when the textarea is empty / whitespace-only so
   // a no-op toggle click can't wipe existing saved data.
-  function handleDirectionChange(newDir) {
+  async function handleDirectionChange(newDir) {
     if (newDir === direction) return;
     const text = trainRawText;
     if (text && text.trim()) {
@@ -446,10 +476,12 @@ export default function Home() {
           const payload = { savedDate: today, rawText: text };
           localStorage.setItem("busConfigInbound", JSON.stringify(payload));
           setBusConfigInbound(payload);
+          await syncByodSnapshot({ busConfigInbound: payload });
         } else if (direction === "flightInbound") {
           const payload = { savedDate: today, rawText: text };
           localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
           setFlightConfigInbound(payload);
+          await syncByodSnapshot({ flightConfigInbound: payload });
         } else {
           const trains = parseAmtrakText(text, direction);
           if (trains.length === 0) {
@@ -459,8 +491,13 @@ export default function Home() {
           const key =
             direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
           localStorage.setItem(key, JSON.stringify(payload));
-          if (direction === "outbound") setTrainConfigOutbound(payload);
-          else setTrainConfigInbound(payload);
+          if (direction === "outbound") {
+            setTrainConfigOutbound(payload);
+            await syncByodSnapshot({ trainConfigOutbound: payload });
+          } else {
+            setTrainConfigInbound(payload);
+            await syncByodSnapshot({ trainConfigInbound: payload });
+          }
         }
       } catch (e) {
         console.warn("BYOD toggle-switch auto-save failed:", e.message);

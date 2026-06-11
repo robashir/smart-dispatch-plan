@@ -15,6 +15,7 @@ const ALBANY_POI_DICTIONARY = Object.freeze(ALBANY_POI_DICTIONARY_RAW);
 // enriches matching static POIs by normalized name instead of creating pins.
 import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" with { type: "json" };
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
+import { readByodSnapshot } from "../../lib/byod-store";
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
 // built by scripts/build-census-grid.js and loaded once at module-load time
@@ -2825,6 +2826,14 @@ function computeLastCallEgressEvents(localStart, dictionary) {
   return events;
 }
 
+function savedTodayTrainArray(config, today) {
+  return config?.savedDate === today && Array.isArray(config.trains) ? config.trains : [];
+}
+
+function savedTodayRawText(config, today) {
+  return config?.savedDate === today && typeof config.rawText === "string" ? config.rawText : "";
+}
+
 export async function POST(request) {
   try {
     // Sprint 64: split BYOD train payload. The body now carries
@@ -2868,11 +2877,47 @@ export async function POST(request) {
         ? eventConfigRaw
         : {};
 
+    if (typeof latitude !== "number" || typeof longitude !== "number") {
+      return Response.json({ error: "Invalid coordinates." }, { status: 400 });
+    }
+    const hoursNum = Number(hours);
+    if (!Number.isFinite(hoursNum) || hoursNum < 1 || hoursNum > 4) {
+      return Response.json({ error: "Invalid hours (must be 1-4)." }, { status: 400 });
+    }
+    const offsetMin = Number.isFinite(Number(timezoneOffsetMinutes))
+      ? Number(timezoneOffsetMinutes)
+      : 0;
+    const now = new Date();
+    const localStart = new Date(now.getTime() - offsetMin * 60 * 1000);
+    const localEnd = new Date(localStart.getTime() + hoursNum * 60 * 60 * 1000);
+
+    // Shift "now" by the client's offset so the ISO Z-string visually matches
+    // the user's local wall-clock time (e.g., 4:19 PM EDT → "...T16:19:00Z").
     // Sprint 64: belt-and-suspenders array coercion (per L1). The `= []`
     // default catches missing keys; this catches non-array garbage that
     // the default wouldn't (e.g., `inboundTrains: "oops"`).
-    const inboundTrains = Array.isArray(inboundTrainsRaw) ? inboundTrainsRaw : [];
-    const outboundTrains = Array.isArray(outboundTrainsRaw) ? outboundTrainsRaw : [];
+    let byodSnapshot = null;
+    const todayForServerByod = toYmd(localStart);
+    const requestHasByod =
+      (Array.isArray(inboundTrainsRaw) && inboundTrainsRaw.length > 0) ||
+      (Array.isArray(outboundTrainsRaw) && outboundTrainsRaw.length > 0) ||
+      (typeof inboundBusesRaw === "string" && inboundBusesRaw.trim()) ||
+      (typeof inboundFlightsRaw === "string" && inboundFlightsRaw.trim());
+    if (!requestHasByod) {
+      try {
+        byodSnapshot = await readByodSnapshot();
+      } catch (err) {
+        console.warn(`[BYOD Blob] read failed: ${err.message}`);
+      }
+    }
+    const inboundTrains =
+      Array.isArray(inboundTrainsRaw) && inboundTrainsRaw.length > 0
+        ? inboundTrainsRaw
+        : savedTodayTrainArray(byodSnapshot?.trainConfigInbound, todayForServerByod);
+    const outboundTrains =
+      Array.isArray(outboundTrainsRaw) && outboundTrainsRaw.length > 0
+        ? outboundTrainsRaw
+        : savedTodayTrainArray(byodSnapshot?.trainConfigOutbound, todayForServerByod);
 
     // Sprint 64: Pre-Merge. Stamp `direction` onto every BYOD train BEFORE
     // the injection loop so a single iteration can route each entry to its
@@ -2886,8 +2931,11 @@ export async function POST(request) {
     // coercion (per L1) so a malformed payload can't crash the parser. The
     // strict /SUNY/i filter inside parseBusSchedule is the SOLE drop site —
     // every surviving entry is a downtown-terminal arrival.
-    const inboundBuses =
-      typeof inboundBusesRaw === "string" ? parseBusSchedule(inboundBusesRaw) : [];
+    const inboundBusText =
+      typeof inboundBusesRaw === "string" && inboundBusesRaw.trim()
+        ? inboundBusesRaw
+        : savedTodayRawText(byodSnapshot?.busConfigInbound, todayForServerByod);
+    const inboundBuses = inboundBusText ? parseBusSchedule(inboundBusText) : [];
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -2917,23 +2965,8 @@ export async function POST(request) {
       grocery: !!platforms?.grocery,
     };
 
-    if (typeof latitude !== "number" || typeof longitude !== "number") {
-      return Response.json({ error: "Invalid coordinates." }, { status: 400 });
-    }
-    const hoursNum = Number(hours);
-    if (!Number.isFinite(hoursNum) || hoursNum < 1 || hoursNum > 4) {
-      return Response.json({ error: "Invalid hours (must be 1-4)." }, { status: 400 });
-    }
-    const offsetMin = Number.isFinite(Number(timezoneOffsetMinutes))
-      ? Number(timezoneOffsetMinutes)
-      : 0;
-
     // Shift "now" by the client's offset so the ISO Z-string visually matches
     // the user's local wall-clock time (e.g., 4:19 PM EDT → "...T16:19:00Z").
-    const now = new Date();
-    const localStart = new Date(now.getTime() - offsetMin * 60 * 1000);
-    const localEnd = new Date(localStart.getTime() + hoursNum * 60 * 60 * 1000);
-
     console.log("=== TIMEZONE HOTFIX CHECK ===", {
       localStart: toTicketmasterDateTime(localStart),
       localEnd: toTicketmasterDateTime(localEnd),
@@ -3025,8 +3058,11 @@ export async function POST(request) {
     // records (one physical plane shows up exactly once even if both
     // sources reported it). Defensive `typeof === "string"` coercion at
     // the boundary (per L1) so a malformed payload can't crash the parser.
-    const byodFlights =
-      typeof inboundFlightsRaw === "string" ? parseFlightText(inboundFlightsRaw, offsetMin) : [];
+    const inboundFlightText =
+      typeof inboundFlightsRaw === "string" && inboundFlightsRaw.trim()
+        ? inboundFlightsRaw
+        : savedTodayRawText(byodSnapshot?.flightConfigInbound, todayForServerByod);
+    const byodFlights = inboundFlightText ? parseFlightText(inboundFlightText, offsetMin) : [];
     const mergedRawFlights = [...rawFlights, ...byodFlights];
 
     // Sprint 27: aggregators return RAW volumes (no rideMod scaling). The
