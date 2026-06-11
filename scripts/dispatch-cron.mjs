@@ -6,7 +6,9 @@ const DEFAULT_LONGITUDE = -73.843;
 const NY_TIME_ZONE = "America/New_York";
 
 function envNumber(name, fallback) {
-  const value = Number(process.env[name]);
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
 }
 
