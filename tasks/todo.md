@@ -3537,6 +3537,144 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 105 - Sequence-Only Lower-Floor Anchors
+
+Allow Suggested Sequence to use lower-score rideshare positioning anchors without lowering the main dispatch card floor.
+
+### Decisions
+- **Main itinerary unchanged:** cards still use the existing score floors.
+- **Sequence-only candidates:** backend sends a separate `sequenceCandidates` array with useful rideshare items that clear a lower sequence floor.
+- **Lower residential floor:** sequence can use residential/student positioning anchors around score >= 4.
+- **No food/grocery:** sequence-only candidates remain rideshare-only for version 1.
+- **Frontend merge:** Suggested Sequence reads `itinerary + sequenceCandidates`, while Map/List cards read only `itinerary`.
+
+### Build Steps
+- [x] S1. Append this Sprint 105 plan before edits.
+- [x] S2. Add lower-threshold residential ride hub generation.
+- [x] S3. Add backend `sequenceCandidates` builder.
+- [x] S4. Pass sequence candidates to Suggested Sequence only.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- Lower-score local rideshare anchors can appear in Suggested Sequence.
+- Lower-score sequence-only anchors do not appear in Transit & Events cards.
+- Food/grocery remain excluded from Suggested Sequence.
+
+### Anti-Goals
+- Do not lower main itinerary card floors globally.
+- Do not bypass backend platform filtering.
+- Do not add a route API call.
+
+## Sprint 104 - Sequence Active Now Anchor
+
+Let Suggested Sequence start with a high-opportunity active untimed rideshare item, such as State Worker Commute, before continuing the timed sequence.
+
+### Decisions
+- **Current anchor only:** untimed rideshare items can appear only as the first `Now` step.
+- **High-opportunity gate:** require meaningful opportunity so weak/noisy untimed items do not crowd the sequence.
+- **Timed chain remains:** future sequence steps still come from timed rideshare opportunities.
+- **No food/grocery:** active food/grocery hotspots remain excluded from sequence version 1.
+
+### Build Steps
+- [x] S1. Append this Sprint 104 plan before edits.
+- [x] S2. Add active-now candidate helper.
+- [x] S3. Prepend the strongest active-now item when useful.
+- [x] S4. Avoid duplicate positioning step when active-now item exists.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- State Worker Commute with high Opportunity Now can appear as the first sequence step.
+- Sequence still continues with future timed steps.
+- Food/grocery hotspots are not used as active-now sequence anchors.
+
+### Anti-Goals
+- Do not change Top Pick.
+- Do not change scoring.
+- Do not replace existing cards.
+
+## Sprint 103 - Sequence Starts From Now
+
+Make Suggested Sequence begin from current local time instead of only listing future opportunities.
+
+### Decisions
+- **Now-first:** if the first selected opportunity is more than 45 minutes away, insert a positioning step labeled `Now`.
+- **Actionable near-term:** if an opportunity is within 45 minutes, use it as the first real step.
+- **No fake ride destination:** the positioning step says to position toward the next anchor, not to take a specific ride there.
+- **Continue future sequence:** after the Now step, keep the existing timed opportunity chain.
+
+### Build Steps
+- [x] S1. Append this Sprint 103 plan before edits.
+- [x] S2. Add current-time helper.
+- [x] S3. Insert Now positioning step when the first opportunity is far out.
+- [x] S4. Render positioning steps cleanly.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- Suggested Sequence does not start one or two hours in the future without a Now step.
+- If the first opportunity is soon, no extra positioning step is added.
+- Existing Map/List/cards remain unchanged.
+
+### Anti-Goals
+- Do not add route API calls.
+- Do not change demand/opportunity scoring.
+- Do not include food/grocery in sequence version 1.
+
+## Sprint 102 - Sequence Anti-Bounce Tuning
+
+Tune Suggested Sequence so it does not bounce between ESP outbound ingress and Rensselaer inbound egress unless the timing gap is actually comfortable.
+
+### Decisions
+- **Conservative drive time:** inter-anchor transitions have a minimum 15-minute drive time.
+- **Same-anchor stay bias:** same-anchor follow-up opportunities can chain naturally with no reposition warning.
+- **Transition buffer:** require drive time plus a 10-minute buffer before adding a different-anchor step.
+- **Skip weak bounce candidates:** if the next item is too tight and not materially stronger, skip it and look for a better continuation.
+
+### Build Steps
+- [x] S1. Append this Sprint 102 plan before edits.
+- [x] S2. Add anchor grouping helper.
+- [x] S3. Make drive-time estimates anchor-aware and conservative.
+- [x] S4. Tune sequence selection to avoid tight anchor bouncing.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- ESP -> Rensselaer -> ESP quick alternation is avoided when the middle gap is too tight.
+- Same-anchor follow-ups produce stay-near guidance.
+- Existing cards and Map/List remain unchanged.
+
+### Anti-Goals
+- Do not add route API calls.
+- Do not remove Suggested Sequence.
+- Do not change demand/opportunity scoring.
+
+## Sprint 101 - Suggested Route Sequence
+
+Add a new Suggested Sequence section that turns timed rideshare opportunities into a simple chronological driving plan without replacing the existing cards.
+
+### Decisions
+- **Frontend-derived first version:** build the sequence from the existing itinerary response to avoid changing backend contracts.
+- **Timed rideshare only:** include flights, trains, events, flight/train ripples, and ride hubs; exclude food/grocery.
+- **2-4 steps:** keep the output short and actionable.
+- **Feasibility guidance:** estimate drive time between anchors from lat/lng and add reposition/prefer-direction guidance when a transition is plausible.
+- **No fake certainty:** use language like "prefer trips toward" or "reposition toward", not "take a ride to".
+
+### Build Steps
+- [x] S1. Append this Sprint 101 plan before edits.
+- [x] S2. Add sequence builder helpers.
+- [x] S3. Add Suggested Sequence component.
+- [x] S4. Render section above existing plan cards.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- Suggested Sequence appears after dispatch when at least two timed rideshare opportunities exist.
+- Existing Map/List and cards remain unchanged.
+- Food/grocery hotspots are not included in the first sequence version.
+- Sequence uses expected demand and opportunity now from existing item fields.
+
+### Anti-Goals
+- Do not replace current cards.
+- Do not add route API calls.
+- Do not claim actual ride destinations are known.
+
 ## Sprint 100 - Expected Demand vs Opportunity Now
 
 Split true demand from urgency-adjusted opportunity so displayed rider counts are not reduced by time decay.

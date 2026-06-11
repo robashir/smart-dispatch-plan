@@ -1581,13 +1581,34 @@ function calculateSpatialPopulationBoost(lat, lng) {
 // food / events.
 const POP_RIDE_THRESHOLD = 2.0;
 const POP_RIDE_MAX_HUBS = 5;
-function buildSyntheticRideHubs() {
+function residentialHubLabel(node) {
+  const lat = Number(node?.lat);
+  const lng = Number(node?.lng);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    if (Math.abs(lat - 42.663) <= 0.01 && Math.abs(lng - -73.776) <= 0.015) {
+      return "Madison & Quail Student Corridor";
+    }
+    if (Math.abs(lat - 42.686) <= 0.012 && Math.abs(lng - -73.823) <= 0.015) {
+      return "UAlbany / Western Avenue Student Corridor";
+    }
+    if (Math.abs(lat - 42.652) <= 0.012 && Math.abs(lng - -73.765) <= 0.015) {
+      return "Center Square / Downtown Residential Corridor";
+    }
+  }
+  return `Residential Hub @ ${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+}
+
+function buildSyntheticRideHubs({
+  threshold = POP_RIDE_THRESHOLD,
+  maxHubs = POP_RIDE_MAX_HUBS,
+  sequenceOnly = false,
+} = {}) {
   if (!Array.isArray(POPULATION_GRID) || POPULATION_GRID.length === 0) return [];
   const qualifying = POPULATION_GRID.filter(
-    (n) => (Number(n.baseMultiplier) || 0) >= POP_RIDE_THRESHOLD
+    (n) => (Number(n.baseMultiplier) || 0) >= threshold
   );
   qualifying.sort((a, b) => (b.baseMultiplier || 0) - (a.baseMultiplier || 0));
-  const topN = qualifying.slice(0, POP_RIDE_MAX_HUBS);
+  const topN = qualifying.slice(0, maxHubs);
   return topN.map((n) => {
     console.log(
       `[Ride Boost] Synthetic Residential Hub at ${n.lat.toFixed(4)},${n.lng.toFixed(4)} generated with populationDensityMod=${n.baseMultiplier}x`
@@ -1595,11 +1616,12 @@ function buildSyntheticRideHubs() {
     return {
       type: "ride",
       volume: 1,
-      location: `Residential Hub @ ${n.lat.toFixed(3)}, ${n.lng.toFixed(3)}`,
+      location: residentialHubLabel(n),
       categories: ["Residential Node"],
       lat: n.lat,
       lng: n.lng,
       populationDensityMod: n.baseMultiplier,
+      sequenceOnly,
     };
   });
 }
@@ -2383,6 +2405,62 @@ function buildItinerary(
   return out;
 }
 
+function sequenceItemKey(item) {
+  return [
+    item?.type || "",
+    item?.location || item?.hub || "",
+    item?.leaveBy || item?.hourBucket || "",
+    Array.isArray(item?.categories) ? item.categories.join("|") : "",
+  ].join("::");
+}
+
+function buildSequenceCandidates(payload, currentLocalStart, existingItinerary = []) {
+  const flights = Array.isArray(payload?.flightsByHour) ? payload.flightsByHour : [];
+  const trains = Array.isArray(payload?.trainsByHour) ? payload.trainsByHour : [];
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  const rideHubs = Array.isArray(payload?.sequenceRideHubs)
+    ? payload.sequenceRideHubs
+    : Array.isArray(payload?.rideHubs)
+      ? payload.rideHubs
+      : [];
+  const rawItems = [...flights, ...trains, ...events, ...rideHubs];
+  const existingKeys = new Set(existingItinerary.map(sequenceItemKey));
+
+  const finalRideMod = Number.isFinite(payload?.finalRideMod) ? payload.finalRideMod : 1.0;
+  const driverSupplyPressureMod =
+    Number.isFinite(payload?.driverSupplyPressureMod) && payload.driverSupplyPressureMod > 0
+      ? payload.driverSupplyPressureMod
+      : 1.0;
+
+  return rawItems
+    .map((it) => {
+      const scoreable =
+        it.type === "flight" ||
+        it.type === "train" ||
+        it.type === "event" ||
+        it.type === "ride";
+      if (!scoreable) return null;
+      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
+      const expectedDemand = densityScore(it, finalRideMod, 1.0, currentLocalStart);
+      const timeAdjustedDemand =
+        expectedDemand * computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
+      const opportunityScore = opportunityScoreFor(timeAdjustedDemand, driverSupplyPressureMod);
+      return {
+        ...it,
+        expectedYield,
+        densityScore: expectedDemand,
+        opportunityScore,
+        driverSupplyPressureMod,
+        sequenceOnly: true,
+      };
+    })
+    .filter(Boolean)
+    .filter((it) => !existingKeys.has(sequenceItemKey(it)))
+    .filter((it) => Number(it.densityScore) >= 4)
+    .sort((a, b) => (Number(b.opportunityScore) || 0) - (Number(a.opportunityScore) || 0))
+    .slice(0, 8);
+}
+
 // Sprint 66: Peak Overlap Engine. Sweeps a 30-minute window in 15-minute
 // increments across the already-scored itinerary, sums each block's
 // densityScore, and returns the winning window + its top contributors.
@@ -3147,6 +3225,11 @@ export async function POST(request) {
     // log lines as a side effect of building each hub. Up to 5 entries with
     // populationDensityMod >= 2.0.
     const rideHubs = buildSyntheticRideHubs();
+    const sequenceRideHubs = buildSyntheticRideHubs({
+      threshold: 1.0,
+      maxHubs: 10,
+      sequenceOnly: true,
+    });
 
     const mergedPayload = {
       location: { latitude, longitude },
@@ -3170,6 +3253,7 @@ export async function POST(request) {
       // Sprint 63: synthetic residential ride hubs (type: "ride"). Flow
       // through buildItinerary's rawItems alongside flights / trains / food.
       rideHubs,
+      sequenceRideHubs,
     };
 
     // Sprint 23: deterministic router. Flatten + sort the merged surge data
@@ -3191,6 +3275,11 @@ export async function POST(request) {
     // Sprint 66: Peak Overlap Engine — pure observer over the already-scored
     // itinerary. The frontend gates rendering on totalDensity > 50, so the
     // helper is free to return low-total results without polluting the UI.
+    mergedPayload.sequenceCandidates = buildSequenceCandidates(
+      mergedPayload,
+      localStart,
+      mergedPayload.itinerary
+    );
     mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
 
     // Sprint 62: Unified Situational Radar verification log. Counts how many

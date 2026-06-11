@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { TopPickBanner } from "../components/TopPickBanner";
 import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
 import { PeakSurgeBanner } from "../components/PeakSurgeBanner";
+import { SuggestedSequence } from "../components/SuggestedSequence";
 import DispatchMap from "../components/DispatchMap";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 // Sprint 59: static seed for the Unified Event Database. Next.js bundles
@@ -136,6 +137,7 @@ function readOpportunityScore(item) {
 export default function Home() {
   const [status, setStatus] = useState("idle");
   const [itinerary, setItinerary] = useState([]);
+  const [sequenceCandidates, setSequenceCandidates] = useState([]);
   const [error, setError] = useState("");
   const [hours, setHours] = useState(4);
   const [platforms, setPlatforms] = useState({
@@ -597,6 +599,7 @@ export default function Home() {
       }
 
       setItinerary(data.itinerary || []);
+      setSequenceCandidates(data.sequenceCandidates || []);
       setWeatherModifiers(data.weatherModifiers || null);
       setPeakSurgeWindow(data.peakSurgeWindow || null);
       setStatus("done");
@@ -909,6 +912,10 @@ export default function Home() {
         {status === "done" && <PeakSurgeBanner data={peakSurgeWindow} />}
 
         {status === "done" && topPick && <TopPickBanner data={topPick} />}
+
+        {status === "done" && (
+          <SuggestedSequence itinerary={[...itinerary, ...sequenceCandidates]} />
+        )}
 
         {status === "done" && (
           <GlobalWeatherBanner weatherModifiers={weatherModifiers} />
