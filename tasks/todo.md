@@ -3537,6 +3537,63 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 108 - GitHub Actions Alert Scheduler
+
+Automate Telegram surge checks through GitHub Actions so the driver does not need to manually press `What's happening?` every time.
+
+### Decisions
+- **GitHub Actions first:** use scheduled workflow rather than in-app timers or serverless background loops.
+- **Single 15-minute cron:** run the workflow every 15 minutes and let the script decide whether this tick should call dispatch.
+- **Cadence tiers:** broad checks every 4 hours, driving-window checks every 30 minutes, and late-night/train-heavy checks every 15 minutes.
+- **Config via secrets:** deployed endpoint, base latitude/longitude, strategy, platform toggles, and cost per mile can be overridden with GitHub secrets.
+- **Manual test path:** `workflow_dispatch` can force a run outside the normal cadence.
+
+### Build Steps
+- [x] S1. Append this Sprint 108 plan before edits.
+- [x] S2. Add scheduled dispatch caller script.
+- [x] S3. Add GitHub Actions workflow.
+- [x] S4. Validate script syntax and workflow file shape.
+- [x] S5. Document required GitHub/Netlify environment variables.
+
+### Acceptance Criteria
+- GitHub Actions can call the deployed dispatch endpoint on a schedule.
+- Normal 15-minute ticks skip outside the selected cadence windows.
+- Manual workflow runs can force a dispatch check for testing.
+- Existing manual dispatch button remains unchanged.
+
+### Anti-Goals
+- Do not add a persistent server process.
+- Do not hardcode Telegram tokens or chat IDs.
+- Do not upload BYOD train/flight text automatically yet.
+
+## Sprint 107 - Telegram Dispatch Alerts
+
+Send a Telegram message after a manual dispatch run when a high-opportunity or shortage-driven surge signal appears.
+
+### Decisions
+- **Manual trigger first:** alerts run only when the driver presses `What's happening?`.
+- **Environment secrets:** read `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; never store tokens in code.
+- **Noise control:** suppress duplicate alerts for the same item/window for 30 minutes.
+- **Alert rules:** notify on testing-threshold high opportunity, driver-supply pressure, timed train/flight/event demand within 45 minutes, or a large Golden Half-Hour.
+- **Non-blocking behavior:** Telegram failures are returned as alert status and logged, but dispatch still returns a plan.
+
+### Build Steps
+- [x] S1. Append this Sprint 107 plan before edits.
+- [x] S2. Add alert candidate/rule helpers.
+- [x] S3. Add Telegram send helper with cooldown.
+- [x] S4. Attach alert status to the dispatch response.
+- [x] S5. Validate route syntax and production build.
+
+### Acceptance Criteria
+- Alert sends only when Telegram env vars are present and an alert-worthy signal exists.
+- Duplicate alerts are cooled down for 30 minutes.
+- Dispatch still succeeds if Telegram is missing or the send fails.
+
+### Anti-Goals
+- Do not add a background scheduler yet.
+- Do not hardcode bot tokens or chat IDs.
+- Do not change demand/opportunity scoring.
+
 ## Sprint 106 - Suggested Sequence Timing Cues
 
 Add practical timing guidance to Suggested Sequence so the plan tells the driver when to be near the next anchor and when to stop taking long-away trips.

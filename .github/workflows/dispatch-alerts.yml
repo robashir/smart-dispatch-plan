@@ -1,0 +1,41 @@
+name: Dispatch Alerts
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run dispatch even if this is outside the alert cadence"
+        required: false
+        default: "true"
+
+jobs:
+  dispatch-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run scheduled dispatch alert check
+        env:
+          DISPATCH_ENDPOINT: ${{ secrets.DISPATCH_ENDPOINT }}
+          DISPATCH_LATITUDE: ${{ secrets.DISPATCH_LATITUDE }}
+          DISPATCH_LONGITUDE: ${{ secrets.DISPATCH_LONGITUDE }}
+          DISPATCH_HOURS: ${{ secrets.DISPATCH_HOURS }}
+          DISPATCH_TIMEZONE_OFFSET_MINUTES: ${{ secrets.DISPATCH_TIMEZONE_OFFSET_MINUTES }}
+          DISPATCH_ROUTING_STRATEGY: ${{ secrets.DISPATCH_ROUTING_STRATEGY }}
+          DISPATCH_COST_PER_MILE: ${{ secrets.DISPATCH_COST_PER_MILE }}
+          DISPATCH_ENABLE_RIDESHARE: ${{ secrets.DISPATCH_ENABLE_RIDESHARE }}
+          DISPATCH_ENABLE_FOOD: ${{ secrets.DISPATCH_ENABLE_FOOD }}
+          DISPATCH_ENABLE_GROCERY: ${{ secrets.DISPATCH_ENABLE_GROCERY }}
+          DISPATCH_INCLUDE_AIRPORT: ${{ secrets.DISPATCH_INCLUDE_AIRPORT }}
+          DISPATCH_INCLUDE_AMTRAK: ${{ secrets.DISPATCH_INCLUDE_AMTRAK }}
+          FORCE_DISPATCH_CRON: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force || 'false' }}
+        run: node scripts/dispatch-cron.mjs
