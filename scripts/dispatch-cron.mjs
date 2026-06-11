@@ -85,9 +85,16 @@ function readEventConfig() {
 }
 
 async function main() {
-  const endpoint = process.env.DISPATCH_ENDPOINT;
+  const endpoint = (process.env.DISPATCH_ENDPOINT || "").trim();
   if (!endpoint) {
-    throw new Error("DISPATCH_ENDPOINT secret is required, for example https://your-site.netlify.app/api/dispatch");
+    throw new Error(
+      "DISPATCH_ENDPOINT GitHub Actions secret is required, for example https://genuine-spider-98efb1.netlify.app/api/dispatch"
+    );
+  }
+  if (!/^https:\/\/.+\/api\/dispatch$/.test(endpoint)) {
+    throw new Error(
+      `DISPATCH_ENDPOINT must be the full https URL ending in /api/dispatch. Received: ${endpoint}`
+    );
   }
   const parts = nyParts();
   const decision = shouldRunDispatch(parts);
