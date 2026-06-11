@@ -22,6 +22,21 @@ function minutesUntil(targetMin, nowMin) {
   return delta;
 }
 
+function normalizeMinute(minute) {
+  if (!Number.isFinite(minute)) return null;
+  return ((Math.round(minute) % 1440) + 1440) % 1440;
+}
+
+function formatMinute(minute) {
+  const normalized = normalizeMinute(minute);
+  if (normalized === null) return null;
+  const h24 = Math.floor(normalized / 60);
+  const min = normalized % 60;
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 || 12;
+  return `${h12}:${String(min).padStart(2, "0")} ${ampm}`;
+}
+
 function haversineMiles(lat1, lng1, lat2, lng2) {
   const toRad = (deg) => (deg * Math.PI) / 180;
   const R = 3958.8;
@@ -78,6 +93,28 @@ function itemWindowLabel(item) {
   if (item?.leaveBy) return item.leaveBy;
   if (item?.hourBucket) return item.hourBucket;
   return null;
+}
+
+function arrivalBufferMinutes(item) {
+  const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  if (item?.type === "flight" || /Flight|Airport/i.test(cats)) return 20;
+  if (item?.type === "train" || /BYOD Train|Train/i.test(cats)) return 14;
+  if (item?.type === "event" || /Egress|Last Call|Closing Surge/i.test(cats)) return 12;
+  return 10;
+}
+
+function beThereByText(item) {
+  const targetMin = parseTimeLabel(itemWindowLabel(item));
+  if (!Number.isFinite(targetMin)) return null;
+  const time = formatMinute(targetMin - arrivalBufferMinutes(item));
+  return time ? `Be there by ${time}` : null;
+}
+
+function avoidLongTripsText(next) {
+  const targetMin = parseTimeLabel(itemWindowLabel(next));
+  if (!Number.isFinite(targetMin)) return null;
+  const time = formatMinute(targetMin - arrivalBufferMinutes(next) - 5);
+  return time ? `Avoid long trips after ${time}` : null;
 }
 
 function itemAction(item) {
@@ -193,6 +230,8 @@ function buildSuggestedSequence(itinerary) {
       action: itemAction(item),
       demand: Math.round(Number(item.densityScore) || 0),
       opportunity: Math.round(Number(item.opportunityScore) || Number(item.densityScore) || 0),
+      beThereBy: beThereByText(item),
+      avoidLongTrips: next ? avoidLongTripsText(next) : null,
       transition: next ? transitionText(item, next) : null,
     };
   });
@@ -205,6 +244,8 @@ function buildSuggestedSequence(itinerary) {
       action: itemAction(activeNow),
       demand: Math.round(Number(activeNow.densityScore) || 0),
       opportunity: Math.round(opportunityValue(activeNow)),
+      beThereBy: null,
+      avoidLongTrips: selected[0] ? avoidLongTripsText(selected[0].item) : null,
       transition: selected[0]
         ? transitionText(activeNow, selected[0].item)
         : "Work this active demand while it remains strong.",
@@ -218,6 +259,8 @@ function buildSuggestedSequence(itinerary) {
       action: "No immediate rideshare anchor; start drifting toward the next strongest timed opportunity.",
       demand: Math.round(Number(selected[0].item.densityScore) || 0),
       opportunity: Math.round(Number(selected[0].item.opportunityScore) || Number(selected[0].item.densityScore) || 0),
+      beThereBy: null,
+      avoidLongTrips: avoidLongTripsText(selected[0].item),
       transition: `Avoid long trips away from ${itemTitle(selected[0].item)} until the window gets closer.`,
       isPositioning: true,
     });
@@ -249,6 +292,11 @@ export function SuggestedSequence({ itinerary = [] }) {
                 ? `Next Demand ${step.demand} | Opportunity Now ${step.opportunity}`
                 : `Expected Demand ${step.demand} | Opportunity Now ${step.opportunity}`}
             </div>
+            {(step.beThereBy || step.avoidLongTrips) && (
+              <div className="text-xs text-yellow-300 mt-1">
+                {[step.beThereBy, step.avoidLongTrips].filter(Boolean).join(" | ")}
+              </div>
+            )}
             {step.transition && (
               <div className="text-xs text-neutral-500 mt-1">{step.transition}</div>
             )}

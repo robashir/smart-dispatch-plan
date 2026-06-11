@@ -3537,6 +3537,33 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 106 - Suggested Sequence Timing Cues
+
+Add practical timing guidance to Suggested Sequence so the plan tells the driver when to be near the next anchor and when to stop taking long-away trips.
+
+### Decisions
+- **Compact guidance:** show timing cues as one small line inside each sequence step.
+- **Anchor lead times:** use slightly larger buffers for flights and trains than routine events.
+- **Next-step warnings:** current/positioning steps can warn when the next timed anchor is getting close.
+- **No scoring changes:** timing cues only affect display text.
+
+### Build Steps
+- [x] S1. Append this Sprint 106 plan before edits.
+- [x] S2. Add minute formatting and anchor buffer helpers.
+- [x] S3. Add `Be there by` cue for timed sequence steps.
+- [x] S4. Add `Avoid long trips after` cue when the next step has a fixed time.
+- [x] S5. Validate syntax and production build.
+
+### Acceptance Criteria
+- Timed train/flight/event sequence steps show a `Be there by` cue.
+- Steps before a timed anchor can show an `Avoid long trips after` cue.
+- Existing itinerary scoring and card filtering remain unchanged.
+
+### Anti-Goals
+- Do not change demand/opportunity math.
+- Do not change the main card list.
+- Do not add route API calls.
+
 ## Sprint 105 - Sequence-Only Lower-Floor Anchors
 
 Allow Suggested Sequence to use lower-score rideshare positioning anchors without lowering the main dispatch card floor.
