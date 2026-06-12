@@ -3537,6 +3537,33 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 110 - Sequence Timing Cue Cleanup
+
+Make Suggested Sequence timing cues relative to the current time so near-term train/event steps do not show stale `Be there by` times or confusing same-anchor avoid warnings.
+
+### Decisions
+- **Current-time aware:** when a `Be there by` time has already passed, show `Head there now`.
+- **Immediate window:** when the target is effectively happening now, show `Stay near ... now`.
+- **Same-anchor cleanup:** do not show `Avoid long trips after` for train-to-train or same-location follow-ups.
+- **Keep transition text:** same-anchor steps still use the existing stay-near transition guidance.
+
+### Build Steps
+- [x] S1. Append this Sprint 110 plan before edits.
+- [x] S2. Make `Be there by` cue relative to current local time.
+- [x] S3. Make avoid-long-trips cue relative to current local time.
+- [x] S4. Suppress avoid-long-trips for same-anchor next steps.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- At 7:00 PM, a 7:10 PM train shows `Head there now`, not a past `Be there by` time.
+- Same-anchor train chains do not show next-train avoid warnings inside the current train step.
+- The active `Now` step can still warn against long trips when a different anchor is coming soon.
+
+### Anti-Goals
+- Do not change scoring.
+- Do not change sequence candidate selection.
+- Do not change the main dispatch cards.
+
 ## Sprint 109 - Netlify Blobs BYOD Sync
 
 Mirror locally saved BYOD train, bus, and flight data into Netlify Blobs so automated scheduled dispatch checks can use the latest uploaded data.

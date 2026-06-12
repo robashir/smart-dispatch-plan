@@ -103,18 +103,32 @@ function arrivalBufferMinutes(item) {
   return 10;
 }
 
-function beThereByText(item) {
+function beThereByText(item, nowMin) {
   const targetMin = parseTimeLabel(itemWindowLabel(item));
   if (!Number.isFinite(targetMin)) return null;
+  const delta = minutesUntil(targetMin, nowMin);
+  if (delta <= 3) return `Stay near ${itemTitle(item)} now`;
   const time = formatMinute(targetMin - arrivalBufferMinutes(item));
-  return time ? `Be there by ${time}` : null;
+  if (!time) return null;
+  const beThereDelta = minutesUntil(parseTimeLabel(time), nowMin);
+  if (beThereDelta <= 0) return `Head there now`;
+  return `Be there by ${time}`;
 }
 
-function avoidLongTripsText(next) {
+function avoidLongTripsText(next, nowMin) {
   const targetMin = parseTimeLabel(itemWindowLabel(next));
   if (!Number.isFinite(targetMin)) return null;
   const time = formatMinute(targetMin - arrivalBufferMinutes(next) - 5);
-  return time ? `Avoid long trips after ${time}` : null;
+  if (!time) return null;
+  const avoidDelta = minutesUntil(parseTimeLabel(time), nowMin);
+  if (avoidDelta <= 0) return "Avoid long trips now";
+  return `Avoid long trips after ${time}`;
+}
+
+function shouldShowAvoidLongTrips(current, next) {
+  if (!next) return false;
+  if (current && anchorKey(current) === anchorKey(next)) return false;
+  return true;
 }
 
 function itemAction(item) {
@@ -230,8 +244,10 @@ function buildSuggestedSequence(itinerary) {
       action: itemAction(item),
       demand: Math.round(Number(item.densityScore) || 0),
       opportunity: Math.round(Number(item.opportunityScore) || Number(item.densityScore) || 0),
-      beThereBy: beThereByText(item),
-      avoidLongTrips: next ? avoidLongTripsText(next) : null,
+      beThereBy: beThereByText(item, nowMin),
+      avoidLongTrips: shouldShowAvoidLongTrips(item, next)
+        ? avoidLongTripsText(next, nowMin)
+        : null,
       transition: next ? transitionText(item, next) : null,
     };
   });
@@ -245,7 +261,7 @@ function buildSuggestedSequence(itinerary) {
       demand: Math.round(Number(activeNow.densityScore) || 0),
       opportunity: Math.round(opportunityValue(activeNow)),
       beThereBy: null,
-      avoidLongTrips: selected[0] ? avoidLongTripsText(selected[0].item) : null,
+      avoidLongTrips: selected[0] ? avoidLongTripsText(selected[0].item, nowMin) : null,
       transition: selected[0]
         ? transitionText(activeNow, selected[0].item)
         : "Work this active demand while it remains strong.",
@@ -260,7 +276,7 @@ function buildSuggestedSequence(itinerary) {
       demand: Math.round(Number(selected[0].item.densityScore) || 0),
       opportunity: Math.round(Number(selected[0].item.opportunityScore) || Number(selected[0].item.densityScore) || 0),
       beThereBy: null,
-      avoidLongTrips: avoidLongTripsText(selected[0].item),
+      avoidLongTrips: avoidLongTripsText(selected[0].item, nowMin),
       transition: `Avoid long trips away from ${itemTitle(selected[0].item)} until the window gets closer.`,
       isPositioning: true,
     });
