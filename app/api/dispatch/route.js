@@ -474,14 +474,22 @@ const BYOD_TRAIN_YIELDS = {
   soldOut: 22,
 };
 
+function byodTrainAlbanyAlightingFactor(item) {
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  const trainNumber = String(item?.trainNumber || "").trim();
+  if (!/BYOD Train/i.test(catsAll) || !/Inbound/i.test(catsAll)) return 1.0;
+  if (/^28\d/.test(trainNumber)) return 0.45;
+  return 0.8;
+}
+
 function byodTrainYieldFor(item) {
+  let yieldValue = BYOD_TRAIN_YIELDS.default;
   const availability = item?.availability;
   if (availability && typeof availability === "object") {
     const coach = String(availability?.coach?.status || "").toLowerCase();
     const business = String(availability?.business?.status || "").toLowerCase();
     const privateRooms = String(availability?.privateRooms?.status || "").toLowerCase();
 
-    let yieldValue = BYOD_TRAIN_YIELDS.default;
     if (coach === "almostfull") yieldValue = BYOD_TRAIN_YIELDS.almostFull;
     if (coach === "soldout") yieldValue = BYOD_TRAIN_YIELDS.soldOut;
 
@@ -490,13 +498,14 @@ function byodTrainYieldFor(item) {
     if (privateRooms === "almostfull") yieldValue += 1;
     if (privateRooms === "soldout") yieldValue += 2;
 
-    return Math.min(yieldValue, 28);
+    yieldValue = Math.min(yieldValue, 28);
+  } else {
+    const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+    if (/sold out/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.soldOut;
+    else if (/almost full/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.almostFull;
   }
 
-  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
-  if (/sold out/i.test(catsAll)) return BYOD_TRAIN_YIELDS.soldOut;
-  if (/almost full/i.test(catsAll)) return BYOD_TRAIN_YIELDS.almostFull;
-  return BYOD_TRAIN_YIELDS.default;
+  return Math.round(yieldValue * byodTrainAlbanyAlightingFactor(item));
 }
 
 // Sprint 70: CAPACITY_DICTIONARY + DEFAULT_CAPACITY deleted. With the
@@ -3333,6 +3342,7 @@ export async function POST(request) {
             location: `Empire State Plaza — Outbound Train ${train.trainNumber}`,
             volume: 1,
             egressMod: 2.0,
+            trainNumber: train.trainNumber,
             categories: ["BYOD Train", "Outbound", train.status],
             availability: train.availability,
             leaveBy,
@@ -3359,6 +3369,7 @@ export async function POST(request) {
             egressMod: 2.0,
             // Sprint 62: tag per-train BYOD inbound entries so the unified
             // radar paints them emerald alongside the live-API buckets.
+            trainNumber: train.trainNumber,
             categories: ["BYOD Train", "Inbound", train.status],
             availability: train.availability,
             origin: "NYP",

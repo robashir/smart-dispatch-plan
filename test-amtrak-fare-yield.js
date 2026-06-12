@@ -6,14 +6,22 @@ const BYOD_TRAIN_YIELDS = {
   soldOut: 22,
 };
 
+function byodTrainAlbanyAlightingFactor(item) {
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  const trainNumber = String(item?.trainNumber || "").trim();
+  if (!/BYOD Train/i.test(catsAll) || !/Inbound/i.test(catsAll)) return 1.0;
+  if (/^28\d/.test(trainNumber)) return 0.45;
+  return 0.8;
+}
+
 function byodTrainYieldFor(item) {
+  let yieldValue = BYOD_TRAIN_YIELDS.default;
   const availability = item?.availability;
   if (availability && typeof availability === "object") {
     const coach = String(availability?.coach?.status || "").toLowerCase();
     const business = String(availability?.business?.status || "").toLowerCase();
     const privateRooms = String(availability?.privateRooms?.status || "").toLowerCase();
 
-    let yieldValue = BYOD_TRAIN_YIELDS.default;
     if (coach === "almostfull") yieldValue = BYOD_TRAIN_YIELDS.almostFull;
     if (coach === "soldout") yieldValue = BYOD_TRAIN_YIELDS.soldOut;
 
@@ -22,13 +30,14 @@ function byodTrainYieldFor(item) {
     if (privateRooms === "almostfull") yieldValue += 1;
     if (privateRooms === "soldout") yieldValue += 2;
 
-    return Math.min(yieldValue, 28);
+    yieldValue = Math.min(yieldValue, 28);
+  } else {
+    const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+    if (/sold out/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.soldOut;
+    else if (/almost full/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.almostFull;
   }
 
-  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
-  if (/sold out/i.test(catsAll)) return BYOD_TRAIN_YIELDS.soldOut;
-  if (/almost full/i.test(catsAll)) return BYOD_TRAIN_YIELDS.almostFull;
-  return BYOD_TRAIN_YIELDS.default;
+  return Math.round(yieldValue * byodTrainAlbanyAlightingFactor(item));
 }
 
 const cases = [
@@ -76,6 +85,30 @@ const cases = [
   {
     name: "Legacy sold-out status still works",
     item: { categories: ["BYOD Train", "Inbound", "Sold Out"] },
+    expect: 18,
+  },
+  {
+    name: "Empire 28x inbound through train is downweighted",
+    item: {
+      trainNumber: "281",
+      categories: ["BYOD Train", "Inbound", "Sold Out"],
+    },
+    expect: 10,
+  },
+  {
+    name: "Albany-focused inbound Empire train keeps higher alighting factor",
+    item: {
+      trainNumber: "237",
+      categories: ["BYOD Train", "Inbound", "Sold Out"],
+    },
+    expect: 18,
+  },
+  {
+    name: "Outbound train ingress is not alighting-downweighted",
+    item: {
+      trainNumber: "281",
+      categories: ["BYOD Train", "Outbound", "Sold Out"],
+    },
     expect: 22,
   },
 ];

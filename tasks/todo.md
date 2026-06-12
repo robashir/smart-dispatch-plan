@@ -3537,6 +3537,34 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 112 - Empire 28x Train Alighting Factor
+
+Downweight inbound Empire Service train numbers starting with `28` because they are through-trains that continue past Albany-Rensselaer.
+
+### Decisions
+- **Inbound-only:** apply the alighting factor only to BYOD inbound train egress.
+- **28x through-train:** train numbers like `281` and `283` use a lower Albany alighting factor.
+- **Albany-focused trains:** other inbound BYOD Empire trains keep the higher Albany-focused alighting factor.
+- **Outbound unchanged:** outbound station ingress is not reduced by this alighting rule.
+
+### Build Steps
+- [x] S1. Append this Sprint 112 plan before edits.
+- [x] S2. Add BYOD train alighting-factor helper.
+- [x] S3. Stamp train number onto BYOD train event objects.
+- [x] S4. Apply factor inside BYOD train yield.
+- [x] S5. Update fare-yield validator coverage.
+- [x] S6. Validate parser/fare-yield tests and production build.
+
+### Acceptance Criteria
+- Inbound train `281`/`283` produces lower Albany egress demand than inbound `237`/`239` with the same scarcity.
+- Outbound train ingress is not downweighted by the 28x rule.
+- Existing fare-class scarcity still influences train demand before the alighting factor.
+
+### Anti-Goals
+- Do not scrape Amtrak full routes.
+- Do not change live Amtrak API train buckets.
+- Do not change non-train scoring.
+
 ## Sprint 111 - Sequence Feasibility Gap Guidance
 
 Improve Suggested Sequence guidance for infeasible cross-anchor transitions and long same-anchor gaps.
