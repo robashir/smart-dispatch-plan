@@ -264,14 +264,14 @@ const HOSPITAL_SHIFTS = [
 //     (dispatchHour + 24) falls inside a window with hours > 24.
 //
 // Validated in isolation by test-academic-surge.js (23 assertions).
-// Sprint 80: State Worker Commute Taper. The state-worker pool is a
+// Sprint 113: State Worker Commute Taper. The state-worker pool is a
 // current-opportunity score, not cumulative riders across every slot.
-// Evening outbound is front-loaded: peak starts at 4:15 PM, then decays.
+// Evening outbound is a sharp commute pulse: peak starts at 4:00 PM,
+// then fades quickly and disappears after 5:20 PM.
 const STATE_WORKER_EVENING_TAPER = [
-  { start: 975, end: 1005, factor: 1.0, label: "Peak Exit Wave" },       // 4:15 PM - 4:44 PM
-  { start: 1005, end: 1035, factor: 0.75, label: "Strong Exit Wave" },   // 4:45 PM - 5:14 PM
-  { start: 1035, end: 1065, factor: 0.5, label: "Fading Exit Wave" },    // 5:15 PM - 5:44 PM
-  { start: 1065, end: 1095, factor: 0.25, label: "Late Exit Tail" },     // 5:45 PM - 6:14 PM
+  { start: 960, end: 990, factor: 1.0, label: "Peak Exit Wave" },       // 4:00 PM - 4:29 PM
+  { start: 990, end: 1020, factor: 0.65, label: "Strong Exit Wave" },   // 4:30 PM - 4:59 PM
+  { start: 1020, end: 1040, factor: 0.35, label: "Fading Exit Wave" },  // 5:00 PM - 5:19 PM
 ];
 
 export function computeStateWorkerCommuteTaper(dateObj) {
@@ -3192,8 +3192,9 @@ export async function POST(request) {
     // Empire State Plaza + Harriman Campus state workforce all clocking out
     // at once. egressMod 2.5 mirrors a Mega-Venue so it surfaces near the
     // top of Profitability without overriding the 3.0x hospital surge.
+    // Sprint 113 tightens this to a 4:00-5:19 PM pulse.
     // Current score uses the taper factor as volume, so state_worker yield
-    // 100 becomes 100 / 75 / 50 / 25 expected riders by slot.
+    // 100 becomes 100 / 65 / 35 expected riders by slot.
     const currentDay = localStart.getUTCDay();
     const stateWorkerTaper = computeStateWorkerCommuteTaper(localStart);
     if (

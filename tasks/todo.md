@@ -3537,6 +3537,33 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 113 - Tighten State Worker Commute Pulse
+
+Move state-worker evening commute demand earlier and shorten the tail so it does not keep showing as a strong event around 5 PM and beyond.
+
+### Decisions
+- **Earlier peak:** start state-worker peak at 4:00 PM.
+- **Sharper taper:** use 4:00-4:29 PM at 100, 4:30-4:59 PM at 65, and 5:00-5:19 PM at 35.
+- **No late tail:** remove state-worker commute after 5:20 PM.
+- **Weekday only:** keep the existing Monday-Friday guard.
+
+### Build Steps
+- [x] S1. Append this Sprint 113 plan before edits.
+- [x] S2. Update taper table.
+- [x] S3. Update injector comments.
+- [x] S4. Add state-worker taper validator.
+- [x] S5. Validate route syntax, taper validator, and production build.
+
+### Acceptance Criteria
+- State worker commute appears at 4:00 PM.
+- State worker commute is weaker at 5:00 PM.
+- State worker commute is gone by 5:20 PM.
+
+### Anti-Goals
+- Do not change hospital, train, food, weather, or Telegram alert logic.
+- Do not change state-worker location.
+- Do not add user controls for this taper.
+
 ## Sprint 112 - Empire 28x Train Alighting Factor
 
 Downweight inbound Empire Service train numbers starting with `28` because they are through-trains that continue past Albany-Rensselaer.
