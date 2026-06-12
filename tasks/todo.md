@@ -3537,6 +3537,33 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 111 - Sequence Feasibility Gap Guidance
+
+Improve Suggested Sequence guidance for infeasible cross-anchor transitions and long same-anchor gaps.
+
+### Decisions
+- **Too-tight transitions:** when the next anchor cannot be reached in time, say it is too tight instead of saying to drift toward it.
+- **Long same-anchor gaps:** when the next same-anchor step is more than 90 minutes away, do not imply the driver should wait there.
+- **Return guidance:** long-gap same-anchor steps tell the driver to work nearby demand and return by the next target buffer time.
+- **No scoring changes:** this sprint only changes sequence guidance text.
+
+### Build Steps
+- [x] S1. Append this Sprint 111 plan before edits.
+- [x] S2. Update cross-anchor infeasible transition wording.
+- [x] S3. Add long same-anchor gap wording.
+- [x] S4. Add return-by text helper for long gaps.
+- [x] S5. Validate production build.
+
+### Acceptance Criteria
+- Crossgates-to-Rensselaer with only ~10 minutes does not suggest a normal transition.
+- Rensselaer train chains with multi-hour gaps tell the driver to work nearby demand and return later.
+- Scoring and selected sequence items remain unchanged.
+
+### Anti-Goals
+- Do not cap Crossgates demand in this sprint.
+- Do not change itinerary/card scoring.
+- Do not add routing API calls.
+
 ## Sprint 110 - Sequence Timing Cue Cleanup
 
 Make Suggested Sequence timing cues relative to the current time so near-term train/event steps do not show stale `Be there by` times or confusing same-anchor avoid warnings.

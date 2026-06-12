@@ -115,6 +115,13 @@ function beThereByText(item, nowMin) {
   return `Be there by ${time}`;
 }
 
+function returnByText(item) {
+  const targetMin = parseTimeLabel(itemWindowLabel(item));
+  if (!Number.isFinite(targetMin)) return "Return before the next window.";
+  const time = formatMinute(targetMin - arrivalBufferMinutes(item));
+  return time ? `Return by ${time}.` : "Return before the next window.";
+}
+
 function avoidLongTripsText(next, nowMin) {
   const targetMin = parseTimeLabel(itemWindowLabel(next));
   if (!Number.isFinite(targetMin)) return null;
@@ -148,15 +155,21 @@ function itemAction(item) {
 }
 
 function transitionText(current, next) {
-  if (anchorKey(current) === anchorKey(next)) {
-    return `Stay near ${itemTitle(next)} for the next demand window.`;
-  }
-  const driveMin = estimateDriveMinutes(current, next);
   const currentMin = parseTimeLabel(itemWindowLabel(current));
   const nextMin = parseTimeLabel(itemWindowLabel(next));
   let gap = Number.isFinite(currentMin) && Number.isFinite(nextMin) ? nextMin - currentMin : null;
   if (gap !== null && gap < -360) gap += 1440;
   const target = itemTitle(next);
+  const sameAnchor = anchorKey(current) === anchorKey(next);
+
+  if (sameAnchor) {
+    if (Number.isFinite(gap) && gap > 90) {
+      return `Long gap before ${target}; work nearby demand instead of waiting. ${returnByText(next)}`;
+    }
+    return `Stay near ${target} for the next demand window.`;
+  }
+
+  const driveMin = estimateDriveMinutes(current, next);
 
   if (!Number.isFinite(driveMin) || !Number.isFinite(gap)) {
     return `Prefer rides that keep you moving toward ${target}.`;
@@ -167,7 +180,7 @@ function transitionText(current, next) {
   if (gap >= driveMin) {
     return `Tight transition: head toward ${target} if no good ride appears quickly.`;
   }
-  return `Overlap risk: choose the stronger opportunity unless a ride naturally moves toward ${target}.`;
+  return `Too tight for ${target}; stay with the stronger current opportunity unless a trip naturally heads that way.`;
 }
 
 function isSequenceCandidate(item) {
