@@ -3537,6 +3537,31 @@ Add the user's third batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not geocode or infer beyond the user's provided values.
+## Sprint 114 - Remove Closed Seoul Korean POI
+
+Remove Seoul Korean from active food-delivery data after the driver confirmed the restaurant is permanently closed.
+
+### Decisions
+- **Remove active POI:** delete Seoul Korean from `albany_poi_dictionary.json`.
+- **Remove enrichment:** delete Seoul Korean from `doordash_poi_enrichment.json`.
+- **No closed flag:** current backend does not consume a closed flag, so removal is the safest active-data fix.
+
+### Build Steps
+- [x] S1. Append this Sprint 114 plan before edits.
+- [x] S2. Remove static POI entry.
+- [x] S3. Remove DoorDash enrichment entry.
+- [x] S4. Validate JSON and absence.
+
+### Acceptance Criteria
+- Seoul Korean no longer appears in the active static food POI dictionary.
+- Seoul Korean no longer appears in DoorDash enrichment data.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not remove Namu Korean BBQ Restaurant.
+- Do not change food scoring.
+- Do not add replacement restaurants in this sprint.
+
 ## Sprint 113 - Tighten State Worker Commute Pulse
 
 Move state-worker evening commute demand earlier and shorten the tail so it does not keep showing as a strong event around 5 PM and beyond.
@@ -4531,6 +4556,31 @@ Add the user's fifth batch of DoorDash merchants to the static POI + DoorDash en
 ### Anti-Goals
 - Do not change backend logic.
 - Do not invent coordinates for null-coordinate merchants.
+
+## Sprint 115 - Add Crossgates Food Court POIs
+
+Add the user's personally confirmed Crossgates Mall food court and counter-service merchants to the static food POI dictionary and delivery enrichment file.
+
+### Decisions
+- **Mall-cluster coordinates:** use `1 Crossgates Mall Rd` coordinates for each food court merchant so they cluster together.
+- **User-confirmed Wendy's:** include Wendy's even though it was not visible in the official PDF directory.
+- **Conservative enrichment:** do not invent ratings/review counts; use null ratings with categories, near-mall distance, and pickup-style ETAs.
+- **Daypart handling:** mark Dunkin' Donuts as breakfast/morning; keep other food court merchants available for lunch/dinner/late-night scoring.
+
+### Build Steps
+- [x] S1. Add Crossgates food court meal anchors to `albany_poi_dictionary.json`.
+- [x] S2. Add lower-priority snack/drink food court merchants to `albany_poi_dictionary.json`.
+- [x] S3. Add matching conservative entries to `doordash_poi_enrichment.json`.
+- [x] S4. Validate JSON and confirm each added merchant appears once.
+
+### Acceptance Criteria
+- Crossgates food court merchants can appear as food delivery anchors.
+- Sbarro remains present and is not duplicated.
+- JSON validation passes.
+
+### Anti-Goals
+- Do not change food scoring logic.
+- Do not add coming-soon merchants until confirmed open.
 ## Sprint 77 - Add DoorDash Batch 4 POIs
 
 Add the user's fourth batch of DoorDash merchants to the static POI + DoorDash enrichment data.
