@@ -69,6 +69,33 @@ function filterFoodPois(pois, localStart) {
     : pois;
 }
 
+function parseStaticPoiHHMM(value) {
+  if (typeof value !== "string") return null;
+  const m = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function isStaticPoiActiveNow(poi, localStart) {
+  if (!Array.isArray(poi?.activeWindows) || poi.activeWindows.length === 0) return true;
+  const currentDay = localStart.getUTCDay();
+  const currentMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  const prevDay = (currentDay + 6) % 7;
+  for (const window of poi.activeWindows) {
+    const days = Array.isArray(window?.days) ? window.days : [0, 1, 2, 3, 4, 5, 6];
+    const start = parseStaticPoiHHMM(window?.start);
+    const end = parseStaticPoiHHMM(window?.end);
+    if (start == null || end == null) continue;
+    if (start <= end) {
+      if (days.includes(currentDay) && currentMin >= start && currentMin <= end) return true;
+    } else {
+      if (days.includes(currentDay) && currentMin >= start) return true;
+      if (days.includes(prevDay) && currentMin <= end) return true;
+    }
+  }
+  return false;
+}
+
 function isMorningYieldWindow(localStart) {
   if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return false;
   const minutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
@@ -227,6 +254,27 @@ const roiFilterCases = [
   },
 ];
 
+const crossgatesFoodCourtWindow = [
+  { days: [0], start: "11:00", end: "18:00" },
+  { days: [1, 2, 3, 4], start: "11:00", end: "20:00" },
+  { days: [5, 6], start: "11:00", end: "21:00" },
+];
+
+const activeWindowCases = [
+  {
+    name: "Crossgates food court active Friday dinner",
+    item: { activeWindows: crossgatesFoodCourtWindow },
+    date: new Date(Date.UTC(2026, 6, 10, 18, 0)),
+    expect: true,
+  },
+  {
+    name: "Crossgates food court inactive Friday 11:49 PM",
+    item: { activeWindows: crossgatesFoodCourtWindow },
+    date: new Date(Date.UTC(2026, 6, 10, 23, 49)),
+    expect: false,
+  },
+];
+
 let allPass = true;
 console.log("=== Sprint 84 Food Daypart Filter - Test Run ===\n");
 for (const c of cases) {
@@ -252,6 +300,13 @@ for (const c of roiFilterCases) {
   const ok = got === c.expect;
   if (!ok) allPass = false;
   console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${c.expect}\n  got      ${got}`);
+}
+
+for (const c of activeWindowCases) {
+  const got = isStaticPoiActiveNow(c.item, c.date);
+  const ok = got === c.expect;
+  if (!ok) allPass = false;
+  console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}: expected ${c.expect}, got ${got}`);
 }
 console.log("\n=== " + (allPass ? "ALL SCENARIOS PASS" : "FAILURES PRESENT") + " ===");
 process.exit(allPass ? 0 : 1);

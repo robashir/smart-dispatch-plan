@@ -26,6 +26,7 @@ export function normalizeByodSnapshot(value = {}) {
     trainConfigOutbound: cleanTrainConfig(value.trainConfigOutbound),
     busConfigInbound: cleanRawTextConfig(value.busConfigInbound),
     flightConfigInbound: cleanRawTextConfig(value.flightConfigInbound),
+    weatherConfig: cleanRawTextConfig(value.weatherConfig),
   };
 }
 

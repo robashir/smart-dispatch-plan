@@ -4581,6 +4581,55 @@ Add the user's personally confirmed Crossgates Mall food court and counter-servi
 ### Anti-Goals
 - Do not change food scoring logic.
 - Do not add coming-soon merchants until confirmed open.
+
+## Sprint 116 - BYOD Weather Override
+
+Allow the driver to paste manual weather observations through the existing BYOD textarea workflow when the live weather API misses local rain, snow, ice, or storm conditions.
+
+### Decisions
+- **Same BYOD pattern:** add Weather Override as a BYOD mode using localStorage plus Netlify Blobs.
+- **API fallback:** keep Open-Meteo as the default and only override it when today's manual weather text is saved.
+- **Parser shape:** convert manual text into the existing hourly weather row format so current weather modifiers stay the single scoring path.
+- **Supported text:** parse condition/severity/duration from phrases like `moderate rain for 2 hours` or `heavy snow until 9 PM`.
+
+### Build Steps
+- [x] S1. Add `weatherConfig` to the BYOD Blob snapshot normalizer.
+- [x] S2. Add Weather Override mode to the BYOD UI, localStorage hydration, save flow, and dispatch body.
+- [x] S3. Add backend manual weather parser and merge it before `computeWeatherModifiers`.
+- [x] S4. Extend weather tests for manual override parsing.
+
+### Acceptance Criteria
+- Saving Weather Override persists for today locally and in Netlify Blobs.
+- Dispatch uses manual weather rows instead of API rows while the override is active.
+- GitHub Actions/Telegram dispatch can read saved manual weather from Netlify Blobs.
+- Existing weather modifier tests still pass.
+
+### Anti-Goals
+- Do not remove the live weather API.
+- Do not add a separate weather form yet.
+
+## Sprint 117 - Gate Crossgates Food Court Late Night
+
+Prevent Crossgates Mall food-court POIs from showing as late-night delivery recommendations after mall food service is closed.
+
+### Decisions
+- **Data-level fix:** use existing static POI `activeWindows`; do not alter hotspot scoring.
+- **Mall close alignment:** use Sun 11 AM-6 PM, Mon-Thu 11 AM-8 PM, Fri-Sat 11 AM-9 PM for Crossgates food-court entries.
+- **Regression target:** Sbarro/Crossgates food court should not be active at Friday 11:49 PM.
+
+### Build Steps
+- [x] S1. Add active windows to Crossgates food-court POIs.
+- [x] S2. Add food policy regression coverage for Friday 11:49 PM.
+- [x] S3. Validate JSON and production build.
+
+### Acceptance Criteria
+- Crossgates food-court hotspots can appear during mall meal windows.
+- Crossgates food-court hotspots do not appear late night after close.
+- Existing weather and food tests pass.
+
+### Anti-Goals
+- Do not remove Crossgates food-court merchants.
+- Do not change late-night scoring for non-mall restaurants.
 ## Sprint 77 - Add DoorDash Batch 4 POIs
 
 Add the user's fourth batch of DoorDash merchants to the static POI + DoorDash enrichment data.

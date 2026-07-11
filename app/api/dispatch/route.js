@@ -15,7 +15,7 @@ const ALBANY_POI_DICTIONARY = Object.freeze(ALBANY_POI_DICTIONARY_RAW);
 // enriches matching static POIs by normalized name instead of creating pins.
 import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" with { type: "json" };
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
-import { readByodSnapshot } from "../../lib/byod-store";
+import { readByodSnapshot } from "../../lib/byod-store.js";
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
 // built by scripts/build-census-grid.js and loaded once at module-load time
@@ -838,6 +838,228 @@ function weatherReasonFor(condition, severity, isPrecipPreSurge = false) {
   if (condition === "heat") return "Heat above 90F active";
   return "Clear weather baseline";
 }
+
+function manualSeverityFromText(text, condition) {
+  if (/heavy|severe|torrential|downpour|blizzard|whiteout|storm/i.test(text)) return "heavy";
+  if (/moderate|steady/i.test(text)) return "moderate";
+  if (/light|drizzle|flurr/i.test(text)) return "light";
+  if (/trace|mist/i.test(text)) return "trace";
+  if (condition === "rain" || condition === "snow" || condition === "ice") return "moderate";
+  return "clear";
+}
+
+function manualConditionFromText(text) {
+  if (/freezing\s+rain|sleet|ice|icy|black\s+ice/i.test(text)) return "ice";
+  if (/snow|flurr|blizzard|whiteout/i.test(text)) return "snow";
+  if (/rain|shower|drizzle|thunder|storm|downpour/i.test(text)) return "rain";
+  if (/heat|hot|humid/i.test(text)) return "heat";
+  return "clear";
+}
+
+function manualDurationHoursFromText(text, localStart, maxHours) {
+  const explicit = text.match(/\b(?:for|next)\s+(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b/i);
+  if (explicit) {
+    return Math.max(1, Math.min(maxHours, Math.ceil(Number(explicit[1]))));
+  }
+
+  const until = text.match(/\buntil\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  if (until && localStart instanceof Date && !Number.isNaN(localStart.getTime())) {
+    let hour = Number(until[1]);
+    const minute = until[2] ? Number(until[2]) : 0;
+    const ampm = until[3]?.toLowerCase() || "";
+    if (ampm) {
+      if (hour === 12) hour = 0;
+      if (ampm === "pm") hour += 12;
+    }
+    let targetMinutes = hour * 60 + minute;
+    const nowMinutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+    if (!ampm && targetMinutes <= nowMinutes) targetMinutes += 24 * 60;
+    if (ampm && targetMinutes <= nowMinutes - 60) targetMinutes += 24 * 60;
+    const deltaHours = Math.ceil((targetMinutes - nowMinutes) / 60);
+    if (deltaHours > 0) return Math.max(1, Math.min(maxHours, deltaHours));
+  }
+
+  return Math.min(maxHours, 2);
+}
+
+function manualWeatherAmounts(condition, severity) {
+  if (condition === "snow" || condition === "ice") {
+    const snowfall = { heavy: 0.8, moderate: 0.4, light: 0.12, trace: 0.02 }[severity] || 0;
+    return { precipInches: 0, snowfallInches: snowfall };
+  }
+  if (condition === "rain") {
+    const precip = { heavy: 0.3, moderate: 0.12, light: 0.03, trace: 0.005 }[severity] || 0;
+    return { precipInches: precip, snowfallInches: 0 };
+  }
+  return { precipInches: 0, snowfallInches: 0 };
+}
+
+function manualWeatherCode(condition, severity) {
+  if (condition === "ice") return 67;
+  if (condition === "snow") return severity === "heavy" ? 75 : severity === "moderate" ? 73 : 71;
+  if (condition === "rain") return severity === "heavy" ? 65 : severity === "moderate" ? 63 : 61;
+  if (condition === "heat") return 0;
+  return 3;
+}
+
+function parseManualWeatherTimeToMinutes(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const match = text.match(/^(\d{1,2})\s*:?\s*(\d{2})?\s*(am|pm)$/i);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = match[2] ? Number(match[2]) : 0;
+  const ampm = match[3].toLowerCase();
+  if (hour === 12) hour = 0;
+  if (ampm === "pm") hour += 12;
+  return hour * 60 + minute;
+}
+
+function conditionFromWeatherDescription(description) {
+  const text = String(description || "").toLowerCase();
+  if (/freezing|sleet|ice|icy/.test(text)) return "ice";
+  if (/snow|flurr|blizzard/.test(text)) return "snow";
+  if (/rain|shower|drizzle|thunder|storm/.test(text)) return "rain";
+  return "clear";
+}
+
+function weatherCodeFromDescription(description, precipChancePct = 0) {
+  const text = String(description || "").toLowerCase();
+  if (/freezing|sleet|ice|icy/.test(text)) return 67;
+  if (/heavy.*snow|blizzard/.test(text)) return 75;
+  if (/snow|flurr/.test(text)) return 71;
+  if (/thunder|storm/.test(text)) return 95;
+  if (/heavy.*rain|downpour/.test(text)) return 65;
+  if (/rain|shower/.test(text)) return 61;
+  if (/drizzle/.test(text)) return 51;
+  if (/clear|sunny/.test(text)) return 0;
+  if (/cloud|overcast/.test(text)) return 3;
+  return precipChancePct >= 50 ? 61 : 0;
+}
+
+function parseNumberFromWeatherCell(value) {
+  const match = String(value || "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+
+function parseManualWeatherTable(rawText, localStart, hours) {
+  const text = typeof rawText === "string" ? rawText.trim() : "";
+  if (!/\bTime\b/i.test(text) || !/\bConditions\b/i.test(text) || !/\bPrecip\b/i.test(text)) {
+    return null;
+  }
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return null;
+
+  const hourlyRows = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || /^time\s+/i.test(trimmed)) continue;
+
+    let parts = trimmed.split(/\t+/).map((part) => part.trim()).filter(Boolean);
+    if (parts.length < 6) {
+      const match = trimmed.match(
+        /^(\d{1,2}\s*:?\s*\d{2}\s*(?:am|pm))\s+(.+?)\s+(-?\d+)\s*°?F\s+(-?\d+)\s*°?F\s+(\d{1,3})\s*%\s+(\d+(?:\.\d+)?)\s*in/i
+      );
+      if (match) parts = [match[1], match[2], `${match[3]} F`, `${match[4]} F`, `${match[5]} %`, `${match[6]} in`];
+    }
+    if (parts.length < 6) continue;
+
+    const minutes = parseManualWeatherTimeToMinutes(parts[0]);
+    if (minutes == null) continue;
+
+    const description = parts[1].replace(/([a-z])([A-Z])/g, "$1 $2");
+    const tempF = parseNumberFromWeatherCell(parts[2]);
+    const precipChancePct = Math.max(0, Math.min(100, parseNumberFromWeatherCell(parts[4])));
+    const amountInches = parseNumberFromWeatherCell(parts[5]);
+    const condition = conditionFromWeatherDescription(description);
+    const isSnowOrIce = condition === "snow" || condition === "ice";
+
+    hourlyRows.set(minutes, {
+      time: null,
+      tempF,
+      precipChancePct,
+      precipInches: isSnowOrIce ? 0 : amountInches,
+      snowfallInches: isSnowOrIce ? amountInches : 0,
+      weatherCode: weatherCodeFromDescription(description, precipChancePct),
+      source: "manual_table",
+      manualCondition: description,
+    });
+  }
+
+  if (hourlyRows.size === 0) return null;
+
+  const hoursNum = Math.max(1, Math.min(4, Number(hours) || 1));
+  const startHourMinutes = localStart.getUTCHours() * 60;
+  return Array.from({ length: hoursNum + 1 }, (_, index) => {
+    const absoluteMinutes = startHourMinutes + index * 60;
+    const clockMinutes = ((absoluteMinutes % 1440) + 1440) % 1440;
+    const row = hourlyRows.get(clockMinutes);
+    const rowTime = new Date(localStart.getTime());
+    rowTime.setUTCHours(Math.floor(clockMinutes / 60), clockMinutes % 60, 0, 0);
+    if (absoluteMinutes >= 1440) rowTime.setUTCDate(rowTime.getUTCDate() + 1);
+
+    return row
+      ? { ...row, time: rowTime.toISOString().slice(0, 16) }
+      : {
+          time: rowTime.toISOString().slice(0, 16),
+          tempF: 65,
+          precipChancePct: 0,
+          precipInches: 0,
+          snowfallInches: 0,
+          weatherCode: 0,
+          source: "manual_table_missing_hour",
+        };
+  });
+}
+
+export function parseManualWeatherOverrideText(rawText, localStart, hours) {
+  const text = typeof rawText === "string" ? rawText.trim() : "";
+  const hoursNum = Math.max(1, Math.min(4, Number(hours) || 1));
+  if (!text) return null;
+
+  const tableRows = parseManualWeatherTable(text, localStart, hoursNum);
+  if (tableRows) return tableRows;
+
+  const condition = manualConditionFromText(text);
+  const severity = manualSeverityFromText(text, condition);
+  const durationHours = manualDurationHoursFromText(text, localStart, hoursNum);
+  const chanceMatch = text.match(/(\d{1,3})\s*%/);
+  const precipChancePct = chanceMatch
+    ? Math.max(0, Math.min(100, Number(chanceMatch[1])))
+    : condition === "clear"
+    ? 0
+    : 90;
+  const tempMatch = text.match(/(\d{2,3})\s*(?:f|deg|degrees)/i);
+  const explicitTemp = tempMatch ? Number(tempMatch[1]) : null;
+
+  return Array.from({ length: hoursNum + 1 }, (_, index) => {
+    const active = index < durationHours;
+    const rowTime =
+      localStart instanceof Date && !Number.isNaN(localStart.getTime())
+        ? new Date(localStart.getTime() + index * 60 * 60 * 1000).toISOString().slice(0, 16)
+        : null;
+    if (!active) {
+      return {
+        time: rowTime,
+        tempF: explicitTemp ?? 65,
+        precipChancePct: 0,
+        precipInches: 0,
+        snowfallInches: 0,
+        weatherCode: 0,
+        source: "manual",
+      };
+    }
+    const amounts = manualWeatherAmounts(condition, severity);
+    return {
+      time: rowTime,
+      tempF: explicitTemp ?? (condition === "heat" ? 92 : 65),
+      precipChancePct,
+      ...amounts,
+      weatherCode: manualWeatherCode(condition, severity),
+      source: "manual",
+      manualText: text,
+    };
+  });
+}
+
 export function computeWeatherModifiers(weatherArray) {
   const fallback = {
     weatherFoodMod: 1.0,
@@ -2876,6 +3098,7 @@ export async function POST(request) {
       // existing aggregator runs. Fault-tolerant: if either source is empty
       // the surviving one still drives the bucket math.
       inboundFlights: inboundFlightsRaw = "",
+      weatherOverride: weatherOverrideRaw = "",
     } = body;
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
@@ -2911,7 +3134,8 @@ export async function POST(request) {
       (Array.isArray(inboundTrainsRaw) && inboundTrainsRaw.length > 0) ||
       (Array.isArray(outboundTrainsRaw) && outboundTrainsRaw.length > 0) ||
       (typeof inboundBusesRaw === "string" && inboundBusesRaw.trim()) ||
-      (typeof inboundFlightsRaw === "string" && inboundFlightsRaw.trim());
+      (typeof inboundFlightsRaw === "string" && inboundFlightsRaw.trim()) ||
+      (typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim());
     if (!requestHasByod) {
       try {
         byodSnapshot = await readByodSnapshot();
@@ -2945,6 +3169,10 @@ export async function POST(request) {
         ? inboundBusesRaw
         : savedTodayRawText(byodSnapshot?.busConfigInbound, todayForServerByod);
     const inboundBuses = inboundBusText ? parseBusSchedule(inboundBusText) : [];
+    const weatherOverrideText =
+      typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim()
+        ? weatherOverrideRaw
+        : savedTodayRawText(byodSnapshot?.weatherConfig, todayForServerByod);
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -3012,7 +3240,11 @@ export async function POST(request) {
     // off the same Open-Meteo call. Unpack here so the rest of the pipeline
     // (computeWeatherModifiers, mergedPayload.weather, computeSupplyDropMod)
     // keeps its existing shape.
-    const weatherWindowed = weatherResult?.weatherWindowed ?? null;
+    const apiWeatherWindowed = weatherResult?.weatherWindowed ?? null;
+    const manualWeatherWindowed = weatherOverrideText
+      ? parseManualWeatherOverrideText(weatherOverrideText, localStart, hoursNum)
+      : null;
+    const weatherWindowed = manualWeatherWindowed ?? apiWeatherWindowed;
     const sunsetTime = weatherResult?.sunsetTime ?? null;
 
     // Sprint 18: compute temporal multipliers off the driver's wall-clock
@@ -3024,7 +3256,14 @@ export async function POST(request) {
     // Sprint 19: weather modifiers stack multiplicatively on top of temporal.
     // No cap/floor on the combined product — chaotic events (e.g., Fri bar
     // rush + thunderstorm) must compound naturally.
-    const weatherModifiers = computeWeatherModifiers(weatherWindowed);
+    const weatherModifiersRaw = computeWeatherModifiers(weatherWindowed);
+    const weatherModifiers = manualWeatherWindowed
+      ? {
+          ...weatherModifiersRaw,
+          source: "manual",
+          reason: `Manual override: ${weatherModifiersRaw.reason}`,
+        }
+      : weatherModifiersRaw;
     const { weatherFoodMod, weatherRideMod } = weatherModifiers;
     let finalFoodMod = foodMod * weatherFoodMod;
     let finalRideMod = rideMod * weatherRideMod;

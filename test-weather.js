@@ -12,7 +12,7 @@ const routeUrl =
     .replace(/\\/g, "/");
 
 (async () => {
-  const { computeWeatherModifiers } = await import(routeUrl);
+  const { computeWeatherModifiers, parseManualWeatherOverrideText } = await import(routeUrl);
 
   const row = (overrides = {}) => ({
     time: "2026-06-09T12:00",
@@ -99,6 +99,73 @@ const routeUrl =
       })}`
     );
   }
+
+  const manualStart = new Date("2026-06-09T18:15:00.000Z");
+  const manualCases = [
+    {
+      name: "Manual moderate rain for 2 hours",
+      text: "Moderate rain now for 2 hours",
+      expect: { condition: "rain", severity: "moderate", food: 1.35, ride: 1.1, supply: 0.85 },
+    },
+    {
+      name: "Manual heavy snow until 9 PM",
+      text: "Heavy snow until 9 PM",
+      expect: { condition: "snow", severity: "heavy", food: 1.8, ride: 1.3, supply: 0.55 },
+    },
+  ];
+
+  console.log("\n=== Manual Weather Override Parser ===\n");
+  for (const c of manualCases) {
+    const rows = parseManualWeatherOverrideText(c.text, manualStart, 4);
+    const got = computeWeatherModifiers(rows);
+    const ok =
+      got.condition === c.expect.condition &&
+      got.severity === c.expect.severity &&
+      got.weatherFoodMod === c.expect.food &&
+      got.weatherRideMod === c.expect.ride &&
+      got.driverSupplyMod === c.expect.supply;
+    if (!ok) allPass = false;
+    console.log(
+      `${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${JSON.stringify(c.expect)}\n  got      ${JSON.stringify({
+        condition: got.condition,
+        severity: got.severity,
+        food: got.weatherFoodMod,
+        ride: got.weatherRideMod,
+        supply: got.driverSupplyMod,
+      })}`
+    );
+  }
+
+  const manualTable = [
+    "Time\tConditions\tTemp.\tFeels Like\tPrecip\tAmount\tCloud Cover\tDew Point\tHumidity\tWind\tPressure",
+    "12 :00 pm\tMostly SunnyMostly Sunny\t80 °F\t81 °F\t0 %\t0 in\t20 %\t57 °F\t45 %\t7 mph NNE\t29.97 in",
+    "1 :00 pm\tLight RainLight Rain\t78 °F\t78 °F\t80 %\t0.03 in\t90 %\t61 °F\t68 %\t5 mph N\t29.95 in",
+    "2 :00 pm\tCloudyCloudy\t77 °F\t77 °F\t10 %\t0 in\t100 %\t61 °F\t69 %\t5 mph N\t29.95 in",
+  ].join("\n");
+  const tableRows = parseManualWeatherOverrideText(manualTable, new Date("2026-06-09T13:20:00.000Z"), 2);
+  const tableGot = computeWeatherModifiers(tableRows);
+  const tableOk =
+    tableGot.condition === "rain" &&
+    tableGot.severity === "light" &&
+    tableGot.weatherFoodMod === 1.15 &&
+    tableGot.weatherRideMod === 1.05 &&
+    tableGot.driverSupplyMod === 0.95;
+  if (!tableOk) allPass = false;
+  console.log(
+    `${tableOk ? "PASS" : "FAIL"} - Manual hourly weather table\n  expected ${JSON.stringify({
+      condition: "rain",
+      severity: "light",
+      food: 1.15,
+      ride: 1.05,
+      supply: 0.95,
+    })}\n  got      ${JSON.stringify({
+      condition: tableGot.condition,
+      severity: tableGot.severity,
+      food: tableGot.weatherFoodMod,
+      ride: tableGot.weatherRideMod,
+      supply: tableGot.driverSupplyMod,
+    })}`
+  );
 
   console.log("\n=== " + (allPass ? "ALL SCENARIOS PASS" : "FAILURES PRESENT") + " ===");
   process.exit(allPass ? 0 : 1);

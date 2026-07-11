@@ -209,6 +209,10 @@ export default function Home() {
     savedDate: null,
     rawText: "",
   });
+  const [weatherConfig, setWeatherConfig] = useState({
+    savedDate: null,
+    rawText: "",
+  });
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -293,6 +297,20 @@ export default function Home() {
       }
     } catch (e) {
       console.warn("flightConfigInbound hydrate failed:", e.message);
+    }
+    try {
+      const raw = localStorage.getItem("weatherConfig");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.rawText === "string") {
+          setWeatherConfig({
+            savedDate: typeof parsed.savedDate === "string" ? parsed.savedDate : null,
+            rawText: parsed.rawText,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("weatherConfig hydrate failed:", e.message);
     }
   }, []);
 
@@ -380,6 +398,7 @@ export default function Home() {
       trainConfigOutbound,
       busConfigInbound,
       flightConfigInbound,
+      weatherConfig,
       ...overrides,
     };
     try {
@@ -435,6 +454,15 @@ export default function Home() {
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
       }
+      if (direction === "weather") {
+        const payload = { savedDate: todayLocalISO(), rawText: trainRawText };
+        localStorage.setItem("weatherConfig", JSON.stringify(payload));
+        setWeatherConfig(payload);
+        await syncByodSnapshot({ weatherConfig: payload });
+        setTrainSaveStatus("saved");
+        setTimeout(() => setTrainSaveStatus("idle"), 2000);
+        return;
+      }
       const trains = parseAmtrakText(trainRawText, direction);
       if (trains.length === 0) {
         throw new Error("No Amtrak trains parsed from pasted text.");
@@ -482,6 +510,11 @@ export default function Home() {
           localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
           setFlightConfigInbound(payload);
           await syncByodSnapshot({ flightConfigInbound: payload });
+        } else if (direction === "weather") {
+          const payload = { savedDate: today, rawText: text };
+          localStorage.setItem("weatherConfig", JSON.stringify(payload));
+          setWeatherConfig(payload);
+          await syncByodSnapshot({ weatherConfig: payload });
         } else {
           const trains = parseAmtrakText(text, direction);
           if (trains.length === 0) {
@@ -622,6 +655,12 @@ export default function Home() {
         typeof flightConfigInbound.rawText === "string"
           ? flightConfigInbound.rawText
           : "";
+      body.weatherOverride =
+        weatherConfig &&
+        weatherConfig.savedDate === today &&
+        typeof weatherConfig.rawText === "string"
+          ? weatherConfig.rawText
+          : "";
 
       const res = await fetch("/api/dispatch", {
         method: "POST",
@@ -664,6 +703,12 @@ export default function Home() {
     trainConfigOutbound?.savedDate === todayForSavedCounts && Array.isArray(trainConfigOutbound.trains)
       ? trainConfigOutbound.trains.length
       : 0;
+  const savedWeatherOverride =
+    weatherConfig?.savedDate === todayForSavedCounts &&
+    typeof weatherConfig.rawText === "string" &&
+    weatherConfig.rawText.trim()
+      ? "Yes"
+      : "No";
 
   // Sprint 33 + Sprint 48: global Top Pick. Run BEFORE the tab filter so
   // the banner can name a winner in the inactive tab if it deserves the
@@ -779,6 +824,7 @@ export default function Home() {
                   { value: "outbound", label: "Amtrak Outbound" },
                   { value: "busInbound", label: "Bus Inbound" },
                   { value: "flightInbound", label: "Flight Inbound" },
+                  { value: "weather", label: "Weather Override" },
                 ].map((opt) => (
                   <label key={opt.value} className="flex items-center gap-2 text-sm">
                     <input
@@ -805,6 +851,8 @@ export default function Home() {
                 ? "Paste Flight Status"
                 : direction === "busInbound"
                 ? "Paste Bus Status"
+                : direction === "weather"
+                ? "Paste Weather Override"
                 : direction === "outbound"
                 ? "Paste Amtrak Outbound Status"
                 : "Paste Amtrak Inbound Status"}
@@ -813,7 +861,11 @@ export default function Home() {
               value={trainRawText}
               onChange={(e) => setTrainRawText(e.target.value)}
               disabled={isBusy}
-              placeholder="Paste Amtrak status here..."
+              placeholder={
+                direction === "weather"
+                  ? "Paste hourly weather table, or type: Moderate rain for 2 hours"
+                  : "Paste Amtrak status here..."
+              }
               rows={6}
               className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm font-mono disabled:opacity-60"
             />
@@ -832,6 +884,12 @@ export default function Home() {
                 ? "Save Failed"
                 : trainSaveStatus === "saving"
                 ? "Saving..."
+                : direction === "flightInbound"
+                ? "Save Flights"
+                : direction === "busInbound"
+                ? "Save Buses"
+                : direction === "weather"
+                ? "Save Weather"
                 : "Save Trains"}
             </button>
 
@@ -840,7 +898,7 @@ export default function Home() {
                 Sedan / SUV defaults all snap cleanly. Persisted to
                 localStorage on every change. */}
             <div className="text-xs text-neutral-500">
-              Saved today: Inbound {savedInboundTrainCount} | Outbound {savedOutboundTrainCount}
+              Saved today: Inbound {savedInboundTrainCount} | Outbound {savedOutboundTrainCount} | Weather {savedWeatherOverride}
             </div>
 
             <div className="flex flex-col gap-2 mt-3">
