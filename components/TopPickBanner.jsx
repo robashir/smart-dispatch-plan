@@ -1,3 +1,8 @@
+import {
+  formatByodTrainDemandLabel,
+  formatByodTrainHeading,
+} from "./byod-train-labels.mjs";
+
 // Sprint 33: Top Pick global banner. Renders ABOVE the Sprint 32.1 tab
 // toggle so the driver sees their single best move regardless of which
 // surge family (transit vs food) it belongs to. Type-aware body so the
@@ -73,10 +78,12 @@ export function TopPickBanner({ data }) {
         data.categories.some((c) => /byod train/i.test(String(c)));
       body = (
         <>
-          <div className="text-2xl font-bold !text-black">{data.location}</div>
+          <div className="text-2xl font-bold !text-black">
+            {isByodTrain ? formatByodTrainHeading(data) : data.location}
+          </div>
           <div className="text-lg !text-black">
             {isByodTrain
-              ? "Inbound Train Demand"
+              ? formatByodTrainDemandLabel(data)
               : isLastCall
                 ? `${data.egressMod}x Demand Window`
                 : `${data.egressMod}x Egress Demand`}

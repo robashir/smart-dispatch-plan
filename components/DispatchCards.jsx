@@ -1,3 +1,8 @@
+import {
+  formatByodTrainDemandLabel,
+  formatByodTrainHeading,
+} from "./byod-train-labels.mjs";
+
 // Sprint 24: typed UI cards for the deterministic itinerary array.
 // Each card is a pure function component receiving { data } per PO spec.
 
@@ -117,10 +122,12 @@ export function EventCard({ data }) {
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">
         {isLocalAnchor ? "Local Anchor" : "Event Egress"}
       </div>
-      <div className="text-2xl font-bold mb-2">{data.location}</div>
+      <div className="text-2xl font-bold mb-2">
+        {isByodTrain ? formatByodTrainHeading(data) : data.location}
+      </div>
       <div className="text-lg">
         {isByodTrain
-          ? "Inbound Train Demand"
+          ? formatByodTrainDemandLabel(data)
           : isLocalAnchor
             ? "Routine Demand Pulse"
             : isLastCall
