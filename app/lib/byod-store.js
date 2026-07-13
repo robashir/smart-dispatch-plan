@@ -1,47 +1,22 @@
 import { getStore } from "@netlify/blobs";
+import {
+  mergeByodUpdates,
+  normalizeByodSnapshot,
+} from "./byod-snapshot.mjs";
 
 const STORE_NAME = "smart-dispatch-byod";
 const LATEST_KEY = "latest";
 
-function cleanTrainConfig(value) {
-  if (!value || typeof value !== "object") return { savedDate: null, trains: [] };
-  return {
-    savedDate: typeof value.savedDate === "string" ? value.savedDate : null,
-    trains: Array.isArray(value.trains) ? value.trains : [],
-  };
-}
-
-function cleanRawTextConfig(value) {
-  if (!value || typeof value !== "object") return { savedDate: null, rawText: "" };
-  return {
-    savedDate: typeof value.savedDate === "string" ? value.savedDate : null,
-    rawText: typeof value.rawText === "string" ? value.rawText : "",
-  };
-}
-
-export function normalizeByodSnapshot(value = {}) {
-  return {
-    savedAt: typeof value.savedAt === "string" ? value.savedAt : new Date().toISOString(),
-    trainConfigInbound: cleanTrainConfig(value.trainConfigInbound),
-    trainConfigOutbound: cleanTrainConfig(value.trainConfigOutbound),
-    busConfigInbound: cleanRawTextConfig(value.busConfigInbound),
-    flightConfigInbound: cleanRawTextConfig(value.flightConfigInbound),
-    weatherConfig: cleanRawTextConfig(value.weatherConfig),
-  };
-}
-
 function getByodStore() {
-  return getStore(STORE_NAME);
+  return getStore({ name: STORE_NAME, consistency: "strong" });
 }
 
-export async function saveByodSnapshot(snapshot) {
+export async function saveByodSnapshot(updates) {
   const store = getByodStore();
-  const clean = normalizeByodSnapshot({
-    ...snapshot,
-    savedAt: new Date().toISOString(),
-  });
-  await store.setJSON(LATEST_KEY, clean);
-  return clean;
+  const current = await store.get(LATEST_KEY, { type: "json" });
+  const merged = mergeByodUpdates(current, updates);
+  await store.setJSON(LATEST_KEY, merged);
+  return merged;
 }
 
 export async function readByodSnapshot() {
@@ -49,3 +24,5 @@ export async function readByodSnapshot() {
   const snapshot = await store.get(LATEST_KEY, { type: "json" });
   return snapshot ? normalizeByodSnapshot(snapshot) : null;
 }
+
+export { normalizeByodSnapshot };
