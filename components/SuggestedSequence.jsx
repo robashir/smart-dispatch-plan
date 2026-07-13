@@ -1,3 +1,5 @@
+import { formatByodTrainHeading } from "./byod-train-labels.mjs";
+
 function parseTimeLabel(label) {
   if (!label || typeof label !== "string") return Infinity;
   const m = label.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
@@ -83,6 +85,11 @@ function estimateDriveMinutes(from, to) {
 }
 
 function itemTitle(item) {
+  const categories = Array.isArray(item?.categories) ? item.categories : [];
+  const isByodTrain = categories.some((category) =>
+    /byod train/i.test(String(category))
+  );
+  if (isByodTrain) return formatByodTrainHeading(item);
   if (item?.location) return item.location;
   if (item?.hub) return item.hub;
   if (item?.hourBucket) return item.hourBucket;
