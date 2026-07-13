@@ -2,7 +2,7 @@
 // weather analysis object, while still preserving weatherFoodMod/weatherRideMod
 // for scoring. This component renders the decision context, not exact pairs.
 export function GlobalWeatherBanner({ weatherModifiers }) {
-  if (!weatherModifiers || weatherModifiers.condition === "clear") return null;
+  if (!weatherModifiers) return null;
 
   const {
     condition,
@@ -13,15 +13,21 @@ export function GlobalWeatherBanner({ weatherModifiers }) {
     driverSupplyMod,
     opportunityPressure,
     startsInMinutes,
+    currentTempF,
+    currentConditionLabel,
+    source,
   } = weatherModifiers;
 
+  const hasWeatherImpact = condition !== "clear";
   const isSnowOrIce = condition === "snow" || condition === "ice" || condition === "pre_snow" || condition === "pre_ice";
   const isHeat = condition === "heat";
   const theme = isSnowOrIce
     ? "bg-sky-950/60 text-sky-100 border border-sky-700"
     : isHeat
       ? "bg-amber-950/60 text-amber-100 border border-amber-700"
-      : "bg-blue-950/60 text-blue-100 border border-blue-700";
+      : hasWeatherImpact
+        ? "bg-blue-950/60 text-blue-100 border border-blue-700"
+        : "bg-neutral-900/70 text-neutral-100 border border-neutral-700";
 
   const foodPct = Math.round((Number(weatherFoodMod || 1) - 1) * 100);
   const ridePct = Math.round((Number(weatherRideMod || 1) - 1) * 100);
@@ -34,12 +40,24 @@ export function GlobalWeatherBanner({ weatherModifiers }) {
 
   return (
     <div className={`p-4 rounded-lg mb-2 text-sm font-semibold ${theme}`}>
-      <div>{reason || `${severity || "Weather"} ${condition}`}.{startText}</div>
-      <div className="mt-1 text-xs font-medium opacity-90">
-        Food {foodPct >= 0 ? "+" : ""}{foodPct}%, rides {ridePct >= 0 ? "+" : ""}{ridePct}%,
-        driver supply {supplyPct > 0 ? `${supplyPct}% tighter` : "normal"}
-        {Number.isFinite(pressure) && pressure !== 1 ? `, pressure ${pressure}x` : ""}
+      <div>
+        Weather now: {Number.isFinite(Number(currentTempF)) ? `${Math.round(Number(currentTempF))}°F · ` : ""}
+        {currentConditionLabel || "Weather unavailable"} · {source === "manual" ? "BYOD" : "Live"}
       </div>
+      {hasWeatherImpact ? (
+        <>
+          <div className="mt-1 text-xs font-medium opacity-90">
+            {reason || `${severity || "Weather"} ${condition}`}.{startText}
+          </div>
+          <div className="mt-1 text-xs font-medium opacity-90">
+            Food {foodPct >= 0 ? "+" : ""}{foodPct}%, rides {ridePct >= 0 ? "+" : ""}{ridePct}%,
+            driver supply {supplyPct > 0 ? `${supplyPct}% tighter` : "normal"}
+            {Number.isFinite(pressure) && pressure !== 1 ? `, pressure ${pressure}x` : ""}
+          </div>
+        </>
+      ) : (
+        <div className="mt-1 text-xs font-medium opacity-75">No weather demand adjustment.</div>
+      )}
     </div>
   );
 }

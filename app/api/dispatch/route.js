@@ -16,6 +16,7 @@ const ALBANY_POI_DICTIONARY = Object.freeze(ALBANY_POI_DICTIONARY_RAW);
 import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" with { type: "json" };
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
+import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
 // built by scripts/build-census-grid.js and loaded once at module-load time
@@ -1040,6 +1041,7 @@ export function parseManualWeatherOverrideText(rawText, localStart, hours) {
       return {
         time: rowTime,
         tempF: explicitTemp ?? 65,
+        hasExplicitTemp: explicitTemp !== null,
         precipChancePct: 0,
         precipInches: 0,
         snowfallInches: 0,
@@ -1051,6 +1053,7 @@ export function parseManualWeatherOverrideText(rawText, localStart, hours) {
     return {
       time: rowTime,
       tempF: explicitTemp ?? (condition === "heat" ? 92 : 65),
+      hasExplicitTemp: explicitTemp !== null,
       precipChancePct,
       ...amounts,
       weatherCode: manualWeatherCode(condition, severity),
@@ -3257,13 +3260,17 @@ export async function POST(request) {
     // No cap/floor on the combined product — chaotic events (e.g., Fri bar
     // rush + thunderstorm) must compound naturally.
     const weatherModifiersRaw = computeWeatherModifiers(weatherWindowed);
+    const currentWeatherDisplay = buildCurrentWeatherDisplay(
+      weatherWindowed?.[0],
+      Boolean(manualWeatherWindowed)
+    );
     const weatherModifiers = manualWeatherWindowed
       ? {
           ...weatherModifiersRaw,
-          source: "manual",
+          ...currentWeatherDisplay,
           reason: `Manual override: ${weatherModifiersRaw.reason}`,
         }
-      : weatherModifiersRaw;
+      : { ...weatherModifiersRaw, ...currentWeatherDisplay };
     const { weatherFoodMod, weatherRideMod } = weatherModifiers;
     let finalFoodMod = foodMod * weatherFoodMod;
     let finalRideMod = rideMod * weatherRideMod;
