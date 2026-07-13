@@ -1130,14 +1130,15 @@ export function computeTemporalModifiers(dateObj) {
 
   if ((day === 6 || day === 0) && hour === 10) foodMod = 1.3;
   if (hour >= 11 && hour <= 13) foodMod = 1.5;
+  if (hour >= 14 && hour < 17) foodMod = 0.5;
   if (hour >= 17 && hour <= 20) foodMod = 1.5;
+  if (hour >= 21 || hour < 2) foodMod = 0.8;
+  if (hour >= 2 && hour < 6) foodMod = 0.25;
   if ((day === 5 || day === 6) && hour >= 22) {
     rideMod = 1.15;
-    foodMod = 0.8;
   }
   if ((day === 6 || day === 0) && hour < 2) {
     rideMod = 1.15;
-    foodMod = 0.8;
   }
 
   return { foodMod, rideMod };
