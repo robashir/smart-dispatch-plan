@@ -3,6 +3,11 @@ import {
   formatByodFlightHeading,
   isByodOutboundFlight,
 } from "./byod-flight-labels.mjs";
+import {
+  formatInboundFlightArrivalWindow,
+  formatInboundFlightSequenceHeading,
+  formatOutboundFlightNextWindow,
+} from "./flight-sequence-copy.mjs";
 
 function parseTimeLabel(label) {
   if (!label || typeof label !== "string") return Infinity;
@@ -95,6 +100,7 @@ function itemTitle(item) {
   );
   if (isByodOutboundFlight(item)) return formatByodFlightHeading(item);
   if (isByodTrain) return formatByodTrainHeading(item);
+  if (item?.type === "flight") return formatInboundFlightSequenceHeading(item);
   if (item?.location) return item.location;
   if (item?.hub) return item.hub;
   if (item?.hourBucket) return item.hourBucket;
@@ -120,6 +126,12 @@ function beThereByText(item, nowMin) {
   const targetMin = parseTimeLabel(itemWindowLabel(item));
   if (!Number.isFinite(targetMin)) return null;
   const delta = minutesUntil(targetMin, nowMin);
+  if (isByodOutboundFlight(item)) {
+    if (delta <= 3) return "Target ALB now";
+    const time = formatMinute(targetMin);
+    return time ? `Complete an ALB drop-off by ${time}` : null;
+  }
+  if (item?.type === "flight" && delta <= 3) return "Stay near ALB now";
   if (delta <= 3) return `Stay near ${itemTitle(item)} now`;
   const time = formatMinute(targetMin - arrivalBufferMinutes(item));
   if (!time) return null;
@@ -153,7 +165,7 @@ function shouldShowAvoidLongTrips(current, next) {
 
 function itemAction(item) {
   const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
-  if (isByodOutboundFlight(item)) return "Work outbound airport drop-offs";
+  if (isByodOutboundFlight(item)) return "Target an airport-bound drop-off";
   if (/BYOD Train/i.test(cats)) {
     return /Outbound/i.test(cats)
       ? "Work outbound station ingress"
@@ -177,6 +189,8 @@ function transitionText(current, next) {
   const sameAnchor = anchorKey(current) === anchorKey(next);
 
   if (sameAnchor) {
+    if (isByodOutboundFlight(next)) return formatOutboundFlightNextWindow(next);
+    if (next?.type === "flight") return formatInboundFlightArrivalWindow(next);
     if (Number.isFinite(gap) && gap > 90) {
       return `Long gap before ${target}; work nearby demand instead of waiting. ${returnByText(next)}`;
     }
