@@ -6,6 +6,7 @@ import { TopPickBanner } from "../components/TopPickBanner";
 import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
 import { PeakSurgeBanner } from "../components/PeakSurgeBanner";
 import { SuggestedSequence } from "../components/SuggestedSequence";
+import { DemandFirstSuggestedSequence } from "../components/DemandFirstSuggestedSequence";
 import DispatchMap from "../components/DispatchMap";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 import {
@@ -1096,6 +1097,13 @@ export default function Home() {
 
         {status === "done" && (
           <SuggestedSequence itinerary={[...itinerary, ...sequenceCandidates]} />
+        )}
+
+        {status === "done" && (
+          <DemandFirstSuggestedSequence
+            itinerary={[...itinerary, ...sequenceCandidates]}
+            driverCoords={driverCoords}
+          />
         )}
 
         {status === "done" && (
