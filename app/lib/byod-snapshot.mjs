@@ -3,6 +3,7 @@ export const BYOD_CONFIG_KEYS = [
   "trainConfigOutbound",
   "busConfigInbound",
   "flightConfigInbound",
+  "flightConfigOutbound",
   "weatherConfig",
 ];
 

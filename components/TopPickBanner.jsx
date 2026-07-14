@@ -2,6 +2,11 @@ import {
   formatByodTrainDemandLabel,
   formatByodTrainHeading,
 } from "./byod-train-labels.mjs";
+import {
+  formatByodFlightDemandLabel,
+  formatByodFlightHeading,
+  isByodOutboundFlight,
+} from "./byod-flight-labels.mjs";
 
 // Sprint 33: Top Pick global banner. Renders ABOVE the Sprint 32.1 tab
 // toggle so the driver sees their single best move regardless of which
@@ -76,18 +81,30 @@ export function TopPickBanner({ data }) {
       const isByodTrain =
         Array.isArray(data.categories) &&
         data.categories.some((c) => /byod train/i.test(String(c)));
+      const isByodFlight = isByodOutboundFlight(data);
       body = (
         <>
           <div className="text-2xl font-bold !text-black">
-            {isByodTrain ? formatByodTrainHeading(data) : data.location}
+            {isByodFlight
+              ? formatByodFlightHeading(data)
+              : isByodTrain
+                ? formatByodTrainHeading(data)
+                : data.location}
           </div>
           <div className="text-lg !text-black">
-            {isByodTrain
+            {isByodFlight
+              ? formatByodFlightDemandLabel(data)
+              : isByodTrain
               ? formatByodTrainDemandLabel(data)
               : isLastCall
                 ? `${data.egressMod}x Demand Window`
                 : `${data.egressMod}x Egress Demand`}
           </div>
+          {isByodFlight && data.departureTime && (
+            <div className="text-sm opacity-80 mt-1 !text-black">
+              Departs: {data.departureTime} | Be at ALB by {data.leaveBy}
+            </div>
+          )}
           {Array.isArray(data.categories) && data.categories.length > 0 && (
             <div className="text-sm opacity-80 mt-1 !text-black">{data.categories.join(", ")}</div>
           )}

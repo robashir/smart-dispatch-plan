@@ -2,6 +2,11 @@ import {
   formatByodTrainDemandLabel,
   formatByodTrainHeading,
 } from "./byod-train-labels.mjs";
+import {
+  formatByodFlightDemandLabel,
+  formatByodFlightHeading,
+  isByodOutboundFlight,
+} from "./byod-flight-labels.mjs";
 
 // Sprint 24: typed UI cards for the deterministic itinerary array.
 // Each card is a pure function component receiving { data } per PO spec.
@@ -114,19 +119,26 @@ export function EventCard({ data }) {
   const isByodTrain =
     Array.isArray(data.categories) &&
     data.categories.some((c) => /byod train/i.test(String(c)));
+  const isByodFlight = isByodOutboundFlight(data);
   const isLocalAnchor =
     Array.isArray(data.categories) &&
     data.categories.some((c) => /local anchor/i.test(String(c)));
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">
-        {isLocalAnchor ? "Local Anchor" : "Event Egress"}
+        {isByodFlight ? "Airport Demand" : isLocalAnchor ? "Local Anchor" : "Event Egress"}
       </div>
       <div className="text-2xl font-bold mb-2">
-        {isByodTrain ? formatByodTrainHeading(data) : data.location}
+        {isByodFlight
+          ? formatByodFlightHeading(data)
+          : isByodTrain
+            ? formatByodTrainHeading(data)
+            : data.location}
       </div>
       <div className="text-lg">
-        {isByodTrain
+        {isByodFlight
+          ? formatByodFlightDemandLabel(data)
+          : isByodTrain
           ? formatByodTrainDemandLabel(data)
           : isLocalAnchor
             ? "Routine Demand Pulse"
@@ -139,6 +151,12 @@ export function EventCard({ data }) {
           Crossgates) omit it, so the line is conditional. */}
       {data.arrivalTime && (
         <div className="text-sm text-neutral-300 mt-1">Arrives: {data.arrivalTime}</div>
+      )}
+      {isByodFlight && data.departureTime && (
+        <div className="text-sm text-neutral-300 mt-1">Departs: {data.departureTime}</div>
+      )}
+      {isByodFlight && data.leaveBy && (
+        <div className="text-sm text-neutral-300 mt-1">Be at ALB by {data.leaveBy}</div>
       )}
       {/* Sprint 65: stateless relative-time stamp from the backend (BYOD
           inbound + outbound trains both carry it). Falls through cleanly

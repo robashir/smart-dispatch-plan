@@ -1,4 +1,8 @@
 import { formatByodTrainHeading } from "./byod-train-labels.mjs";
+import {
+  formatByodFlightHeading,
+  isByodOutboundFlight,
+} from "./byod-flight-labels.mjs";
 
 function parseTimeLabel(label) {
   if (!label || typeof label !== "string") return Infinity;
@@ -89,6 +93,7 @@ function itemTitle(item) {
   const isByodTrain = categories.some((category) =>
     /byod train/i.test(String(category))
   );
+  if (isByodOutboundFlight(item)) return formatByodFlightHeading(item);
   if (isByodTrain) return formatByodTrainHeading(item);
   if (item?.location) return item.location;
   if (item?.hub) return item.hub;
@@ -104,6 +109,7 @@ function itemWindowLabel(item) {
 
 function arrivalBufferMinutes(item) {
   const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  if (isByodOutboundFlight(item)) return 0;
   if (item?.type === "flight" || /Flight|Airport/i.test(cats)) return 20;
   if (item?.type === "train" || /BYOD Train|Train/i.test(cats)) return 14;
   if (item?.type === "event" || /Egress|Last Call|Closing Surge/i.test(cats)) return 12;
@@ -147,6 +153,7 @@ function shouldShowAvoidLongTrips(current, next) {
 
 function itemAction(item) {
   const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  if (isByodOutboundFlight(item)) return "Work outbound airport drop-offs";
   if (/BYOD Train/i.test(cats)) {
     return /Outbound/i.test(cats)
       ? "Work outbound station ingress"

@@ -38,6 +38,19 @@ assert.equal(merged.busConfigInbound.rawText, "Bus board");
 assert.equal(merged.flightConfigInbound.rawText, "Flight board");
 assert.equal(merged.trainConfigOutbound.updatedAt, null);
 
+const outboundFlightMerged = mergeByodUpdates(
+  merged,
+  {
+    flightConfigOutbound: {
+      savedDate: "2026-07-13",
+      rawText: "Chicago 10:30 AM",
+      updatedAt: newer,
+    },
+  },
+  newer
+);
+assert.equal(outboundFlightMerged.flightConfigOutbound.rawText, "Chicago 10:30 AM");
+
 const staleWrite = mergeByodUpdates(
   merged,
   {
@@ -106,4 +119,4 @@ const legacyCloudWins = reconcileByodSnapshots(
 );
 assert.equal(legacyCloudWins.snapshot.flightConfigInbound.rawText, "Legacy cloud");
 
-console.log("BYOD cloud sync: 12 assertions passed.");
+console.log("BYOD cloud sync: 13 assertions passed.");

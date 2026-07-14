@@ -17,6 +17,7 @@ import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" 
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
+import { parseOutboundFlightText } from "../../lib/byod-outbound-flight.mjs";
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
 // built by scripts/build-census-grid.js and loaded once at module-load time
@@ -158,6 +159,8 @@ const DOWNTOWN_BUS_TERMINAL_COORDS = { lat: 42.6450, lng: -73.7487 };
 // ported here.
 const OUTBOUND_BUFFER_MINUTES = 60;
 const OUTBOUND_DROP_THRESHOLD = 40;
+const OUTBOUND_FLIGHT_BUFFER_MINUTES = 90;
+const OUTBOUND_FLIGHT_DROP_THRESHOLD = 45;
 
 // Sprint 52: spatial anchor for Crossgates Mall (largest indoor regional
 // shopping center in the Capital District). Paired with CROSSGATES_HOURS
@@ -413,6 +416,7 @@ const DOLLAR_PER_SURGE_POINT = 0.25;
 // mega_event / inline-5 so each cohort carries its own propensity number.
 const YIELD_RATES = {
   flight: 15,
+  flight_outbound: 10,
   train: 12,
   food: 5,
   grocery: 3,
@@ -559,6 +563,9 @@ export function yieldRateFor(item, localStart = null) {
       .toLowerCase()
       .trim();
     const catsAll = Array.isArray(item.categories) ? item.categories.join("|") : "";
+    if (/BYOD Flight/i.test(catsAll) && /Outbound/i.test(catsAll)) {
+      return YIELD_RATES.flight_outbound;
+    }
     if (/BYOD Train/i.test(catsAll)) {
       return byodTrainYieldFor(item);
     }
@@ -2403,6 +2410,18 @@ function computeOutboundLeaveBy(departureTimeStr, localStart) {
   return formatTimeLabel(depMin - OUTBOUND_BUFFER_MINUTES);
 }
 
+export function computeOutboundFlightLeaveBy(departureTimeStr, localStart) {
+  const depMin = parseTimeLabel(departureTimeStr);
+  if (!Number.isFinite(depMin)) return null;
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return null;
+  const nowMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  let delta = depMin - nowMin;
+  if (delta < -360) delta += 1440;
+  if (delta < OUTBOUND_FLIGHT_DROP_THRESHOLD) return null;
+  if (delta < OUTBOUND_FLIGHT_BUFFER_MINUTES) return formatTimeLabel(nowMin);
+  return formatTimeLabel(depMin - OUTBOUND_FLIGHT_BUFFER_MINUTES);
+}
+
 // Sprint 32.1: Time-Decay modifier. Protects the driver's hourly wage by
 // penalizing future surges that are too far away to chase. Tiers:
 //   delta < 45 min (or in the past, or no time label) -> 1.0
@@ -2466,14 +2485,19 @@ function isByodTrainEvent(item) {
   return /BYOD Train/i.test(catsAll);
 }
 
+function isByodOutboundFlightEvent(item) {
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  return /BYOD Flight/i.test(catsAll) && /Outbound/i.test(catsAll);
+}
+
 function itineraryScoreFloorFor(item, localStart = null) {
-  if (isByodTrainEvent(item)) return 4.0;
+  if (isByodTrainEvent(item) || isByodOutboundFlightEvent(item)) return 4.0;
   if (item?.type === "food" && isMorningYieldWindow(localStart)) return 4.0;
   return 10.0;
 }
 
 function shouldApplyDeadheadRoiFilter(item) {
-  if (isByodTrainEvent(item)) return false;
+  if (isByodTrainEvent(item) || isByodOutboundFlightEvent(item)) return false;
   return item?.type !== "food" && item?.type !== "grocery";
 }
 
@@ -3106,6 +3130,7 @@ export async function POST(request) {
       // existing aggregator runs. Fault-tolerant: if either source is empty
       // the surviving one still drives the bucket math.
       inboundFlights: inboundFlightsRaw = "",
+      outboundFlights: outboundFlightsRaw = "",
       weatherOverride: weatherOverrideRaw = "",
     } = body;
 
@@ -3143,6 +3168,7 @@ export async function POST(request) {
       (Array.isArray(outboundTrainsRaw) && outboundTrainsRaw.length > 0) ||
       (typeof inboundBusesRaw === "string" && inboundBusesRaw.trim()) ||
       (typeof inboundFlightsRaw === "string" && inboundFlightsRaw.trim()) ||
+      (typeof outboundFlightsRaw === "string" && outboundFlightsRaw.trim()) ||
       (typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim());
     if (!requestHasByod) {
       try {
@@ -3177,6 +3203,13 @@ export async function POST(request) {
         ? inboundBusesRaw
         : savedTodayRawText(byodSnapshot?.busConfigInbound, todayForServerByod);
     const inboundBuses = inboundBusText ? parseBusSchedule(inboundBusText) : [];
+    const outboundFlightText =
+      typeof outboundFlightsRaw === "string" && outboundFlightsRaw.trim()
+        ? outboundFlightsRaw
+        : savedTodayRawText(byodSnapshot?.flightConfigOutbound, todayForServerByod);
+    const outboundFlights = outboundFlightText
+      ? parseOutboundFlightText(outboundFlightText, HUB_CITY_PATTERNS)
+      : [];
     const weatherOverrideText =
       typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim()
         ? weatherOverrideRaw
@@ -3539,6 +3572,39 @@ export async function POST(request) {
         structuredEvents.push(ev);
         console.log(
           `LOCAL ANCHOR INJECTED: ${ev.location} | ${ev.categories.join(" / ")} | expected riders ${ev.volume}`
+        );
+      }
+    }
+
+    // BYOD outbound flights represent airport drop-off demand. The driver
+    // targets ALB 90 minutes before departure; flights inside 45 minutes are
+    // too late to pursue, while the 45-90 minute band becomes an immediate
+    // positioning opportunity.
+    if (activePlatforms.rideshare && includeAirport) {
+      const byodStartMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+      for (const flight of outboundFlights) {
+        const leaveBy = computeOutboundFlightLeaveBy(flight.departureTime, localStart);
+        if (!leaveBy || !isTrainInWindow(leaveBy, localStart, hoursNum)) continue;
+        structuredEvents.push({
+          type: "event",
+          location: `ALB Flight to ${flight.destination}`,
+          volume: 1,
+          egressMod: 1.0,
+          categories: ["BYOD Flight", "Outbound", flight.status],
+          destination: flight.destination,
+          destinationIata: flight.iata,
+          departureTime: flight.departureTime,
+          leaveBy,
+          lat: ALB_COORDS.lat,
+          lng: ALB_COORDS.lng,
+          relativeTime: computeRelativeTimeString(
+            parseTimeLabel(flight.departureTime),
+            byodStartMin,
+            "departure"
+          ),
+        });
+        console.log(
+          `BYOD OUTBOUND FLIGHT PARSED: ${flight.destination} (${flight.iata}) | Departs: ${flight.departureTime} | BeAtALB: ${leaveBy}`
         );
       }
     }

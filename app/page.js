@@ -241,6 +241,10 @@ export default function Home() {
     savedDate: null,
     rawText: "",
   });
+  const [flightConfigOutbound, setFlightConfigOutbound] = useState({
+    savedDate: null,
+    rawText: "",
+  });
   const [weatherConfig, setWeatherConfig] = useState({
     savedDate: null,
     rawText: "",
@@ -279,6 +283,7 @@ export default function Home() {
     setTrainConfigOutbound(clean.trainConfigOutbound);
     setBusConfigInbound(clean.busConfigInbound);
     setFlightConfigInbound(clean.flightConfigInbound);
+    setFlightConfigOutbound(clean.flightConfigOutbound);
     setWeatherConfig(clean.weatherConfig);
     return clean;
   }
@@ -471,6 +476,15 @@ export default function Home() {
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
       }
+      if (direction === "flightOutbound") {
+        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        localStorage.setItem("flightConfigOutbound", JSON.stringify(payload));
+        setFlightConfigOutbound(payload);
+        await syncByodSnapshot({ flightConfigOutbound: payload });
+        setTrainSaveStatus("saved");
+        setTimeout(() => setTrainSaveStatus("idle"), 2000);
+        return;
+      }
       if (direction === "weather") {
         const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
         localStorage.setItem("weatherConfig", JSON.stringify(payload));
@@ -527,6 +541,11 @@ export default function Home() {
           localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
           setFlightConfigInbound(payload);
           await syncByodSnapshot({ flightConfigInbound: payload });
+        } else if (direction === "flightOutbound") {
+          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          localStorage.setItem("flightConfigOutbound", JSON.stringify(payload));
+          setFlightConfigOutbound(payload);
+          await syncByodSnapshot({ flightConfigOutbound: payload });
         } else if (direction === "weather") {
           const payload = stampByodConfig({ savedDate: today, rawText: text });
           localStorage.setItem("weatherConfig", JSON.stringify(payload));
@@ -672,6 +691,12 @@ export default function Home() {
         typeof flightConfigInbound.rawText === "string"
           ? flightConfigInbound.rawText
           : "";
+      body.outboundFlights =
+        flightConfigOutbound &&
+        flightConfigOutbound.savedDate === today &&
+        typeof flightConfigOutbound.rawText === "string"
+          ? flightConfigOutbound.rawText
+          : "";
       body.weatherOverride =
         weatherConfig &&
         weatherConfig.savedDate === today &&
@@ -730,6 +755,12 @@ export default function Home() {
     flightConfigInbound?.savedDate === todayForSavedCounts &&
     typeof flightConfigInbound.rawText === "string" &&
     flightConfigInbound.rawText.trim()
+      ? "Yes"
+      : "No";
+  const savedOutboundFlightData =
+    flightConfigOutbound?.savedDate === todayForSavedCounts &&
+    typeof flightConfigOutbound.rawText === "string" &&
+    flightConfigOutbound.rawText.trim()
       ? "Yes"
       : "No";
   const savedWeatherOverride =
@@ -861,6 +892,7 @@ export default function Home() {
                   { value: "outbound", label: "Amtrak Outbound" },
                   { value: "busInbound", label: "Bus Inbound" },
                   { value: "flightInbound", label: "Flight Inbound" },
+                  { value: "flightOutbound", label: "Flight Outbound" },
                   { value: "weather", label: "Weather Override" },
                 ].map((opt) => (
                   <label key={opt.value} className="flex items-center gap-2 text-sm">
@@ -885,7 +917,9 @@ export default function Home() {
                 Sprint 68 UX Overhaul: label now reflects the active radio. */}
             <label className="text-sm text-neutral-400">
               {direction === "flightInbound"
-                ? "Paste Flight Status"
+                ? "Paste Flight Arrival Status"
+                : direction === "flightOutbound"
+                ? "Paste Flight Departure Status"
                 : direction === "busInbound"
                 ? "Paste Bus Status"
                 : direction === "weather"
@@ -901,6 +935,8 @@ export default function Home() {
               placeholder={
                 direction === "weather"
                   ? "Paste hourly weather table, or type: Moderate rain for 2 hours"
+                  : direction === "flightOutbound"
+                  ? "Chicago 10:30 AM\nAtlanta 11:24 AM\nLaGuardia 12:47 PM"
                   : "Paste Amtrak status here..."
               }
               rows={6}
@@ -926,7 +962,7 @@ export default function Home() {
                 ? "Save Failed"
                 : trainSaveStatus === "saving"
                 ? "Saving..."
-                : direction === "flightInbound"
+                : direction === "flightInbound" || direction === "flightOutbound"
                 ? "Save Flights"
                 : direction === "busInbound"
                 ? "Save Buses"
@@ -940,7 +976,7 @@ export default function Home() {
                 Sedan / SUV defaults all snap cleanly. Persisted to
                 localStorage on every change. */}
             <div className="text-xs text-neutral-500">
-              Saved today: Inbound {savedInboundTrainCount} | Outbound {savedOutboundTrainCount} | Bus {savedBusData} | Flight {savedFlightData} | Weather {savedWeatherOverride}
+              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusData} | Flight In {savedFlightData} | Flight Out {savedOutboundFlightData} | Weather {savedWeatherOverride}
             </div>
             <div
               className={`text-xs ${
