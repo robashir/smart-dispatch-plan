@@ -420,6 +420,7 @@ const YIELD_RATES = {
   mega_event: 500,
   hospital: 30,
   nightlife: 5,
+  retail_egress: 12,
   state_worker: 100,
   bus: 5,
   residential_node: 5,
@@ -576,10 +577,13 @@ export function yieldRateFor(item, localStart = null) {
     // own propensity number tied to its `mod` weight in HOSPITAL_SHIFTS.
     if (HOSPITAL_YIELDS[cat0] != null) return HOSPITAL_YIELDS[cat0];
     if (/shift|nursing|admin|clinic/i.test(cat0)) return YIELD_RATES.hospital;
-    // Sprint 52: Crossgates Retail Egress — 150 expected rideshare yield.
-    // Checked BEFORE the egress >= 2.5 mega-event branch so the 3.0x
-    // egressMod doesn't fall through to the 500 stadium-scale rate.
-    if (/retail egress/i.test(cat0)) return 150;
+    // Crossgates Retail Egress: conservative mall-closing baseline multiplied
+    // by the explicit closing-surge signal (12 x 3.0 = 36 expected riders).
+    // Checked before the mega-event branch so a mall cannot inherit the
+    // stadium-scale yield merely because its egressMod is at least 2.5.
+    if (/retail egress/i.test(cat0)) {
+      return YIELD_RATES.retail_egress * (Number(item.egressMod) || 1);
+    }
     // Sprint 62.3: Last Call / Nightlife Egress are MICRO venues (bars),
     // NOT stadium-scale. Checked BEFORE the egress >= 2.5 mega-event
     // branch so the 3.5x Sprint 50 egressMod doesn't fall through to
