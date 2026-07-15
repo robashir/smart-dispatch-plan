@@ -40,38 +40,40 @@ export function formatSuggestedServiceTiming(item) {
   return null;
 }
 
-function positioningInstruction(item) {
+export function getDemandFirstDeadline(item) {
   const categories = categoriesFor(item);
   const outbound = /Outbound/i.test(categories);
   if (item.type === "flight" && !outbound && item.leaveBy) {
-    return `Leave for ALB by ${item.leaveBy}`;
+    return { label: item.leaveBy, instruction: `Leave for ALB by ${item.leaveBy}` };
   }
   if (/BYOD Flight/i.test(categories) && outbound && item.leaveBy) {
-    return `Complete ALB drop-off by ${item.leaveBy}`;
+    return { label: item.leaveBy, instruction: `Complete ALB drop-off by ${item.leaveBy}` };
   }
   if (/BYOD Train/i.test(categories) && outbound && item.leaveBy) {
     const deadline = subtractMinutes(item.leaveBy, 14) || item.leaveBy;
-    return `Be at Empire State Plaza by ${deadline}`;
+    return { label: deadline, instruction: `Be at Empire State Plaza by ${deadline}` };
   }
   if (/BYOD Train/i.test(categories) && !outbound && item.leaveBy) {
     const deadline = subtractMinutes(item.leaveBy, 14) || item.leaveBy;
-    return `Be at Rensselaer by ${deadline}`;
+    return { label: deadline, instruction: `Be at Rensselaer by ${deadline}` };
   }
   if (/BYOD Bus/i.test(categories) && item.leaveBy) {
     const deadline = subtractMinutes(item.leaveBy, 12) || item.leaveBy;
-    return `Be at Downtown Bus Terminal by ${deadline}`;
+    return { label: deadline, instruction: `Be at Downtown Bus Terminal by ${deadline}` };
   }
   if (item.type === "train" && item.hourBucket) {
     const deadline = subtractMinutes(item.hourBucket, 14) || item.hourBucket;
-    return `Be at Rensselaer by ${deadline}`;
+    return { label: deadline, instruction: `Be at Rensselaer by ${deadline}` };
   }
-  if (item.leaveBy) return `Be there by ${item.leaveBy}`;
+  if (item.leaveBy) {
+    return { label: item.leaveBy, instruction: `Be there by ${item.leaveBy}` };
+  }
   return null;
 }
 
 export function formatDemandFirstTiming(item) {
   if (!item || typeof item !== "object") return null;
   const service = formatSuggestedServiceTiming(item);
-  const positioning = positioningInstruction(item);
-  return [service, positioning].filter(Boolean).join(" | ") || null;
+  const deadline = getDemandFirstDeadline(item);
+  return [service, deadline?.instruction].filter(Boolean).join(" | ") || null;
 }

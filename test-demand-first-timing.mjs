@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   formatDemandFirstTiming,
   formatSuggestedServiceTiming,
+  getDemandFirstDeadline,
 } from "./components/demand-first-timing.mjs";
 
 assert.equal(
@@ -60,4 +61,13 @@ assert.equal(
   "Arrives 10:32 AM | Expected curb 10:57 AM"
 );
 
-console.log("Demand-first timing: 7 assertions passed.");
+assert.deepEqual(
+  getDemandFirstDeadline({
+    type: "event",
+    categories: ["BYOD Train", "Outbound"],
+    leaveBy: "3:30 PM",
+  }),
+  { label: "3:16 PM", instruction: "Be at Empire State Plaza by 3:16 PM" }
+);
+
+console.log("Demand-first timing: 8 assertions passed.");

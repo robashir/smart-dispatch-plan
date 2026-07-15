@@ -10,6 +10,7 @@ import {
 } from "./byod-flight-labels.mjs";
 import { formatInboundFlightSequenceHeading } from "./flight-sequence-copy.mjs";
 import { formatDemandFirstTiming } from "./demand-first-timing.mjs";
+import { buildDemandFirstFlexWindows } from "./demand-first-flex.mjs";
 
 function itemTitle(item) {
   const categories = Array.isArray(item?.categories) ? item.categories : [];
@@ -102,9 +103,30 @@ function Step({ item, time, competingOptions, alternatives = [], active = false 
   );
 }
 
+function FlexWindow({ data }) {
+  return (
+    <div className="border-l-2 border-l-blue-400 pl-3">
+      <div className="text-sm text-neutral-400">
+        {data.startLabel}–{data.cutoffLabel}
+      </div>
+      <div className="text-base font-semibold">Flex Window — Position toward {data.target}</div>
+      <div className="text-sm text-neutral-300">Work only short nearby rideshare trips.</div>
+      <div className="text-xs text-neutral-400 mt-1">
+        Prefer trips that keep you moving toward {data.target}.
+      </div>
+      <div className="text-xs text-yellow-300 mt-1">
+        Stop accepting trips that could delay you after {data.cutoffLabel}.
+      </div>
+      <div className="text-xs text-neutral-500 mt-1">{data.deadlineInstruction}</div>
+    </div>
+  );
+}
+
 export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = null }) {
   const { activeNow, activeCompetingOptions, activeAlternatives, selected } =
     buildDemandFirstSelection(itinerary, { driverCoords });
+  const flexWindows = buildDemandFirstFlexWindows({ activeNow, selected });
+  const flexByIndex = new Map(flexWindows.map((window) => [window.beforeIndex, window]));
   if (!activeNow && selected.length === 0) return null;
 
   return (
@@ -126,13 +148,15 @@ export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = nu
           />
         )}
         {selected.map((candidate, index) => (
-          <Step
-            key={`${itemTitle(candidate.item)}-${candidate.minute}-${index}`}
-            item={candidate.item}
-            time={candidate.item.leaveBy || candidate.item.hourBucket}
-            competingOptions={candidate.competingOptions}
-            alternatives={candidate.alternatives}
-          />
+          <div key={`${itemTitle(candidate.item)}-${candidate.minute}-${index}`} className="contents">
+            {flexByIndex.has(index) && <FlexWindow data={flexByIndex.get(index)} />}
+            <Step
+              item={candidate.item}
+              time={candidate.item.leaveBy || candidate.item.hourBucket}
+              competingOptions={candidate.competingOptions}
+              alternatives={candidate.alternatives}
+            />
+          </div>
         ))}
       </div>
     </section>
