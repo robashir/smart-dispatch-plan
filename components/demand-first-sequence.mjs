@@ -81,6 +81,15 @@ function isReachable(candidate, previous, driverCoords, safetyMinutes) {
   return availableMinutes >= requiredMinutes;
 }
 
+function alternativeReason(candidateItem, winnerItem, reachable = true) {
+  if (!reachable) return "Unreachable before its deadline";
+  if (demandValue(candidateItem) < demandValue(winnerItem)) return "Lower expected demand";
+  if (opportunityValue(candidateItem) < opportunityValue(winnerItem)) {
+    return "Lower Opportunity Now after demand tie";
+  }
+  return "Later in the same time window";
+}
+
 function groupOverlappingCandidates(candidates, overlapMinutes) {
   const groups = [];
   for (const candidate of candidates) {
@@ -118,6 +127,12 @@ export function buildDemandFirstSelection(
     })
     .sort(compareDemand);
   const activeNow = activeOptions[0] || null;
+  const activeAlternatives = activeNow
+    ? activeOptions.slice(1).map((item) => ({
+        item,
+        reason: alternativeReason(item, activeNow),
+      }))
+    : [];
 
   const timed = items
     .filter((item) => TIMED_TYPES.has(item?.type) && demandValue(item) > 0)
@@ -134,17 +149,28 @@ export function buildDemandFirstSelection(
   for (const group of groups) {
     if (selected.length >= maxTimedSteps) break;
     const ranked = [...group].sort(compareDemand);
-    const winner = ranked.find((candidate) =>
-      isReachable(candidate, previous, driverCoords, safetyMinutes)
-    );
+    const evaluated = ranked.map((candidate) => ({
+      ...candidate,
+      reachable: isReachable(candidate, previous, driverCoords, safetyMinutes),
+    }));
+    const winner = evaluated.find((candidate) => candidate.reachable);
     if (!winner) continue;
-    selected.push({ ...winner, competingOptions: group.length });
+    const alternatives = evaluated
+      .filter((candidate) => candidate !== winner)
+      .map((candidate) => ({
+        item: candidate.item,
+        minute: candidate.minute,
+        delta: candidate.delta,
+        reason: alternativeReason(candidate.item, winner.item, candidate.reachable),
+      }));
+    selected.push({ ...winner, competingOptions: group.length, alternatives });
     previous = winner;
   }
 
   return {
     activeNow,
     activeCompetingOptions: activeOptions.length,
+    activeAlternatives,
     selected,
   };
 }

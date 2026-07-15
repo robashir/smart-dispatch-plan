@@ -30,7 +30,59 @@ function selectionNote(count, active = false) {
     : "No competing reachable opportunity in this time window.";
 }
 
-function Step({ item, time, competingOptions, active = false }) {
+function AlternativeRow({ alternative }) {
+  const item = alternative.item;
+  const time = item?.leaveBy || item?.hourBucket || "Now";
+  return (
+    <div className="border-l border-neutral-700 pl-2 py-1">
+      <div className="text-xs text-neutral-300">
+        {itemTitle(item)} — {time}
+      </div>
+      <div className="text-xs text-neutral-500">
+        Expected Demand {Math.round(demandValue(item))} | Opportunity Now {Math.round(opportunityValue(item))}
+      </div>
+      <div className="text-xs text-neutral-500">Not selected: {alternative.reason}</div>
+    </div>
+  );
+}
+
+function Alternatives({ alternatives = [] }) {
+  if (alternatives.length === 0) return null;
+  const visible = alternatives.slice(0, 3);
+  const remaining = alternatives.slice(3);
+  return (
+    <details className="mt-2">
+      <summary className="text-xs text-neutral-400 cursor-pointer">
+        Other options considered ({alternatives.length})
+      </summary>
+      <div className="flex flex-col gap-1 mt-2">
+        {visible.map((alternative, index) => (
+          <AlternativeRow
+            key={`${itemTitle(alternative.item)}-${alternative.minute || "now"}-${index}`}
+            alternative={alternative}
+          />
+        ))}
+        {remaining.length > 0 && (
+          <details>
+            <summary className="text-xs text-cyan-400 cursor-pointer">
+              View {remaining.length} more
+            </summary>
+            <div className="flex flex-col gap-1 mt-1">
+              {remaining.map((alternative, index) => (
+                <AlternativeRow
+                  key={`${itemTitle(alternative.item)}-${alternative.minute || "more"}-${index}`}
+                  alternative={alternative}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function Step({ item, time, competingOptions, alternatives = [], active = false }) {
   const timing = formatDemandFirstTiming(item);
   return (
     <div className="border-l-2 border-l-cyan-400 pl-3">
@@ -45,14 +97,14 @@ function Step({ item, time, competingOptions, active = false }) {
       <div className="text-xs text-cyan-300 mt-1">
         {selectionNote(competingOptions, active)}
       </div>
+      <Alternatives alternatives={alternatives} />
     </div>
   );
 }
 
 export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = null }) {
-  const { activeNow, activeCompetingOptions, selected } = buildDemandFirstSelection(itinerary, {
-    driverCoords,
-  });
+  const { activeNow, activeCompetingOptions, activeAlternatives, selected } =
+    buildDemandFirstSelection(itinerary, { driverCoords });
   if (!activeNow && selected.length === 0) return null;
 
   return (
@@ -69,6 +121,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = nu
             item={activeNow}
             time="Now"
             competingOptions={activeCompetingOptions}
+            alternatives={activeAlternatives}
             active
           />
         )}
@@ -78,6 +131,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = nu
             item={candidate.item}
             time={candidate.item.leaveBy || candidate.item.hourBucket}
             competingOptions={candidate.competingOptions}
+            alternatives={candidate.alternatives}
           />
         ))}
       </div>

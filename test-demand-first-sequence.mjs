@@ -24,6 +24,8 @@ const sameWindow = buildDemandFirstSelection(
 );
 assert.equal(sameWindow.selected[0].item.location, "Highest Demand");
 assert.equal(sameWindow.selected[0].competingOptions, 3);
+assert.equal(sameWindow.selected[0].alternatives.length, 2);
+assert.equal(sameWindow.selected[0].alternatives[0].reason, "Lower expected demand");
 assert.equal(sameWindow.selected[1].item.location, "Next Window");
 
 const opportunityTieBreak = buildDemandFirstSelection(
@@ -34,6 +36,10 @@ const opportunityTieBreak = buildDemandFirstSelection(
   { nowMinute: 16 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
 );
 assert.equal(opportunityTieBreak.selected[0].item.location, "Higher Opportunity");
+assert.equal(
+  opportunityTieBreak.selected[0].alternatives[0].reason,
+  "Lower Opportunity Now after demand tie"
+);
 
 const unreachableWinner = buildDemandFirstSelection(
   [
@@ -43,6 +49,11 @@ const unreachableWinner = buildDemandFirstSelection(
   { nowMinute: 16 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
 );
 assert.equal(unreachableWinner.selected[0].item.location, "Reachable");
+assert.equal(unreachableWinner.selected[0].alternatives[0].item.location, "Unreachable High");
+assert.equal(
+  unreachableWinner.selected[0].alternatives[0].reason,
+  "Unreachable before its deadline"
+);
 
 const active = buildDemandFirstSelection(
   [
@@ -53,5 +64,7 @@ const active = buildDemandFirstSelection(
 );
 assert.equal(active.activeNow.location, "Current High");
 assert.equal(active.activeCompetingOptions, 2);
+assert.equal(active.activeAlternatives.length, 1);
+assert.equal(active.activeAlternatives[0].item.location, "Current Low");
 
-console.log("Demand-first sequence: 7 assertions passed.");
+console.log("Demand-first sequence: 14 assertions passed.");
