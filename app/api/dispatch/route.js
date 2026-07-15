@@ -205,7 +205,6 @@ const LOCAL_ANCHOR_SCHEDULES = [
     days: [1, 2, 3, 4, 5],
     windows: [
       { start: 480, end: 525, expected: 8, label: "Morning Campus Arrival" },
-      { start: 945, end: 990, expected: 7, label: "Afternoon Campus Exit" },
       { start: 1245, end: 1290, expected: 6, label: "Evening Class Exit" },
     ],
   },
