@@ -99,4 +99,32 @@ assert.equal(
   "Government Staff Dismissal Taper"
 );
 
-console.log("Demand-first sequence: 18 assertions passed.");
+const noTransitiveOverlapChain = buildDemandFirstSelection(
+  [
+    {
+      ...timed("Afternoon Clinic Shift", "2:30 PM", 20, 20),
+      windowStart: "2:30 PM",
+      windowEnd: "3:30 PM",
+    },
+    {
+      ...timed("Last Call", "3:15 PM", 18, 12),
+      windowStart: "3:15 PM",
+      windowEnd: "3:30 PM",
+    },
+    timed("Bridge A", "3:25 PM", 10, 10),
+    timed("Bridge B", "3:41 PM", 10, 10),
+    timed("Bridge C", "3:55 PM", 10, 10),
+    {
+      ...timed("Peak Exit Wave", "4:00 PM", 100, 40),
+      windowStart: "4:00 PM",
+      windowEnd: "4:30 PM",
+    },
+  ],
+  { nowMinute: 14 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
+);
+assert.equal(noTransitiveOverlapChain.selected[0].item.location, "Afternoon Clinic Shift");
+assert.equal(noTransitiveOverlapChain.selected[0].competingOptions, 3);
+assert.equal(noTransitiveOverlapChain.selected[1].item.location, "Peak Exit Wave");
+assert.equal(noTransitiveOverlapChain.selected[1].competingOptions, 3);
+
+console.log("Demand-first sequence: 22 assertions passed.");

@@ -98,22 +98,45 @@ function alternativeReason(candidateItem, winnerItem, reachable = true) {
 
 function groupOverlappingCandidates(candidates, overlapMinutes) {
   const groups = [];
-  let currentConflictEnd = -Infinity;
-  for (const candidate of candidates) {
-    const current = groups[groups.length - 1];
-    const conflictStart = Number.isFinite(candidate.windowStartDelta)
-      ? candidate.windowStartDelta
-      : candidate.delta;
-    const conflictEnd = Number.isFinite(candidate.windowEndDelta)
-      ? candidate.windowEndDelta
-      : candidate.delta + overlapMinutes;
-    if (!current || conflictStart >= currentConflictEnd) {
-      groups.push([candidate]);
-      currentConflictEnd = conflictEnd;
-    } else {
-      current.push(candidate);
-      currentConflictEnd = Math.max(currentConflictEnd, conflictEnd);
+  let index = 0;
+  while (index < candidates.length) {
+    const anchorStart = Number.isFinite(candidates[index].windowStartDelta)
+      ? candidates[index].windowStartDelta
+      : candidates[index].delta;
+    let anchorEnd = Number.isFinite(candidates[index].windowEndDelta)
+      ? candidates[index].windowEndDelta
+      : candidates[index].delta + overlapMinutes;
+    const group = [];
+
+    // Candidates beginning at the same moment define the decision window
+    // together. This lets an explicit service window (for example, a
+    // hospital shift) establish the boundary regardless of input order.
+    while (index < candidates.length) {
+      const candidate = candidates[index];
+      const start = Number.isFinite(candidate.windowStartDelta)
+        ? candidate.windowStartDelta
+        : candidate.delta;
+      if (start !== anchorStart) break;
+      const end = Number.isFinite(candidate.windowEndDelta)
+        ? candidate.windowEndDelta
+        : candidate.delta + overlapMinutes;
+      anchorEnd = Math.max(anchorEnd, end);
+      group.push(candidate);
+      index += 1;
     }
+
+    // Include options directly inside the anchored window, but do not let
+    // those secondary options extend it into a transitive overlap chain.
+    while (index < candidates.length) {
+      const candidate = candidates[index];
+      const start = Number.isFinite(candidate.windowStartDelta)
+        ? candidate.windowStartDelta
+        : candidate.delta;
+      if (start >= anchorEnd) break;
+      group.push(candidate);
+      index += 1;
+    }
+    groups.push(group);
   }
   return groups;
 }
