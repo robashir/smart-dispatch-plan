@@ -3663,6 +3663,7 @@ export async function POST(request) {
             trainNumber: train.trainNumber,
             categories: ["BYOD Train", "Outbound", train.status],
             availability: train.availability,
+            departureTime: train.time,
             leaveBy,
             lat: ESP_COORDS.lat,
             lng: ESP_COORDS.lng,
