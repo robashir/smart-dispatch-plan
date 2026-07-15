@@ -176,6 +176,75 @@ function parseCloseMinute(value) {
   return hour * 60 + minute;
 }
 
+const RESTAURANT_CLOSING_VENUES = new Set([
+  "The Hollow Bar & Kitchen",
+  "Innovo Kitchen",
+  "City Line Bar and Grill",
+  "Black and Blue Steak and Crab",
+  "The Nest",
+  "Cafe Capriccio",
+  "Lucas Confectionery",
+  "Dove + Deer",
+  "Bacchus",
+  "Maggie McFly's | Albany",
+  "Illusive Restaurant & Bar",
+  "Josie’s Table",
+  "Swifty's Restaurant & Pub",
+  "Stella Pasta Bar & Bistro And Seven Points Brewery",
+  "Wellington's",
+  "Sea Smoke Waterfront Grill",
+  "Dukes Chophouse",
+  "O'Slattery's Irish Restaurant & Pub",
+  "Marisa's Place",
+  "Milano Restaurant",
+  "Chili's",
+  "Scarlet Knife",
+  "Hooters",
+]);
+
+const NIGHTLIFE_VENUES = new Set([
+  "The City Beer Hall",
+  "The Ruck",
+  "Wolff's Biergarten",
+  "Katie O'Byrne's",
+  "20 North Broadway Tavern",
+  "Savoy Taproom",
+  "Dave & Buster's Albany",
+  "McGeary's",
+  "Madison Pour House",
+  "JT Maxies Bar & Grill",
+  "151 Bar & Restaurant",
+  "The Copper Crow",
+  "Funny Bone Comedy Club & Restaurant",
+  "Hill Street Cafe",
+]);
+
+export function nightlifeVenueClass(name) {
+  if (RESTAURANT_CLOSING_VENUES.has(name)) return "restaurant";
+  if (NIGHTLIFE_VENUES.has(name)) return "nightlife";
+  return "late_bar";
+}
+
+export function closingDemandFor({ venueName, closeMinute, dayIndex }) {
+  const normalizedClose = closeMinute < 360 ? closeMinute + 1440 : closeMinute;
+  const weekend = dayIndex === 5 || dayIndex === 6;
+  const venueClass = nightlifeVenueClass(venueName);
+  const trueLastCall = venueClass !== "restaurant" && normalizedClose >= 23 * 60;
+  const venueFactor = trueLastCall
+    ? venueClass === "nightlife" ? 1.1 : 1.0
+    : venueClass === "restaurant" ? 0.6 : venueClass === "nightlife" ? 0.8 : 0.7;
+  const dayFactor = weekend ? 1.2 : 0.7;
+  const closeHour = normalizedClose / 60;
+  const closingBaseline =
+    closeHour <= 22 ? 5 : closeHour < 24 ? 4 : closeHour < 25 ? 5 : closeHour <= 26 ? 6 : 7;
+  const cap = weekend ? 10 : 6;
+  const demandYield = Math.max(
+    1,
+    Math.min(cap, Math.round(closingBaseline * dayFactor * venueFactor))
+  );
+  return { demandYield, demandCap: cap, trueLastCall, venueClass, normalizedClose };
+}
+
 export function buildScheduledLastCallEvents({
   localStart,
   localEnd,
@@ -189,16 +258,27 @@ export function buildScheduledLastCallEvents({
       const closeMinute = parseCloseMinute(venue?.closingTimes?.[String(dayIndex)]);
       if (closeMinute === null) continue;
       const adjustedCloseMinute = closeMinute < 360 ? closeMinute + 1440 : closeMinute;
+      const closingDemand = closingDemandFor({
+        venueName: venue.name,
+        closeMinute,
+        dayIndex,
+      });
       const close = atMinute(operationalDay, adjustedCloseMinute);
       const start = new Date(close.getTime() - 45 * MINUTE_MS);
       const end = new Date(close.getTime() - 30 * MINUTE_MS);
       if (!intersects(start, end, localStart, localEnd)) continue;
       events.push({
         type: "event",
-        location: `Last Call Egress: ${venue.name}`,
+        location: closingDemand.trueLastCall
+          ? `Last Call Egress: ${venue.name}`
+          : `Restaurant Closing: ${venue.name}`,
         volume: 1,
-        egressMod: 3.5,
-        categories: ["Last Call", "Nightlife Egress"],
+        demandYield: closingDemand.demandYield,
+        demandCap: closingDemand.demandCap,
+        egressMod: closingDemand.trueLastCall ? 1.5 : 1.0,
+        categories: closingDemand.trueLastCall
+          ? ["Last Call", "Nightlife Egress", closingDemand.venueClass]
+          : ["Restaurant Closing", "Closing Demand", closingDemand.venueClass],
         closeTime: formatTime(close),
         lat: venue.lat,
         lng: venue.lng,

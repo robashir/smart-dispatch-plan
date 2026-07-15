@@ -581,6 +581,9 @@ export function yieldRateFor(item, localStart = null) {
     // event/egress branches and accidentally inherit a stadium-scale rate.
     if (/BYOD Bus/i.test(catsAll)) return YIELD_RATES.bus;
     if (/local anchor/i.test(catsAll)) return YIELD_RATES.local_anchor;
+    if (Number.isFinite(Number(item.demandYield)) && Number(item.demandYield) > 0) {
+      return Number(item.demandYield);
+    }
     // Sprint 69: State Worker Commute carved out from mega_event default —
     // 50k state workers leaving ESP/Harriman are drive-own-car-dominant,
     // not stadium-scale. Checked BEFORE the egress >= 2.5 branch since the
@@ -598,12 +601,9 @@ export function yieldRateFor(item, localStart = null) {
     if (/retail egress/i.test(cat0)) {
       return YIELD_RATES.retail_egress * (Number(item.egressMod) || 1);
     }
-    // Sprint 62.3: Last Call / Nightlife Egress are MICRO venues (bars),
-    // NOT stadium-scale. Checked BEFORE the egress >= 2.5 mega-event
-    // branch so the 3.5x Sprint 50 egressMod doesn't fall through to
-    // the 500 mega_event rate. Base × egressMod produces a per-venue
-    // yield (25 × 3.5 = 87.5) that nears the 80 default-capacity ceiling
-    // for an unlisted small venue.
+    // Scheduled closing events carry a venue-, weekday-, and closing-hour-
+    // specific demandYield. The older Last Call fallback remains below for
+    // legacy event shapes without an explicit calibrated yield.
     if (/last call|nightlife/i.test(catsAll)) {
       return YIELD_RATES.nightlife * (Number(item.egressMod) || 1);
     }
@@ -2484,7 +2484,9 @@ export function densityScore(item, finalRideMod, finalFoodMod, localStart = null
   if (yieldRate <= 0) return 0;
   const mod =
     item.type === "food" || item.type === "grocery" ? finalFoodMod : finalRideMod;
-  return (Number(item.volume) || 0) * yieldRate * mod;
+  const score = (Number(item.volume) || 0) * yieldRate * mod;
+  const demandCap = Number(item.demandCap);
+  return Number.isFinite(demandCap) && demandCap > 0 ? Math.min(score, demandCap) : score;
 }
 
 function opportunityScoreFor(demandScore, driverSupplyPressureMod = 1.0) {
@@ -3542,11 +3544,9 @@ export async function POST(request) {
     // in isolation by test-academic-surge.js (23 assertions PASS).
     // Configured holiday and academic windows are emitted above for the horizon.
 
-    // Sprint 50: Last Call Egress Engine. For each venue in ALBANY_NIGHTLIFE_HOURS,
-    // fire a synthetic event when localStart is 30–45 min before that venue's
-    // mapped close (with cross-midnight day-rollback). egressMod 3.5 mirrors
-    // Sprint 49's holiday surge so the Last Call card floats to the top of
-    // Profitability sorts without touching buildItinerary math.
+    // Closing-demand events use each venue's type, day, and closing hour.
+    // Early restaurant closings stay low; true late bars receive Last Call
+    // treatment with weekday/weekend scaling and conservative caps.
     // Last-call windows are emitted above for the horizon.
 
     // Sprint 52: Crossgates Retail Egress Engine. Synthetic event when the

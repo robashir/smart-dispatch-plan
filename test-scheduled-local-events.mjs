@@ -88,6 +88,9 @@ const lastCall = buildScheduledLastCallEvents({
 assert.equal(lastCall.length, 1);
 assert.equal(lastCall[0].windowStart, "12:45 AM");
 assert.equal(lastCall[0].windowEnd, "1:00 AM");
+assert.equal(lastCall[0].demandYield, 4);
+assert.equal(lastCall[0].demandCap, 6);
+assert.equal(lastCall[0].location, "Last Call Egress: Night Venue");
 
 const configured = buildScheduledConfiguredEvents({
   localStart,
@@ -106,4 +109,4 @@ assert.equal(configured.length, 1);
 assert.equal(configured[0].leaveBy, "3:30 PM");
 assert.equal(configured[0].windowEnd, "4:15 PM");
 
-console.log("Scheduled local events: 23 assertions passed.");
+console.log("Scheduled local events: 26 assertions passed.");
