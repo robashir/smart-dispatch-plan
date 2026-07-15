@@ -257,7 +257,7 @@ const LOCAL_ANCHOR_SCHEDULES = [
 
 const HOSPITAL_SHIFTS = [
   { start: 390, end: 450, mod: 4.0, label: "Morning Shift Overlap" },     // 6:30 AM - 7:30 AM
-  { start: 900, end: 960, mod: 2.0, label: "Afternoon Clinic Shift" },    // 3:00 PM - 4:00 PM
+  { start: 870, end: 930, mod: 2.0, label: "Afternoon Clinic Shift" },    // 2:30 PM - 3:30 PM
   { start: 1110, end: 1170, mod: 3.0, label: "Evening Nursing Shift" },   // 6:30 PM - 7:30 PM
   { start: 1350, end: 1410, mod: 2.0, label: "Night Admin Shift" },       // 10:30 PM - 11:30 PM
 ];

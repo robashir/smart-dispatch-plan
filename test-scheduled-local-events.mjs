@@ -15,13 +15,13 @@ const localEnd = new Date("2026-07-15T17:00:00Z");
 const hospitals = buildScheduledHospitalEvents({
   localStart,
   localEnd,
-  shifts: [{ start: 900, end: 960, mod: 2, label: "Afternoon Clinic Shift" }],
+  shifts: [{ start: 870, end: 930, mod: 2, label: "Afternoon Clinic Shift" }],
   coords,
 });
 assert.equal(hospitals.length, 1);
-assert.equal(hospitals[0].leaveBy, "3:00 PM");
-assert.equal(hospitals[0].hourBucket, "3:00 PM");
-assert.equal(hospitals[0].windowEnd, "4:00 PM");
+assert.equal(hospitals[0].leaveBy, "2:30 PM");
+assert.equal(hospitals[0].hourBucket, "2:30 PM");
+assert.equal(hospitals[0].windowEnd, "3:30 PM");
 assert.equal(hospitals[0].activeNow, false);
 
 const stateWorkers = buildScheduledStateWorkerEvents({
@@ -46,7 +46,7 @@ assert.equal(boundaryStateWorker[0].leaveBy, "4:00 PM");
 const activeHospital = buildScheduledHospitalEvents({
   localStart: new Date("2026-07-15T15:15:00Z"),
   localEnd,
-  shifts: [{ start: 900, end: 960, mod: 2, label: "Afternoon Clinic Shift" }],
+  shifts: [{ start: 870, end: 930, mod: 2, label: "Afternoon Clinic Shift" }],
   coords,
 })[0];
 assert.equal(activeHospital.activeNow, true);

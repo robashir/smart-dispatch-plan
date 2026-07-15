@@ -5,7 +5,7 @@
 
 const HOSPITAL_SHIFTS = [
   { start: 390, end: 450, mod: 4.0, label: "Morning Shift Overlap" },     // 6:30 AM - 7:30 AM
-  { start: 900, end: 960, mod: 2.0, label: "Afternoon Clinic Shift" },    // 3:00 PM - 4:00 PM
+  { start: 870, end: 930, mod: 2.0, label: "Afternoon Clinic Shift" },    // 2:30 PM - 3:30 PM
   { start: 1110, end: 1170, mod: 3.0, label: "Evening Nursing Shift" },   // 6:30 PM - 7:30 PM
   { start: 1350, end: 1410, mod: 2.0, label: "Night Admin Shift" },       // 10:30 PM - 11:30 PM
 ];
@@ -30,9 +30,9 @@ assert("Morning Overlap @ 405 mins → 4.0x / Morning Shift Overlap",
   { mod: a1?.mod, label: a1?.label },
   { mod: 4.0, label: "Morning Shift Overlap" });
 
-// Assert 2: 3:15 PM falls inside the afternoon clinic window.
-const a2 = getHospitalShift(915);
-assert("Afternoon Clinic @ 915 mins → 2.0x / Afternoon Clinic Shift",
+// Assert 2: 2:45 PM falls inside the afternoon clinic window.
+const a2 = getHospitalShift(885);
+assert("Afternoon Clinic @ 885 mins → 2.0x / Afternoon Clinic Shift",
   { mod: a2?.mod, label: a2?.label },
   { mod: 2.0, label: "Afternoon Clinic Shift" });
 
