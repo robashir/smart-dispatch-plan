@@ -52,4 +52,32 @@ const noInitialWindowWithActiveNow = buildDemandFirstFlexWindows(
 );
 assert.equal(noInitialWindowWithActiveNow.length, 0);
 
-console.log("Demand-first flex windows: 10 assertions passed.");
+const afterScheduledWindow = buildDemandFirstFlexWindows(
+  {
+    selected: [
+      {
+        item: {
+          type: "event",
+          leaveBy: "3:00 PM",
+          windowStart: "3:00 PM",
+          windowEnd: "4:00 PM",
+        },
+        minute: 15 * 60,
+        delta: 60,
+      },
+      {
+        item: {
+          type: "event",
+          categories: ["BYOD Train", "Outbound"],
+          leaveBy: "5:30 PM",
+        },
+        minute: 17 * 60 + 30,
+        delta: 210,
+      },
+    ],
+  },
+  { nowMinute: 14 * 60 }
+);
+assert.equal(afterScheduledWindow[1].startLabel, "4:00 PM");
+
+console.log("Demand-first flex windows: 11 assertions passed.");

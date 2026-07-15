@@ -70,4 +70,14 @@ assert.deepEqual(
   { label: "3:16 PM", instruction: "Be at Empire State Plaza by 3:16 PM" }
 );
 
-console.log("Demand-first timing: 8 assertions passed.");
+assert.equal(
+  formatDemandFirstTiming({
+    type: "event",
+    leaveBy: "3:00 PM",
+    windowStart: "3:00 PM",
+    windowEnd: "4:00 PM",
+  }),
+  "Demand window 3:00 PM–4:00 PM | Be there by 3:00 PM"
+);
+
+console.log("Demand-first timing: 9 assertions passed.");

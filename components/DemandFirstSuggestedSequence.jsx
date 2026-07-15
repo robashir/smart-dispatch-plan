@@ -19,6 +19,12 @@ function itemTitle(item) {
     return formatByodTrainHeading(item);
   }
   if (item?.type === "flight") return formatInboundFlightSequenceHeading(item);
+  if (categories.includes("Hospital Shift") && categories[0]) {
+    return `${item?.location || "Hospital Demand"} — ${categories[0]}`;
+  }
+  if (categories.includes("State Worker Commute") && categories[1]) {
+    return `${item?.location || "Government Staff Dismissal"} — ${categories[1]}`;
+  }
   return item?.location || item?.hub || item?.hourBucket || "Opportunity";
 }
 

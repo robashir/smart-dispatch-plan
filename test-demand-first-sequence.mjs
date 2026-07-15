@@ -67,4 +67,36 @@ assert.equal(active.activeCompetingOptions, 2);
 assert.equal(active.activeAlternatives.length, 1);
 assert.equal(active.activeAlternatives[0].item.location, "Current Low");
 
-console.log("Demand-first sequence: 14 assertions passed.");
+const scheduledWindowCompetition = buildDemandFirstSelection(
+  [
+    {
+      ...timed("Albany Hospitals", "3:00 PM", 20, 20),
+      windowStart: "3:00 PM",
+      windowEnd: "4:00 PM",
+    },
+    timed("Rensselaer Train", "3:30 PM", 10, 10),
+    {
+      ...timed("Government Staff Dismissal", "4:00 PM", 30, 30),
+      windowStart: "4:00 PM",
+      windowEnd: "4:30 PM",
+    },
+    {
+      ...timed("Government Staff Dismissal Taper", "4:30 PM", 20, 20),
+      windowStart: "4:30 PM",
+      windowEnd: "5:00 PM",
+    },
+  ],
+  { nowMinute: 14 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
+);
+assert.equal(scheduledWindowCompetition.selected[0].item.location, "Albany Hospitals");
+assert.equal(scheduledWindowCompetition.selected[0].competingOptions, 2);
+assert.equal(
+  scheduledWindowCompetition.selected[0].alternatives[0].item.location,
+  "Rensselaer Train"
+);
+assert.equal(
+  scheduledWindowCompetition.selected[1].item.location,
+  "Government Staff Dismissal Taper"
+);
+
+console.log("Demand-first sequence: 18 assertions passed.");

@@ -18,6 +18,14 @@ const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
 import { parseOutboundFlightText } from "../../lib/byod-outbound-flight.mjs";
+import {
+  buildScheduledConfiguredEvents,
+  buildScheduledCrossgatesEvents,
+  buildScheduledHospitalEvents,
+  buildScheduledLastCallEvents,
+  buildScheduledLocalAnchorEvents,
+  buildScheduledStateWorkerEvents,
+} from "../../lib/scheduled-local-events.mjs";
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
 // built by scripts/build-census-grid.js and loaded once at module-load time
@@ -626,6 +634,15 @@ export function yieldRateFor(item, localStart = null) {
 // inside that window. Ported verbatim from test-egress-engine.js after all
 // PO scenarios PASSed.
 function computeEventEgress(event, currentLocalTime) {
+  const window = computeEventEgressWindow(event);
+  if (!window) return 1.0;
+  if (!(currentLocalTime instanceof Date) || Number.isNaN(currentLocalTime.getTime())) return 1.0;
+  return currentLocalTime >= window.start && currentLocalTime <= window.end
+    ? window.egressMod
+    : 1.0;
+}
+
+function computeEventEgressWindow(event) {
   const segmentName = event?.segmentName || "";
   const venueName = event?.venueName || "";
   const startTime = event?.startTime;
@@ -639,15 +656,13 @@ function computeEventEgress(event, currentLocalTime) {
   const egressMod = isMegaVenue ? 2.5 : 2.0;
   const windowMinutes = isMegaVenue ? 30 : 15;
 
-  if (!(startTime instanceof Date) || Number.isNaN(startTime.getTime())) return 1.0;
-  if (!(currentLocalTime instanceof Date) || Number.isNaN(currentLocalTime.getTime())) return 1.0;
+  if (!(startTime instanceof Date) || Number.isNaN(startTime.getTime())) return null;
 
   const end = new Date(startTime.getTime() + durationHours * 60 * 60 * 1000);
   const windowStart = new Date(end.getTime() - windowMinutes * 60 * 1000);
   const windowEnd = new Date(end.getTime() + windowMinutes * 60 * 1000);
 
-  if (currentLocalTime >= windowStart && currentLocalTime <= windowEnd) return egressMod;
-  return 1.0;
+  return { start: windowStart, end: windowEnd, egressMod, projectedEnd: end };
 }
 
 // Sprint 69: Tourist Event Clustering (Sprint 47) removed. The engine was
@@ -3155,6 +3170,9 @@ export async function POST(request) {
     const now = new Date();
     const localStart = new Date(now.getTime() - offsetMin * 60 * 1000);
     const localEnd = new Date(localStart.getTime() + hoursNum * 60 * 60 * 1000);
+    // Event windows just beyond the requested horizon can require positioning
+    // before it ends (for example, a 4:00 PM dismissal at 11:41 AM).
+    const eventPlanningEnd = new Date(localEnd.getTime() + 30 * 60 * 1000);
 
     // Shift "now" by the client's offset so the ISO Z-string visually matches
     // the user's local wall-clock time (e.g., 4:19 PM EDT → "...T16:19:00Z").
@@ -3267,8 +3285,8 @@ export async function POST(request) {
       fetchTicketmasterEvents({
         latitude,
         longitude,
-        start: localStart,
-        end: localEnd,
+        start: new Date(localStart.getTime() - 4 * 60 * 60 * 1000),
+        end: eventPlanningEnd,
         apiKey: process.env.TICKETMASTER_API_KEY,
       }),
       fetchWeatherWindowed({ latitude, longitude, hours: hoursNum }),
@@ -3405,31 +3423,41 @@ export async function POST(request) {
           const d = new Date(`${localDate}T${localTime}Z`);
           if (!Number.isNaN(d.getTime())) startTime = d;
         }
-        const egressMod = computeEventEgress(
-          { segmentName, venueName, startTime },
-          localStart
-        );
+        const egressWindow = computeEventEgressWindow({ segmentName, venueName, startTime });
 
         // Sprint 69: with Tourist Clustering deleted, this branch can revert
         // to a strict `continue` on egressMod <= 1.0. Kept as-is (if block)
         // for surgical minimality — behaviour is identical.
-        if (egressMod > 1.0) {
-          const duration = eventDurationHours(segmentName);
-          const projectedEnd = startTime
-            ? formatLeaveBy(new Date(startTime.getTime() + duration * 60 * 60 * 1000))
-            : "Unknown";
+        if (
+          egressWindow &&
+          egressWindow.start < eventPlanningEnd &&
+          egressWindow.end > localStart
+        ) {
+          const projectedEnd = formatLeaveBy(egressWindow.projectedEnd);
+          const activeNow = localStart >= egressWindow.start && localStart < egressWindow.end;
           console.log(
-            `EVENT EGRESS TRIGGERED: ${venueName || "Unknown Venue"} | Mod: ${egressMod}x | Projected End: ${projectedEnd}`
+            `EVENT EGRESS SCHEDULED: ${venueName || "Unknown Venue"} | Mod: ${egressWindow.egressMod}x | Projected End: ${projectedEnd}`
           );
 
           structuredEvents.push({
             type: "event",
             location: venueName || "Unknown Venue",
             volume: 1,
-            egressMod,
+            egressMod: egressWindow.egressMod,
             categories: [segmentName || "Music"],
             lat: venueCoords.lat,
             lng: venueCoords.lng,
+            ...(activeNow
+              ? {}
+              : {
+                  leaveBy: formatLeaveBy(egressWindow.start),
+                  hourBucket: formatLeaveBy(egressWindow.start),
+                }),
+            windowStart: formatLeaveBy(egressWindow.start),
+            windowEnd: formatLeaveBy(egressWindow.end),
+            projectedEnd,
+            activeNow,
+            sequenceOnly: true,
           });
         }
 
@@ -3450,24 +3478,49 @@ export async function POST(request) {
     // gate reads wall-clock-as-UTC off localStart (Sprint 3.1). The matched
     // row's `mod` and `label` flow straight onto egressMod and the leading
     // category so the UI EventCard renders the exact shift name natively.
-    const wallMinutes = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
-    const activeShift = HOSPITAL_SHIFTS.find(
-      s => wallMinutes >= s.start && wallMinutes <= s.end
-    );
-    if (activePlatforms.rideshare && activeShift) {
-      structuredEvents.push({
-        type: "event",
-        location: "Albany Med & St. Peter's Hospitals",
-        volume: 1,
-        egressMod: activeShift.mod,
-        categories: [activeShift.label, "High Demand"],
-        // Sprint 37: Albany Med area coords for the Mapbox radar pin.
-        lat: 42.6534,
-        lng: -73.7933,
-      });
-      console.log(
-        `HOSPITAL SHIFT INJECTED: ${activeShift.label} | egressMod ${activeShift.mod}x`
-      );
+    if (activePlatforms.rideshare) {
+      const scheduledLocalEvents = [
+        ...buildScheduledHospitalEvents({
+          localStart,
+          localEnd: eventPlanningEnd,
+          shifts: HOSPITAL_SHIFTS,
+          coords: { lat: 42.6534, lng: -73.7933 },
+        }),
+        ...buildScheduledStateWorkerEvents({
+          localStart,
+          localEnd: eventPlanningEnd,
+          slots: STATE_WORKER_EVENING_TAPER,
+          coords: ESP_COORDS,
+        }),
+        ...buildScheduledConfiguredEvents({
+          localStart,
+          localEnd: eventPlanningEnd,
+          eventConfig,
+          coords: ESP_COORDS,
+        }),
+        ...buildScheduledLastCallEvents({
+          localStart,
+          localEnd: eventPlanningEnd,
+          dictionary: ALBANY_NIGHTLIFE_HOURS,
+        }),
+        ...buildScheduledCrossgatesEvents({
+          localStart,
+          localEnd: eventPlanningEnd,
+          closingHours: CROSSGATES_HOURS,
+          coords: CROSSGATES_COORDS,
+        }),
+        ...buildScheduledLocalAnchorEvents({
+          localStart,
+          localEnd: eventPlanningEnd,
+          schedules: LOCAL_ANCHOR_SCHEDULES,
+        }),
+      ];
+      for (const event of scheduledLocalEvents) {
+        structuredEvents.push(event);
+        console.log(
+          `SCHEDULED LOCAL EVENT: ${event.location} | ${event.windowStart}-${event.windowEnd} | ${event.categories.join(" / ")}`
+        );
+      }
     }
 
     // Sprint 36: State Commuter Injector. Mon-Fri 15:30-17:00 wall-clock
@@ -3479,29 +3532,7 @@ export async function POST(request) {
     // Sprint 113 tightens this to a 4:00-5:19 PM pulse.
     // Current score uses the taper factor as volume, so state_worker yield
     // 100 becomes 100 / 65 / 35 expected riders by slot.
-    const currentDay = localStart.getUTCDay();
-    const stateWorkerTaper = computeStateWorkerCommuteTaper(localStart);
-    if (
-      activePlatforms.rideshare &&
-      currentDay >= 1 &&
-      currentDay <= 5 &&
-      stateWorkerTaper.factor > 0
-    ) {
-      const displayMod = Number((1 + 1.5 * stateWorkerTaper.factor).toFixed(2));
-      structuredEvents.push({
-        type: "event",
-        location: "Empire State Plaza & Harriman Campus",
-        volume: stateWorkerTaper.factor,
-        egressMod: displayMod,
-        categories: ["State Worker Commute", stateWorkerTaper.label],
-        // Sprint 37: ESP coords for the Mapbox radar pin.
-        lat: ESP_COORDS.lat,
-        lng: ESP_COORDS.lng,
-      });
-      console.log(
-        `STATE COMMUTER INJECTED: Empire State Plaza & Harriman Campus | factor ${stateWorkerTaper.factor} | expected riders ${Math.round(stateWorkerTaper.factor * YIELD_RATES.state_worker)}`
-      );
-    }
+    // State-worker windows are emitted above for the full dispatch horizon.
 
     // Sprint 57: Unified Event Database injector. Single match path for both
     // holiday and academic surges — driven by event-config.json (read above).
@@ -3510,36 +3541,14 @@ export async function POST(request) {
     // above Mega-Venue 2.5x). ESP coords reuse the existing purple EventCard
     // + Mapbox pin path so no new UI component is required. Math validated
     // in isolation by test-academic-surge.js (23 assertions PASS).
-    const eventDispatchHour =
-      localStart.getUTCHours() + localStart.getUTCMinutes() / 60;
-    const activeEvent = findActiveEvent(localStart, eventDispatchHour, eventConfig);
-    if (activeEvent) {
-      const mod = Number(activeEvent.multiplier) > 0 ? Number(activeEvent.multiplier) : 3.5;
-      const category =
-        activeEvent.type === "holiday" ? "Holiday Surge" : "Academic Calendar";
-      structuredEvents.push({
-        type: "event",
-        location: `${activeEvent.name} Surge`,
-        volume: 1,
-        egressMod: mod,
-        categories: [category, "High Demand"],
-        lat: ESP_COORDS.lat,
-        lng: ESP_COORDS.lng,
-      });
-      console.log(
-        `EVENT SURGE INJECTED: ${activeEvent.name} | ${activeEvent.date} | type=${activeEvent.type} | egressMod ${mod}x`
-      );
-    }
+    // Configured holiday and academic windows are emitted above for the horizon.
 
     // Sprint 50: Last Call Egress Engine. For each venue in ALBANY_NIGHTLIFE_HOURS,
     // fire a synthetic event when localStart is 30–45 min before that venue's
     // mapped close (with cross-midnight day-rollback). egressMod 3.5 mirrors
     // Sprint 49's holiday surge so the Last Call card floats to the top of
     // Profitability sorts without touching buildItinerary math.
-    const lastCallEvents = computeLastCallEgressEvents(localStart, ALBANY_NIGHTLIFE_HOURS);
-    for (const ev of lastCallEvents) {
-      structuredEvents.push(ev);
-    }
+    // Last-call windows are emitted above for the horizon.
 
     // Sprint 52: Crossgates Retail Egress Engine. Synthetic event when the
     // driver's wall-clock falls inside the ±30 minute window centered on
@@ -3547,34 +3556,7 @@ export async function POST(request) {
     // `wallMinutes` and `currentDay` are already in scope from Sprints 44/36.
     // Gated on rideshare so untoggling Rideshare fully disables the injection.
     // Math validated in isolation by test-crossgates-engine.js (30/30 PASS).
-    const crossgatesCloseMinute = CROSSGATES_HOURS[currentDay];
-    if (
-      activePlatforms.rideshare &&
-      typeof crossgatesCloseMinute === "number" &&
-      wallMinutes >= crossgatesCloseMinute - 30 &&
-      wallMinutes <= crossgatesCloseMinute + 30
-    ) {
-      structuredEvents.push({
-        type: "event",
-        location: "Crossgates Mall",
-        volume: 1,
-        egressMod: 3.0,
-        categories: ["Retail Egress", "Closing Surge"],
-        lat: CROSSGATES_COORDS.lat,
-        lng: CROSSGATES_COORDS.lng,
-      });
-      console.log("CROSSGATES EGRESS INJECTED: Retail Egress | egressMod 3.0x");
-    }
-
-    if (activePlatforms.rideshare) {
-      const localAnchorEvents = buildLocalAnchorEvents(localStart);
-      for (const ev of localAnchorEvents) {
-        structuredEvents.push(ev);
-        console.log(
-          `LOCAL ANCHOR INJECTED: ${ev.location} | ${ev.categories.join(" / ")} | expected riders ${ev.volume}`
-        );
-      }
-    }
+    // Crossgates and local-anchor windows are emitted above for the horizon.
 
     // BYOD outbound flights represent airport drop-off demand. The driver
     // targets ALB 90 minutes before departure; flights inside 45 minutes are

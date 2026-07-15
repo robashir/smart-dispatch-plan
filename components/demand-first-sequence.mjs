@@ -81,6 +81,12 @@ function isReachable(candidate, previous, driverCoords, safetyMinutes) {
   return availableMinutes >= requiredMinutes;
 }
 
+function activeCompletionDelta(item, nowMinute) {
+  const endMinute = parseSequenceTime(item?.windowEnd);
+  if (!Number.isFinite(endMinute)) return 0;
+  return Math.max(0, minutesUntil(endMinute, nowMinute));
+}
+
 function alternativeReason(candidateItem, winnerItem, reachable = true) {
   if (!reachable) return "Unreachable before its deadline";
   if (demandValue(candidateItem) < demandValue(winnerItem)) return "Lower expected demand";
@@ -92,12 +98,21 @@ function alternativeReason(candidateItem, winnerItem, reachable = true) {
 
 function groupOverlappingCandidates(candidates, overlapMinutes) {
   const groups = [];
+  let currentConflictEnd = -Infinity;
   for (const candidate of candidates) {
     const current = groups[groups.length - 1];
-    if (!current || candidate.delta - current[0].delta >= overlapMinutes) {
+    const conflictStart = Number.isFinite(candidate.windowStartDelta)
+      ? candidate.windowStartDelta
+      : candidate.delta;
+    const conflictEnd = Number.isFinite(candidate.windowEndDelta)
+      ? candidate.windowEndDelta
+      : candidate.delta + overlapMinutes;
+    if (!current || conflictStart >= currentConflictEnd) {
       groups.push([candidate]);
+      currentConflictEnd = conflictEnd;
     } else {
       current.push(candidate);
+      currentConflictEnd = Math.max(currentConflictEnd, conflictEnd);
     }
   }
   return groups;
@@ -138,14 +153,27 @@ export function buildDemandFirstSelection(
     .filter((item) => TIMED_TYPES.has(item?.type) && demandValue(item) > 0)
     .map((item) => {
       const minute = parseSequenceTime(timeLabel(item));
-      return { item, minute, delta: minutesUntil(minute, resolvedNow) };
+      const delta = minutesUntil(minute, resolvedNow);
+      const windowStartMinute = parseSequenceTime(item?.windowStart);
+      const windowEndMinute = parseSequenceTime(item?.windowEnd);
+      const hasWindow = Number.isFinite(windowStartMinute) && Number.isFinite(windowEndMinute);
+      const windowStartDelta = hasWindow
+        ? minutesUntil(windowStartMinute, resolvedNow)
+        : delta;
+      let windowEndDelta = hasWindow
+        ? minutesUntil(windowEndMinute, resolvedNow)
+        : delta + overlapMinutes;
+      if (windowEndDelta < windowStartDelta) windowEndDelta += 1440;
+      return { item, minute, delta, windowStartDelta, windowEndDelta };
     })
     .filter((candidate) => Number.isFinite(candidate.minute) && candidate.delta >= -15)
     .sort((a, b) => a.delta - b.delta);
 
   const groups = groupOverlappingCandidates(timed, overlapMinutes);
   const selected = [];
-  let previous = activeNow ? { item: activeNow, delta: 0 } : null;
+  let previous = activeNow
+    ? { item: activeNow, delta: activeCompletionDelta(activeNow, resolvedNow) }
+    : null;
   for (const group of groups) {
     if (selected.length >= maxTimedSteps) break;
     const ranked = [...group].sort(compareDemand);
@@ -164,7 +192,12 @@ export function buildDemandFirstSelection(
         reason: alternativeReason(candidate.item, winner.item, candidate.reachable),
       }));
     selected.push({ ...winner, competingOptions: group.length, alternatives });
-    previous = winner;
+    previous = {
+      ...winner,
+      delta: Number.isFinite(winner.windowEndDelta)
+        ? winner.windowEndDelta
+        : winner.delta,
+    };
   }
 
   return {

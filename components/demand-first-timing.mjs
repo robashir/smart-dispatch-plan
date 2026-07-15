@@ -37,6 +37,9 @@ export function formatSuggestedServiceTiming(item) {
   if (/BYOD Bus/i.test(categories) && item.arrivalTime) {
     return `Bus arrives ${item.arrivalTime}`;
   }
+  if (item.windowStart && item.windowEnd) {
+    return `Demand window ${item.windowStart}–${item.windowEnd}`;
+  }
   return null;
 }
 

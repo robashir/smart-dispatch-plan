@@ -19,7 +19,7 @@ function forwardDelta(targetMinute, startMinute) {
 }
 
 function completedWindowLabel(item) {
-  return item?.curbTime || item?.arrivalTime || item?.leaveBy || item?.hourBucket || null;
+  return item?.windowEnd || item?.curbTime || item?.arrivalTime || item?.leaveBy || item?.hourBucket || null;
 }
 
 export function flexTargetLabel(item) {
