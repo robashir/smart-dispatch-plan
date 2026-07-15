@@ -630,21 +630,6 @@
     }
   },
   {
-    "name": "The Scene",
-    "yelpId": "7Ey4wOfBhcX-owgrKQxuTQ",
-    "lat": 42.68721,
-    "lng": -73.85558,
-    "closingTimes": {
-      "0": "16:00",
-      "1": "16:00",
-      "2": "16:00",
-      "3": "16:00",
-      "4": "16:00",
-      "5": "16:00",
-      "6": "16:00"
-    }
-  },
-  {
     "name": "Across The Street Pub",
     "yelpId": "2YVy8k9NAZ0vMlrC8xyq8A",
     "lat": 42.6781099,

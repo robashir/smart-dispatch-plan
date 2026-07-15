@@ -76,7 +76,6 @@
     { "name": "Gong Cha", "lat": 42.6780078, "lng": -73.8288846, "price": "$", "categories": ["Bubble Tea"], "address1": "Western Avenue" },
     { "name": "Five Guys", "lat": 42.6822513, "lng": -73.842184, "price": "$$", "categories": ["Burgers", "Fast Food"], "address1": "Western Avenue" },
     { "name": "Moge Tee", "lat": 42.6822812, "lng": -73.84231, "price": "$", "categories": ["Bubble Tea"], "address1": "Western Avenue" },
-    { "name": "The Scene Coffee & Cocktails", "lat": 42.687175, "lng": -73.8555674, "price": "$$$", "categories": ["Coffee", "Bars"], "address1": "Western Avenue" },
     { "name": "Atomic Wings", "lat": 42.6872575, "lng": -73.8586933, "price": "$$", "categories": ["Wings", "Fast Food"], "address1": "Western Avenue" },
     { "name": "Tara Kitchen", "lat": 42.6901746, "lng": -73.8653387, "price": "$$$", "categories": ["Mediterranean"], "address1": "Western Avenue" },
     { "name": "Panera Bread", "lat": 42.6955689, "lng": -73.847426, "price": "$$", "categories": ["Sandwiches", "Bakeries"], "address1": "Washington Avenue Extension", "dayparts": ["breakfast", "morning"] },
