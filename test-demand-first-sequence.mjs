@@ -127,4 +127,51 @@ assert.equal(noTransitiveOverlapChain.selected[0].competingOptions, 3);
 assert.equal(noTransitiveOverlapChain.selected[1].item.location, "Peak Exit Wave");
 assert.equal(noTransitiveOverlapChain.selected[1].competingOptions, 3);
 
-console.log("Demand-first sequence: 22 assertions passed.");
+const flightCrossesStateBoundary = buildDemandFirstSelection(
+  [
+    {
+      type: "event",
+      location: "Albany Hospitals",
+      densityScore: 20,
+      opportunityScore: 20,
+      windowStart: "2:30 PM",
+      windowEnd: "3:30 PM",
+      activeNow: true,
+      sequenceOnly: true,
+      lat: 42.6534,
+      lng: -73.7933,
+    },
+    {
+      ...timed("Earlier Local Anchor", "3:15 PM", 7, 5, 42.6534, -73.7933),
+      windowStart: "3:15 PM",
+      windowEnd: "4:00 PM",
+    },
+    {
+      type: "flight",
+      hub: "ALB",
+      leaveBy: "3:58 PM",
+      curbTime: "4:09 PM",
+      densityScore: 15,
+      opportunityScore: 11,
+      lat: 42.7483,
+      lng: -73.8017,
+    },
+    {
+      ...timed("Peak Exit Wave", "4:00 PM", 100, 40, 42.6514, -73.7608),
+      windowStart: "4:00 PM",
+      windowEnd: "4:30 PM",
+    },
+  ],
+  { nowMinute: 15 * 60, driverCoords: { latitude: 42.6534, longitude: -73.7933 } }
+);
+assert.equal(flightCrossesStateBoundary.activeNow.location, "Albany Hospitals");
+assert.equal(flightCrossesStateBoundary.selected[0].item.location, "Peak Exit Wave");
+assert.equal(flightCrossesStateBoundary.selected[0].competingOptions, 3);
+assert.equal(
+  flightCrossesStateBoundary.selected[0].alternatives.some(
+    (alternative) => alternative.item.hub === "ALB"
+  ),
+  true
+);
+
+console.log("Demand-first sequence: 26 assertions passed.");

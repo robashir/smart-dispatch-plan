@@ -141,6 +141,14 @@ function groupOverlappingCandidates(candidates, overlapMinutes) {
   return groups;
 }
 
+function candidatesOverlap(a, b) {
+  const aStart = Number.isFinite(a?.windowStartDelta) ? a.windowStartDelta : a?.delta;
+  const aEnd = Number.isFinite(a?.windowEndDelta) ? a.windowEndDelta : a?.delta;
+  const bStart = Number.isFinite(b?.windowStartDelta) ? b.windowStartDelta : b?.delta;
+  const bEnd = Number.isFinite(b?.windowEndDelta) ? b.windowEndDelta : b?.delta;
+  return aStart < bEnd && aEnd > bStart;
+}
+
 export function buildDemandFirstSelection(
   itinerary,
   {
@@ -178,13 +186,12 @@ export function buildDemandFirstSelection(
       const minute = parseSequenceTime(timeLabel(item));
       const delta = minutesUntil(minute, resolvedNow);
       const windowStartMinute = parseSequenceTime(item?.windowStart);
-      const windowEndMinute = parseSequenceTime(item?.windowEnd);
-      const hasWindow = Number.isFinite(windowStartMinute) && Number.isFinite(windowEndMinute);
-      const windowStartDelta = hasWindow
+      const serviceEndMinute = parseSequenceTime(item?.windowEnd || item?.curbTime);
+      const windowStartDelta = Number.isFinite(windowStartMinute)
         ? minutesUntil(windowStartMinute, resolvedNow)
         : delta;
-      let windowEndDelta = hasWindow
-        ? minutesUntil(windowEndMinute, resolvedNow)
+      let windowEndDelta = Number.isFinite(serviceEndMinute)
+        ? minutesUntil(serviceEndMinute, resolvedNow)
         : delta + overlapMinutes;
       if (windowEndDelta < windowStartDelta) windowEndDelta += 1440;
       return { item, minute, delta, windowStartDelta, windowEndDelta };
@@ -194,16 +201,36 @@ export function buildDemandFirstSelection(
 
   const groups = groupOverlappingCandidates(timed, overlapMinutes);
   const selected = [];
+  const consumed = new Set();
   let previous = activeNow
     ? { item: activeNow, delta: activeCompletionDelta(activeNow, resolvedNow) }
     : null;
   for (const group of groups) {
     if (selected.length >= maxTimedSteps) break;
-    const ranked = [...group].sort(compareDemand);
-    const evaluated = ranked.map((candidate) => ({
+    const initialGroup = group.filter((candidate) => !consumed.has(candidate));
+    if (initialGroup.length === 0) continue;
+    initialGroup.forEach((candidate) => consumed.add(candidate));
+    const initialEvaluated = [...initialGroup].sort(compareDemand).map((candidate) => ({
       ...candidate,
       reachable: isReachable(candidate, previous, driverCoords, safetyMinutes),
     }));
+    const provisionalWinner = initialEvaluated.find((candidate) => candidate.reachable);
+    if (!provisionalWinner) continue;
+
+    // Compare candidates that directly overlap the provisional winner's
+    // actual service interval. Do this once so a flight crossing a boundary
+    // can compete with a 4 PM event without recreating transitive chains.
+    const directOverlaps = timed.filter(
+      (candidate) =>
+        !consumed.has(candidate) && candidatesOverlap(candidate, provisionalWinner)
+    );
+    directOverlaps.forEach((candidate) => consumed.add(candidate));
+    const evaluated = [...initialGroup, ...directOverlaps]
+      .sort(compareDemand)
+      .map((candidate) => ({
+        ...candidate,
+        reachable: isReachable(candidate, previous, driverCoords, safetyMinutes),
+      }));
     const winner = evaluated.find((candidate) => candidate.reachable);
     if (!winner) continue;
     const alternatives = evaluated
@@ -214,7 +241,7 @@ export function buildDemandFirstSelection(
         delta: candidate.delta,
         reason: alternativeReason(candidate.item, winner.item, candidate.reachable),
       }));
-    selected.push({ ...winner, competingOptions: group.length, alternatives });
+    selected.push({ ...winner, competingOptions: evaluated.length, alternatives });
     previous = {
       ...winner,
       delta: Number.isFinite(winner.windowEndDelta)
