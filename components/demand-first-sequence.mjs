@@ -6,14 +6,7 @@ const TIMED_TYPES = new Set([
   "train_ripple",
   "ride",
 ]);
-const ACTIVE_TYPES = new Set([
-  "event",
-  "ride",
-  "flight_ripple",
-  "train_ripple",
-  "food",
-  "grocery",
-]);
+const ACTIVE_TYPES = new Set(["event", "ride", "flight_ripple", "train_ripple"]);
 
 export function demandValue(item) {
   const value = Number(item?.densityScore);
@@ -120,8 +113,7 @@ export function buildDemandFirstSelection(
     .filter((item) => {
       if (!ACTIVE_TYPES.has(item?.type)) return false;
       if (Number.isFinite(parseSequenceTime(timeLabel(item)))) return false;
-      const isDelivery = item?.type === "food" || item?.type === "grocery";
-      const threshold = isDelivery || item?.sequenceOnly ? 4 : 25;
+      const threshold = item?.sequenceOnly ? 4 : 25;
       return opportunityValue(item) >= threshold && demandValue(item) > 0;
     })
     .sort(compareDemand);

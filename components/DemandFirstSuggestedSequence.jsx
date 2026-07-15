@@ -31,17 +31,9 @@ function itemAction(item) {
   if (/Retail Egress|Closing Surge/i.test(categories)) return "Work retail closing demand";
   if (/Hospital|Shift|Nursing|Clinic|Admin/i.test(categories)) return "Work hospital shift movement";
   if (/Last Call|Nightlife/i.test(categories)) return "Work nightlife egress";
-  if (item?.type === "food") return "Work food delivery demand";
-  if (item?.type === "grocery") return "Work grocery delivery demand";
   if (item?.type === "flight") return "Work airport arrivals";
   if (item?.type === "train") return "Work train arrivals";
   return "Work this demand window";
-}
-
-function expectedDemandLabel(item) {
-  if (item?.type === "food") return "Expected Food Deliveries";
-  if (item?.type === "grocery") return "Expected Grocery Deliveries";
-  return "Expected Demand";
 }
 
 function selectionNote(count, active = false) {
@@ -60,7 +52,7 @@ function Step({ item, time, competingOptions, active = false }) {
       <div className="text-base font-semibold">{itemTitle(item)}</div>
       <div className="text-sm text-neutral-300">{itemAction(item)}</div>
       <div className="text-xs text-neutral-400 mt-1">
-        {expectedDemandLabel(item)} {Math.round(demandValue(item))} | Opportunity Now {Math.round(opportunityValue(item))}
+        Expected Demand {Math.round(demandValue(item))} | Opportunity Now {Math.round(opportunityValue(item))}
       </div>
       <div className="text-xs text-cyan-300 mt-1">
         {selectionNote(competingOptions, active)}

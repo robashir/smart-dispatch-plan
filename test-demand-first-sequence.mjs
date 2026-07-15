@@ -54,21 +54,4 @@ const active = buildDemandFirstSelection(
 assert.equal(active.activeNow.location, "Current High");
 assert.equal(active.activeCompetingOptions, 2);
 
-const deliveryCompetesNormally = buildDemandFirstSelection(
-  [
-    { type: "event", location: "Current Event", densityScore: 30, opportunityScore: 30 },
-    { type: "food", location: "Food Winner", densityScore: 40, opportunityScore: 35 },
-    { type: "grocery", location: "Grocery Lower", densityScore: 20, opportunityScore: 50 },
-  ],
-  { nowMinute: 16 * 60 }
-);
-assert.equal(deliveryCompetesNormally.activeNow.location, "Food Winner");
-assert.equal(deliveryCompetesNormally.activeCompetingOptions, 3);
-
-const smallDelivery = buildDemandFirstSelection(
-  [{ type: "food", location: "Small Food Opportunity", densityScore: 5, opportunityScore: 5 }],
-  { nowMinute: 16 * 60 }
-);
-assert.equal(smallDelivery.activeNow.location, "Small Food Opportunity");
-
-console.log("Demand-first sequence: 10 assertions passed.");
+console.log("Demand-first sequence: 7 assertions passed.");
