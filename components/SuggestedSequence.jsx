@@ -8,6 +8,7 @@ import {
   formatInboundFlightSequenceHeading,
   formatOutboundFlightNextWindow,
 } from "./flight-sequence-copy.mjs";
+import { formatSuggestedServiceTiming } from "./demand-first-timing.mjs";
 
 function parseTimeLabel(label) {
   if (!label || typeof label !== "string") return Infinity;
@@ -131,7 +132,11 @@ function beThereByText(item, nowMin) {
     const time = formatMinute(targetMin);
     return time ? `Complete an ALB drop-off by ${time}` : null;
   }
-  if (item?.type === "flight" && delta <= 3) return "Stay near ALB now";
+  if (item?.type === "flight") {
+    if (delta <= 3) return "Leave for ALB now";
+    const time = formatMinute(targetMin);
+    return time ? `Leave for ALB by ${time}` : null;
+  }
   if (delta <= 3) return `Stay near ${itemTitle(item)} now`;
   const time = formatMinute(targetMin - arrivalBufferMinutes(item));
   if (!time) return null;
@@ -285,6 +290,7 @@ function buildSuggestedSequence(itinerary) {
       action: itemAction(item),
       demand: Math.round(Number(item.densityScore) || 0),
       opportunity: Math.round(Number(item.opportunityScore) || Number(item.densityScore) || 0),
+      serviceTiming: formatSuggestedServiceTiming(item),
       beThereBy: beThereByText(item, nowMin),
       avoidLongTrips: shouldShowAvoidLongTrips(item, next)
         ? avoidLongTripsText(next, nowMin)
@@ -301,6 +307,7 @@ function buildSuggestedSequence(itinerary) {
       action: itemAction(activeNow),
       demand: Math.round(Number(activeNow.densityScore) || 0),
       opportunity: Math.round(opportunityValue(activeNow)),
+      serviceTiming: formatSuggestedServiceTiming(activeNow),
       beThereBy: null,
       avoidLongTrips: selected[0] ? avoidLongTripsText(selected[0].item, nowMin) : null,
       transition: selected[0]
@@ -316,6 +323,7 @@ function buildSuggestedSequence(itinerary) {
       action: "No immediate rideshare anchor; start drifting toward the next strongest timed opportunity.",
       demand: Math.round(Number(selected[0].item.densityScore) || 0),
       opportunity: Math.round(Number(selected[0].item.opportunityScore) || Number(selected[0].item.densityScore) || 0),
+      serviceTiming: null,
       beThereBy: null,
       avoidLongTrips: avoidLongTripsText(selected[0].item, nowMin),
       transition: `Avoid long trips away from ${itemTitle(selected[0].item)} until the window gets closer.`,
@@ -349,6 +357,9 @@ export function SuggestedSequence({ itinerary = [] }) {
                 ? `Next Demand ${step.demand} | Opportunity Now ${step.opportunity}`
                 : `Expected Demand ${step.demand} | Opportunity Now ${step.opportunity}`}
             </div>
+            {step.serviceTiming && (
+              <div className="text-xs text-neutral-300 mt-1">{step.serviceTiming}</div>
+            )}
             {(step.beThereBy || step.avoidLongTrips) && (
               <div className="text-xs text-yellow-300 mt-1">
                 {[step.beThereBy, step.avoidLongTrips].filter(Boolean).join(" | ")}
