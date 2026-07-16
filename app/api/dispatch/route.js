@@ -21,6 +21,7 @@ import {
   aggregateOutboundFlightEvents,
   parseOutboundFlightText,
 } from "../../lib/byod-outbound-flight.mjs";
+import { aggregateInboundFlightEvents } from "../../lib/inbound-flight-wave.mjs";
 import {
   isUAlbanyNode,
   isUAlbanyRegularSession,
@@ -3410,6 +3411,11 @@ export async function POST(request) {
       localEnd,
       offsetMin,
       minutesToAirport,
+    });
+    flightsByHour = aggregateInboundFlightEvents(flightsByHour, {
+      nowMinute: localStart.getUTCHours() * 60 + localStart.getUTCMinutes(),
+      windowMinutes: 20,
+      demandCap: 45,
     });
 
     let trainsByHour = aggregateTrainArrivalsByHour({

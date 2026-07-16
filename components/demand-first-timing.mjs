@@ -15,14 +15,33 @@ function subtractMinutes(label, minutes) {
   return `${h24 % 12 || 12}:${String(value % 60).padStart(2, "0")} ${ampm}`;
 }
 
+function formatTimeRange(labels) {
+  const times = [...new Set(labels.filter(Boolean))];
+  if (times.length === 0) return null;
+  if (times.length === 1) return times[0];
+  const first = times[0];
+  const last = times.at(-1);
+  const firstMatch = first.match(/^(.*)\s+(AM|PM)$/i);
+  const lastMatch = last.match(/^(.*)\s+(AM|PM)$/i);
+  if (firstMatch && lastMatch && firstMatch[2].toUpperCase() === lastMatch[2].toUpperCase()) {
+    return `${firstMatch[1]}–${lastMatch[1]} ${lastMatch[2].toUpperCase()}`;
+  }
+  return `${first}–${last}`;
+}
+
 export function formatSuggestedServiceTiming(item) {
   if (!item || typeof item !== "object") return null;
   const categories = categoriesFor(item);
   const outbound = /Outbound/i.test(categories);
   if (item.type === "flight" && !outbound) {
     const parts = [];
-    if (item.arrivalTime) parts.push(`Arrives ${item.arrivalTime}`);
-    if (item.curbTime) parts.push(`Expected curb ${item.curbTime}`);
+    const flightDetails = Array.isArray(item.flightDetails) ? item.flightDetails : [];
+    const arrivalRange = formatTimeRange(flightDetails.map(({ arrivalTime }) => arrivalTime));
+    const curbRange = formatTimeRange(flightDetails.map(({ curbTime }) => curbTime));
+    if (arrivalRange || item.arrivalTime) {
+      parts.push(`${flightDetails.length > 1 ? "Arrivals" : "Arrives"} ${arrivalRange || item.arrivalTime}`);
+    }
+    if (curbRange || item.curbTime) parts.push(`Expected curb ${curbRange || item.curbTime}`);
     return parts.join(" | ") || null;
   }
   if (

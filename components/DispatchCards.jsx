@@ -51,9 +51,11 @@ export function FlightCard({ data }) {
         : [];
   const isFlightLevel = Boolean(data.arrivalTime || data.curbTime || data.originLabel);
   const originText = data.originLabel || labels.join(", ");
-  const flightTitle = data.flightNumber
-    ? `${data.flightNumber} from ${originText}`
-    : `Flight from ${originText || data.hub}`;
+  const flightTitle = data.isFlightWave
+    ? `Arrival wave from ${originText}`
+    : data.flightNumber
+      ? `${data.flightNumber} from ${originText}`
+      : `Flight from ${originText || data.hub}`;
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-blue-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-blue-400 mb-1">Flight Surge</div>

@@ -12,15 +12,29 @@ export function inboundFlightOriginLabels(data) {
 
 export function formatInboundFlightSequenceHeading(data) {
   const origins = inboundFlightOriginLabels(data);
+  const originText =
+    origins.length <= 1
+      ? origins[0]
+      : origins.length === 2
+        ? origins.join(" & ")
+        : `${origins.slice(0, -1).join(", ")} & ${origins.at(-1)}`;
   return origins.length > 0
-    ? `Inbound — ALB Flight Arrivals from ${origins.join(", ")}`
+    ? data?.isFlightWave
+      ? `Inbound — ALB Arrival Wave from ${originText}`
+      : `Inbound — ALB Flight Arrivals from ${originText}`
     : "Inbound — ALB Flight Arrivals";
 }
 
 export function formatInboundFlightArrivalWindow(data) {
   const origins = inboundFlightOriginLabels(data);
+  const originText =
+    origins.length <= 1
+      ? origins[0]
+      : origins.length === 2
+        ? origins.join(" & ")
+        : `${origins.slice(0, -1).join(", ")} & ${origins.at(-1)}`;
   return origins.length > 0
-    ? `Stay near ALB for the arrival window from ${origins.join(", ")}.`
+    ? `Stay near ALB for the arrival window from ${originText}.`
     : "Stay near ALB for the next arrival window.";
 }
 

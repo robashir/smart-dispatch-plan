@@ -28,6 +28,21 @@ assert.equal(
 
 assert.equal(
   formatDemandFirstTiming({
+    type: "flight",
+    categories: ["Inbound"],
+    flightDetails: [
+      { arrivalTime: "12:47 PM", curbTime: "1:12 PM" },
+      { arrivalTime: "12:48 PM", curbTime: "1:13 PM" },
+    ],
+    arrivalTime: "12:47 PM",
+    curbTime: "1:13 PM",
+    leaveBy: "1:01 PM",
+  }),
+  "Arrivals 12:47–12:48 PM | Expected curb 1:12–1:13 PM | Leave for ALB by 1:01 PM"
+);
+
+assert.equal(
+  formatDemandFirstTiming({
     type: "event",
     categories: ["BYOD Flight", "Outbound"],
     departureTime: "1:18 PM",
@@ -93,4 +108,4 @@ assert.equal(
   "Demand window 3:00 PM–4:00 PM | Be there by 3:00 PM"
 );
 
-console.log("Demand-first timing: 10 assertions passed.");
+console.log("Demand-first timing: 11 assertions passed.");

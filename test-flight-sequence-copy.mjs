@@ -27,6 +27,14 @@ assert.equal(
   "Inbound — ALB Flight Arrivals from ORD"
 );
 assert.equal(
+  formatInboundFlightSequenceHeading({
+    type: "flight",
+    isFlightWave: true,
+    originLabels: ["New York (LGA)", "Chicago"],
+  }),
+  "Inbound — ALB Arrival Wave from New York (LGA) & Chicago"
+);
+assert.equal(
   formatInboundFlightSequenceHeading({ type: "flight" }),
   "Inbound — ALB Flight Arrivals"
 );
@@ -43,4 +51,4 @@ assert.equal(
   "Look for an ALB-bound ride ahead of the next departure window."
 );
 
-console.log("Flight sequence copy: 8 assertions passed.");
+console.log("Flight sequence copy: 9 assertions passed.");
