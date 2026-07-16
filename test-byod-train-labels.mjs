@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   formatByodTrainDemandLabel,
+  formatDemandFirstByodTrainHeading,
   formatByodTrainHeading,
+  getByodTrainSalesStatus,
   getByodTrainDirection,
 } from "./components/byod-train-labels.mjs";
 
@@ -22,4 +24,25 @@ assert.equal(formatByodTrainHeading(outbound), "Outbound — Empire State Plaza 
 assert.equal(formatByodTrainDemandLabel(outbound), "Outbound Train Demand");
 assert.equal(formatByodTrainHeading({ location: "Generic Event" }), "Generic Event");
 
-console.log("BYOD train labels: 7 assertions passed.");
+const soldOutInbound = {
+  ...inbound,
+  categories: ["BYOD Train", "Inbound", "Sold Out"],
+};
+assert.equal(getByodTrainSalesStatus(soldOutInbound), "Sold Out");
+assert.equal(
+  formatDemandFirstByodTrainHeading(soldOutInbound),
+  "Inbound — Rensselaer Train 283 — Sold Out"
+);
+
+const almostFullOutbound = {
+  ...outbound,
+  categories: ["BYOD Train", "Outbound", "Almost Full"],
+};
+assert.equal(getByodTrainSalesStatus(almostFullOutbound), "Almost Sold Out");
+assert.equal(
+  formatDemandFirstByodTrainHeading(almostFullOutbound),
+  "Outbound — Empire State Plaza — Train 64 — Almost Sold Out"
+);
+assert.equal(formatDemandFirstByodTrainHeading(inbound), formatByodTrainHeading(inbound));
+
+console.log("BYOD train labels: 12 assertions passed.");

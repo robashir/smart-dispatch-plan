@@ -3,7 +3,7 @@ import {
   demandValue,
   opportunityValue,
 } from "./demand-first-sequence.mjs";
-import { formatByodTrainHeading } from "./byod-train-labels.mjs";
+import { formatDemandFirstByodTrainHeading } from "./byod-train-labels.mjs";
 import {
   formatByodFlightHeading,
   isByodOutboundFlight,
@@ -16,7 +16,7 @@ function itemTitle(item) {
   const categories = Array.isArray(item?.categories) ? item.categories : [];
   if (isByodOutboundFlight(item)) return formatByodFlightHeading(item);
   if (categories.some((category) => /byod train/i.test(String(category)))) {
-    return formatByodTrainHeading(item);
+    return formatDemandFirstByodTrainHeading(item);
   }
   if (item?.type === "flight") return formatInboundFlightSequenceHeading(item);
   if (categories.includes("Hospital Shift") && categories[0]) {
