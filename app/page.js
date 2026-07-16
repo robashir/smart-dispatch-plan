@@ -14,6 +14,7 @@ import {
   normalizeByodSnapshot,
   reconcileByodSnapshots,
 } from "./lib/byod-snapshot.mjs";
+import { isUAlbanyRegularSession } from "./lib/ualbany-demand.mjs";
 // Sprint 59: static seed for the Unified Event Database. Next.js bundles
 // the 26-entry JSON at build time so a fresh browser (no localStorage)
 // hydrates the dropdown without a network round-trip. Re-seeding requires
@@ -250,6 +251,10 @@ export default function Home() {
     savedDate: null,
     rawText: "",
   });
+  const [academicSessionConfig, setAcademicSessionConfig] = useState({
+    mode: "auto",
+    updatedAt: null,
+  });
   const [byodSyncStatus, setByodSyncStatus] = useState("loading");
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
@@ -286,6 +291,7 @@ export default function Home() {
     setFlightConfigInbound(clean.flightConfigInbound);
     setFlightConfigOutbound(clean.flightConfigOutbound);
     setWeatherConfig(clean.weatherConfig);
+    setAcademicSessionConfig(clean.academicSessionConfig);
     return clean;
   }
 
@@ -437,6 +443,17 @@ export default function Home() {
       setByodSyncStatus("offline");
       return false;
     }
+  }
+
+  async function handleAcademicSessionModeChange(mode) {
+    const config = stampByodConfig({ mode });
+    setAcademicSessionConfig(config);
+    try {
+      localStorage.setItem("academicSessionConfig", JSON.stringify(config));
+    } catch (err) {
+      console.warn("academicSessionConfig cache failed:", err.message);
+    }
+    await syncByodSnapshot({ academicSessionConfig: config });
   }
 
   // Sprint 59: BYOD Amtrak Persistence — localStorage edition. Parses the
@@ -663,6 +680,7 @@ export default function Home() {
       // ships with every dispatch click — replaces the deleted Sprint 57
       // fs read.
       body.eventConfig = eventConfig;
+      body.academicSessionMode = academicSessionConfig.mode;
       // Sprint 64: split BYOD payload. Apply the lazy auto-wipe (savedDate
       // !== today → []) INDEPENDENTLY to each direction so a stale save
       // in one direction never collapses the other. The backend pre-merges
@@ -1010,6 +1028,26 @@ export default function Home() {
                 pre-loaded with the persisted date; Save writes the
                 override back to localStorage. */}
             <div className="flex flex-col gap-2 mt-4 pt-3 border-t border-neutral-800">
+              <label className="text-sm text-neutral-400">
+                UAlbany Regular Session
+              </label>
+              <select
+                value={academicSessionConfig.mode}
+                onChange={(e) => handleAcademicSessionModeChange(e.target.value)}
+                disabled={isBusy || byodSyncStatus === "loading" || byodSyncStatus === "syncing"}
+                className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm disabled:opacity-60"
+              >
+                <option value="auto">Automatic — Regular Fall/Spring Terms</option>
+                <option value="in-session">Force In Session</option>
+                <option value="out-of-session">Force Out of Session</option>
+              </select>
+              <div className="text-xs text-neutral-500">
+                Campus routine demand: {isUAlbanyRegularSession(
+                  todayLocalISO(),
+                  academicSessionConfig.mode
+                ) ? "Active" : "Suppressed"}
+              </div>
+
               <label className="text-sm text-neutral-400">
                 Holiday & Academic Calendar
               </label>

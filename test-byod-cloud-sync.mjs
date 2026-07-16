@@ -37,6 +37,15 @@ assert.equal(merged.trainConfigInbound.trains[0].trainNumber, "49");
 assert.equal(merged.busConfigInbound.rawText, "Bus board");
 assert.equal(merged.flightConfigInbound.rawText, "Flight board");
 assert.equal(merged.trainConfigOutbound.updatedAt, null);
+assert.equal(merged.academicSessionConfig.mode, "auto");
+
+const academicOverrideMerged = mergeByodUpdates(
+  merged,
+  { academicSessionConfig: { mode: "out-of-session", updatedAt: newer } },
+  newer
+);
+assert.equal(academicOverrideMerged.academicSessionConfig.mode, "out-of-session");
+assert.equal(academicOverrideMerged.academicSessionConfig.updatedAt, newer);
 
 const outboundFlightMerged = mergeByodUpdates(
   merged,
@@ -119,4 +128,4 @@ const legacyCloudWins = reconcileByodSnapshots(
 );
 assert.equal(legacyCloudWins.snapshot.flightConfigInbound.rawText, "Legacy cloud");
 
-console.log("BYOD cloud sync: 13 assertions passed.");
+console.log("BYOD cloud sync: 16 assertions passed.");

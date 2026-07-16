@@ -19,12 +19,18 @@ import { readByodSnapshot } from "../../lib/byod-store.js";
 import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
 import { parseOutboundFlightText } from "../../lib/byod-outbound-flight.mjs";
 import {
+  isUAlbanyNode,
+  isUAlbanyRegularSession,
+  normalizeAcademicSessionMode,
+} from "../../lib/ualbany-demand.mjs";
+import {
   buildScheduledConfiguredEvents,
   buildScheduledCrossgatesEvents,
   buildScheduledHospitalEvents,
   buildScheduledLastCallEvents,
   buildScheduledLocalAnchorEvents,
   buildScheduledStateWorkerEvents,
+  suppressOverlappingUAlbanyRoutineEvents,
 } from "../../lib/scheduled-local-events.mjs";
 
 // Sprint 63: Unified Population Density Engine. Static US Census-aligned grid
@@ -200,6 +206,7 @@ const CROSSGATES_HOURS = {
 const LOCAL_ANCHOR_SCHEDULES = [
   {
     name: "UAlbany Uptown Campus",
+    sessionOnly: true,
     lat: 42.6868,
     lng: -73.8238,
     days: [1, 2, 3, 4, 5],
@@ -1865,10 +1872,13 @@ function buildSyntheticRideHubs({
   threshold = POP_RIDE_THRESHOLD,
   maxHubs = POP_RIDE_MAX_HUBS,
   sequenceOnly = false,
+  suppressUAlbany = false,
 } = {}) {
   if (!Array.isArray(POPULATION_GRID) || POPULATION_GRID.length === 0) return [];
   const qualifying = POPULATION_GRID.filter(
-    (n) => (Number(n.baseMultiplier) || 0) >= threshold
+    (n) =>
+      (Number(n.baseMultiplier) || 0) >= threshold &&
+      !(suppressUAlbany && isUAlbanyNode(n))
   );
   qualifying.sort((a, b) => (b.baseMultiplier || 0) - (a.baseMultiplier || 0));
   const topN = qualifying.slice(0, maxHubs);
@@ -3134,6 +3144,7 @@ export async function POST(request) {
       routingStrategy: routingStrategyRaw,
       costPerMile: costPerMileRaw,
       eventConfig: eventConfigRaw,
+      academicSessionMode: academicSessionModeRaw,
       inboundTrains: inboundTrainsRaw = [],
       outboundTrains: outboundTrainsRaw = [],
       // Sprint 67: BYOD Bus Inbound. Raw pasted bus schedule text from the
@@ -3196,6 +3207,15 @@ export async function POST(request) {
         console.warn(`[BYOD Blob] read failed: ${err.message}`);
       }
     }
+    const academicSessionMode = normalizeAcademicSessionMode(
+      typeof academicSessionModeRaw === "string"
+        ? academicSessionModeRaw
+        : byodSnapshot?.academicSessionConfig?.mode
+    );
+    const academicSessionActive = isUAlbanyRegularSession(
+      localStart,
+      academicSessionMode
+    );
     const inboundTrains =
       Array.isArray(inboundTrainsRaw) && inboundTrainsRaw.length > 0
         ? inboundTrainsRaw
@@ -3479,8 +3499,9 @@ export async function POST(request) {
     // gate reads wall-clock-as-UTC off localStart (Sprint 3.1). The matched
     // row's `mod` and `label` flow straight onto egressMod and the leading
     // category so the UI EventCard renders the exact shift name natively.
+    let suppressUAlbanyResidentialHub = !academicSessionActive;
     if (activePlatforms.rideshare) {
-      const scheduledLocalEvents = [
+      let scheduledLocalEvents = [
         ...buildScheduledHospitalEvents({
           localStart,
           localEnd: eventPlanningEnd,
@@ -3514,10 +3535,19 @@ export async function POST(request) {
           localStart,
           localEnd: eventPlanningEnd,
           schedules: LOCAL_ANCHOR_SCHEDULES,
+          academicSessionMode,
         }),
       ];
+      const ualbanyAcademicEvents = scheduledLocalEvents.filter(
+        (event) => event.anchorKey === "ualbany"
+      );
+      if (ualbanyAcademicEvents.some((event) => event.activeNow)) {
+        suppressUAlbanyResidentialHub = true;
+      }
+      scheduledLocalEvents = suppressOverlappingUAlbanyRoutineEvents(scheduledLocalEvents);
       for (const event of scheduledLocalEvents) {
-        structuredEvents.push(event);
+        const { _scheduleStartMs, _scheduleEndMs, ...publicEvent } = event;
+        structuredEvents.push(publicEvent);
         console.log(
           `SCHEDULED LOCAL EVENT: ${event.location} | ${event.windowStart}-${event.windowEnd} | ${event.categories.join(" / ")}`
         );
@@ -3766,11 +3796,12 @@ export async function POST(request) {
     // Sprint 63: Synthetic residential ride hubs — emits the [Ride Boost]
     // log lines as a side effect of building each hub. Up to 5 entries with
     // populationDensityMod >= 2.0.
-    const rideHubs = buildSyntheticRideHubs();
+    const rideHubs = buildSyntheticRideHubs({ suppressUAlbany: suppressUAlbanyResidentialHub });
     const sequenceRideHubs = buildSyntheticRideHubs({
       threshold: 1.0,
       maxHubs: 10,
       sequenceOnly: true,
+      suppressUAlbany: suppressUAlbanyResidentialHub,
     });
 
     const mergedPayload = {
@@ -3781,6 +3812,10 @@ export async function POST(request) {
       routingStrategy,
       temporalModifiers,
       weatherModifiers,
+      academicSession: {
+        mode: academicSessionMode,
+        active: academicSessionActive,
+      },
       // Sprint 41 + 91: surface supply pressure separately from demand so
       // the terminal log explains opportunity ranking without fake riders.
       supplyDropMod,

@@ -105,8 +105,11 @@ const configured = buildScheduledConfiguredEvents({
   },
   coords,
 });
-assert.equal(configured.length, 1);
+assert.equal(configured.length, 3);
 assert.equal(configured[0].leaveBy, "3:30 PM");
-assert.equal(configured[0].windowEnd, "4:15 PM");
+assert.equal(configured[0].windowEnd, "3:45 PM");
+assert.deepEqual(configured.map((event) => event.categories[2]), ["Build", "Peak", "Taper"]);
+assert.deepEqual(configured.map((event) => event.demandYield), [12, 20, 12]);
+assert.equal(configured[0].location, "UAlbany Uptown Campus — Academic Dismissal");
 
-console.log("Scheduled local events: 26 assertions passed.");
+console.log("Scheduled local events: 29 assertions passed.");

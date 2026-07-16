@@ -1,3 +1,8 @@
+import {
+  academicEventPolicy,
+  isUAlbanyRegularSession,
+} from "./ualbany-demand.mjs";
+
 const MINUTE_MS = 60 * 1000;
 
 function startOfWallDay(date, dayOffset = 0) {
@@ -30,6 +35,8 @@ function timingFields(start, end, horizonStart) {
     windowEnd: formatTime(end),
     activeNow,
     sequenceOnly: true,
+    _scheduleStartMs: start.getTime(),
+    _scheduleEndMs: end.getTime(),
   };
 }
 
@@ -126,6 +133,7 @@ export function buildScheduledLocalAnchorEvents({
   localStart,
   localEnd,
   schedules = [],
+  academicSessionMode = "auto",
 }) {
   const events = [];
   const phases = [
@@ -136,6 +144,7 @@ export function buildScheduledLocalAnchorEvents({
   for (const day of scheduledDays(localStart)) {
     for (const anchor of schedules) {
       if (!anchor.days?.includes(day.getUTCDay())) continue;
+      if (anchor.sessionOnly && !isUAlbanyRegularSession(day, academicSessionMode)) continue;
       for (const slot of anchor.windows || []) {
         for (const phase of phases) {
           const startMinute =
@@ -304,23 +313,78 @@ export function buildScheduledConfiguredEvents({
       ? entry.activeWindows
       : [{ start: 0, end: 24 }];
     for (const window of windows) {
-      const start = new Date(day.getTime() + Number(window.start) * 60 * MINUTE_MS);
-      const end = new Date(day.getTime() + Number(window.end) * 60 * MINUTE_MS);
-      if (!intersects(start, end, localStart, localEnd)) continue;
-      const mod = Number(entry.multiplier) > 0 ? Number(entry.multiplier) : 3.5;
-      events.push({
-        type: "event",
-        location: `${name} Surge`,
-        volume: 1,
-        egressMod: mod,
-        categories: [entry.type === "holiday" ? "Holiday Surge" : "Academic Calendar", "High Demand"],
-        lat: coords.lat,
-        lng: coords.lng,
-        ...timingFields(start, end, localStart),
-      });
+      const windowStart = Number(window.start) * 60;
+      const windowEnd = Number(window.end) * 60;
+      const policy = academicEventPolicy(name, entry);
+      const phases = policy
+        ? [
+            { start: windowStart, end: windowStart + (windowEnd - windowStart) / 3, factor: 0.6, label: "Build" },
+            { start: windowStart + (windowEnd - windowStart) / 3, end: windowStart + ((windowEnd - windowStart) * 2) / 3, factor: 1, label: "Peak" },
+            { start: windowStart + ((windowEnd - windowStart) * 2) / 3, end: windowEnd, factor: 0.6, label: "Taper" },
+          ]
+        : [{ start: windowStart, end: windowEnd, factor: 1, label: "Peak" }];
+      for (const phase of phases) {
+        const start = atMinute(day, phase.start);
+        const end = atMinute(day, phase.end);
+        if (!intersects(start, end, localStart, localEnd)) continue;
+        const mod = Number(entry.multiplier) > 0 ? Number(entry.multiplier) : 3.5;
+        const demandYield = policy
+          ? Math.max(1, Math.round(policy.peakDemand * phase.factor))
+          : null;
+        events.push({
+          type: "event",
+          location: policy?.location || `${name} Surge`,
+          volume: 1,
+          egressMod: policy ? 1 : mod,
+          ...(policy
+            ? {
+                demandYield,
+                demandCap: demandYield,
+                anchorKey: policy.anchorKey,
+              }
+            : {}),
+          categories: policy
+            ? ["Academic Calendar", name, phase.label]
+            : ["Holiday Surge", "High Demand"],
+          lat: policy?.lat ?? coords.lat,
+          lng: policy?.lng ?? coords.lng,
+          ...timingFields(start, end, localStart),
+        });
+      }
     }
   }
-  return events;
+  const deduped = new Map();
+  for (const event of events) {
+    if (!event.anchorKey) {
+      deduped.set(Symbol(), event);
+      continue;
+    }
+    const key = `${event.anchorKey}|${event.windowStart}|${event.windowEnd}`;
+    const existing = deduped.get(key);
+    if (!existing || Number(event.demandYield) > Number(existing.demandYield)) {
+      deduped.set(key, event);
+    }
+  }
+  return [...deduped.values()];
+}
+
+export function suppressOverlappingUAlbanyRoutineEvents(events = []) {
+  const source = Array.isArray(events) ? events : [];
+  const academicEvents = source.filter((event) => event?.anchorKey === "ualbany");
+  if (academicEvents.length === 0) return source;
+  return source.filter(
+    (event) =>
+      !(
+        event?.location === "UAlbany Uptown Campus" &&
+        Array.isArray(event.categories) &&
+        event.categories.includes("Local Anchor") &&
+        academicEvents.some(
+          (academic) =>
+            event._scheduleStartMs < academic._scheduleEndMs &&
+            event._scheduleEndMs > academic._scheduleStartMs
+        )
+      )
+  );
 }
 
 export const scheduledEventInternals = { formatTime, intersects, timingFields };

@@ -1,3 +1,5 @@
+import { normalizeAcademicSessionMode } from "./ualbany-demand.mjs";
+
 export const BYOD_CONFIG_KEYS = [
   "trainConfigInbound",
   "trainConfigOutbound",
@@ -5,9 +7,11 @@ export const BYOD_CONFIG_KEYS = [
   "flightConfigInbound",
   "flightConfigOutbound",
   "weatherConfig",
+  "academicSessionConfig",
 ];
 
 const TRAIN_CONFIG_KEYS = new Set(["trainConfigInbound", "trainConfigOutbound"]);
+const ACADEMIC_SESSION_KEY = "academicSessionConfig";
 
 function cleanUpdatedAt(value) {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
@@ -35,8 +39,17 @@ function cleanRawTextConfig(value) {
   };
 }
 
+function cleanAcademicSessionConfig(value) {
+  return {
+    mode: normalizeAcademicSessionMode(value?.mode),
+    updatedAt: cleanUpdatedAt(value?.updatedAt),
+  };
+}
+
 export function cleanByodConfig(key, value) {
-  return TRAIN_CONFIG_KEYS.has(key) ? cleanTrainConfig(value) : cleanRawTextConfig(value);
+  if (TRAIN_CONFIG_KEYS.has(key)) return cleanTrainConfig(value);
+  if (key === ACADEMIC_SESSION_KEY) return cleanAcademicSessionConfig(value);
+  return cleanRawTextConfig(value);
 }
 
 export function normalizeByodSnapshot(value = {}) {
@@ -51,6 +64,7 @@ export function normalizeByodSnapshot(value = {}) {
 
 function configHasData(key, value) {
   if (!value || typeof value !== "object") return false;
+  if (key === ACADEMIC_SESSION_KEY) return value.mode !== "auto";
   return TRAIN_CONFIG_KEYS.has(key)
     ? Array.isArray(value.trains) && value.trains.length > 0
     : typeof value.rawText === "string" && value.rawText.trim().length > 0;

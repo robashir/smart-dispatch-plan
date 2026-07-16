@@ -123,10 +123,18 @@ export function EventCard({ data }) {
   const isLocalAnchor =
     Array.isArray(data.categories) &&
     data.categories.some((c) => /local anchor/i.test(String(c)));
+  const isAcademic =
+    Array.isArray(data.categories) && data.categories.includes("Academic Calendar");
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">
-        {isByodFlight ? "Airport Demand" : isLocalAnchor ? "Local Anchor" : "Event Egress"}
+        {isByodFlight
+          ? "Airport Demand"
+          : isLocalAnchor
+            ? "Local Anchor"
+            : isAcademic
+              ? "Academic Demand"
+              : "Event Egress"}
       </div>
       <div className="text-2xl font-bold mb-2">
         {isByodFlight
@@ -142,6 +150,8 @@ export function EventCard({ data }) {
           ? formatByodTrainDemandLabel(data)
           : isLocalAnchor
             ? "Routine Demand Pulse"
+            : isAcademic
+              ? `${data.categories[2] || "Peak"} Demand Window`
             : isLastCall
               ? `${data.egressMod}x Demand Window`
               : `${data.egressMod}x Egress Demand`}
