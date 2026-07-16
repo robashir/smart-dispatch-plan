@@ -1,241 +1,121 @@
 import assert from "node:assert/strict";
-import { buildDemandFirstSelection } from "./components/demand-first-sequence.mjs";
+import { buildDemandFirstTimeline } from "./components/demand-first-sequence.mjs";
 
-function timed(location, leaveBy, demand, opportunity, lat = 42.65, lng = -73.75) {
+function timed(location, leaveBy, demand, opportunity) {
   return {
     type: "event",
     location,
     leaveBy,
     densityScore: demand,
     opportunityScore: opportunity,
-    lat,
-    lng,
   };
 }
 
-const sameWindow = buildDemandFirstSelection(
+const sameWindow = buildDemandFirstTimeline(
   [
     timed("Earlier Low", "4:30 PM", 10, 15),
     timed("Highest Demand", "4:35 PM", 30, 20),
     timed("Later Medium", "4:42 PM", 20, 40),
     timed("Next Window", "5:10 PM", 12, 12),
   ],
-  { nowMinute: 16 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
+  { nowMinute: 16 * 60 }
 );
-assert.equal(sameWindow.selected[0].item.location, "Highest Demand");
-assert.equal(sameWindow.selected[0].competingOptions, 3);
-assert.equal(sameWindow.selected[0].alternatives.length, 2);
-assert.equal(sameWindow.selected[0].alternatives[0].reason, "Lower expected demand");
-assert.equal(sameWindow.selected[1].item.location, "Next Window");
+assert.deepEqual(
+  sameWindow.timed.map(({ item }) => item.location),
+  ["Earlier Low", "Highest Demand", "Later Medium", "Next Window"]
+);
+assert.equal(sameWindow.timed[0].rankInTimeWindow, 3);
+assert.equal(sameWindow.timed[0].optionsInTimeWindow, 3);
+assert.equal(sameWindow.timed[0].conflictCount, 2);
+assert.equal(sameWindow.timed[1].rankInTimeWindow, 1);
+assert.equal(sameWindow.timed[3].optionsInTimeWindow, 1);
 
-const opportunityTieBreak = buildDemandFirstSelection(
+const demandTieBreak = buildDemandFirstTimeline(
   [
     timed("Lower Opportunity", "4:30 PM", 20, 15),
     timed("Higher Opportunity", "4:35 PM", 20, 25),
   ],
-  { nowMinute: 16 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
+  { nowMinute: 16 * 60 }
 );
-assert.equal(opportunityTieBreak.selected[0].item.location, "Higher Opportunity");
-assert.equal(
-  opportunityTieBreak.selected[0].alternatives[0].reason,
-  "Lower Opportunity Now after demand tie"
-);
+assert.equal(demandTieBreak.timed[1].item.location, "Higher Opportunity");
+assert.equal(demandTieBreak.timed[1].rankInTimeWindow, 1);
 
-const unreachableWinner = buildDemandFirstSelection(
+const noReachabilitySuppression = buildDemandFirstTimeline(
   [
-    timed("Reachable", "4:15 PM", 20, 20, 42.65, -73.75),
-    timed("Unreachable High", "4:16 PM", 50, 50, 43.2, -74.2),
+    timed("Nearby", "4:15 PM", 20, 20),
+    timed("Far Away High Demand", "4:16 PM", 50, 50),
   ],
-  { nowMinute: 16 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
+  { nowMinute: 16 * 60 }
 );
-assert.equal(unreachableWinner.selected[0].item.location, "Reachable");
-assert.equal(unreachableWinner.selected[0].alternatives[0].item.location, "Unreachable High");
-assert.equal(
-  unreachableWinner.selected[0].alternatives[0].reason,
-  "Unreachable before its deadline"
-);
+assert.equal(noReachabilitySuppression.timed.length, 2);
+assert.equal(noReachabilitySuppression.timed[1].item.location, "Far Away High Demand");
+assert.equal(noReachabilitySuppression.timed[1].rankInTimeWindow, 1);
 
-const active = buildDemandFirstSelection(
+const current = buildDemandFirstTimeline(
   [
     { type: "event", location: "Current Low", densityScore: 30, opportunityScore: 40 },
     { type: "event", location: "Current High", densityScore: 60, opportunityScore: 60 },
   ],
   { nowMinute: 16 * 60 }
 );
-assert.equal(active.activeNow.location, "Current High");
-assert.equal(active.activeCompetingOptions, 2);
-assert.equal(active.activeAlternatives.length, 1);
-assert.equal(active.activeAlternatives[0].item.location, "Current Low");
+assert.deepEqual(
+  current.current.map(({ item }) => item.location),
+  ["Current High", "Current Low"]
+);
+assert.equal(current.current[0].timeLabel, "Now");
+assert.equal(current.current[0].conflictCount, 1);
 
-const interruptibleCurrentWindow = buildDemandFirstSelection(
+const hospitalAfterTrain = buildDemandFirstTimeline(
   [
+    timed("Inbound — Rensselaer Train 233", "1:51 PM", 8, 3),
     {
-      type: "ride",
-      location: "Colonie Center / Wolf Road Corridor",
-      densityScore: 4,
-      opportunityScore: 4,
-      windowStart: "10:00 PM",
-      windowEnd: "10:30 PM",
-      activeNow: true,
-      sequenceOnly: true,
-      lat: 42.7151,
-      lng: -73.8136,
-    },
-    {
-      ...timed(
-        "Albany Med & St. Peter's Hospitals",
-        "10:30 PM",
-        25,
-        25,
-        42.6534,
-        -73.7933
-      ),
-      windowStart: "10:30 PM",
-      windowEnd: "11:30 PM",
-    },
-    timed("Downtown Bus Terminal", "11:03 PM", 5, 4, 42.6526, -73.7517),
-  ],
-  { nowMinute: 22 * 60 + 2 }
-);
-assert.equal(
-  interruptibleCurrentWindow.selected[0].item.location,
-  "Albany Med & St. Peter's Hospitals"
-);
-assert.equal(interruptibleCurrentWindow.activeTransition.cutoffLabel, "10:05 PM");
-assert.equal(
-  interruptibleCurrentWindow.activeTransition.target,
-  "Albany Med & St. Peter's Hospitals"
-);
-
-const genuinelyUnreachableFromCurrent = buildDemandFirstSelection(
-  [
-    {
-      type: "ride",
-      location: "Current Window",
-      densityScore: 4,
-      opportunityScore: 4,
-      windowEnd: "10:30 PM",
-      activeNow: true,
-      sequenceOnly: true,
-      lat: 42.7151,
-      lng: -73.8136,
-    },
-    timed("Unreachable Soon", "10:20 PM", 25, 25, 42.6534, -73.7933),
-    timed("Reachable Later", "10:39 PM", 5, 5, 42.6534, -73.7933),
-  ],
-  { nowMinute: 22 * 60 + 2 }
-);
-assert.equal(genuinelyUnreachableFromCurrent.selected[0].item.location, "Reachable Later");
-assert.equal(
-  genuinelyUnreachableFromCurrent.selected[0].alternatives[0].reason,
-  "Unreachable before its deadline"
-);
-
-const scheduledWindowCompetition = buildDemandFirstSelection(
-  [
-    {
-      ...timed("Albany Hospitals", "3:00 PM", 20, 20),
-      windowStart: "3:00 PM",
-      windowEnd: "4:00 PM",
-    },
-    timed("Rensselaer Train", "3:30 PM", 10, 10),
-    {
-      ...timed("Government Staff Dismissal", "4:00 PM", 30, 30),
-      windowStart: "4:00 PM",
-      windowEnd: "4:30 PM",
-    },
-    {
-      ...timed("Government Staff Dismissal Taper", "4:30 PM", 20, 20),
-      windowStart: "4:30 PM",
-      windowEnd: "5:00 PM",
-    },
-  ],
-  { nowMinute: 14 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
-);
-assert.equal(scheduledWindowCompetition.selected[0].item.location, "Albany Hospitals");
-assert.equal(scheduledWindowCompetition.selected[0].competingOptions, 2);
-assert.equal(
-  scheduledWindowCompetition.selected[0].alternatives[0].item.location,
-  "Rensselaer Train"
-);
-assert.equal(
-  scheduledWindowCompetition.selected[1].item.location,
-  "Government Staff Dismissal Taper"
-);
-
-const noTransitiveOverlapChain = buildDemandFirstSelection(
-  [
-    {
-      ...timed("Afternoon Clinic Shift", "2:30 PM", 20, 20),
+      ...timed("Albany Med & St. Peter's Hospitals", "2:30 PM", 20, 14),
       windowStart: "2:30 PM",
       windowEnd: "3:30 PM",
     },
     {
-      ...timed("Last Call", "3:15 PM", 18, 12),
-      windowStart: "3:15 PM",
-      windowEnd: "3:30 PM",
-    },
-    timed("Bridge A", "3:25 PM", 10, 10),
-    timed("Bridge B", "3:41 PM", 10, 10),
-    timed("Bridge C", "3:55 PM", 10, 10),
-    {
-      ...timed("Peak Exit Wave", "4:00 PM", 100, 40),
-      windowStart: "4:00 PM",
-      windowEnd: "4:30 PM",
-    },
-  ],
-  { nowMinute: 14 * 60, driverCoords: { latitude: 42.65, longitude: -73.75 } }
-);
-assert.equal(noTransitiveOverlapChain.selected[0].item.location, "Afternoon Clinic Shift");
-assert.equal(noTransitiveOverlapChain.selected[0].competingOptions, 3);
-assert.equal(noTransitiveOverlapChain.selected[1].item.location, "Peak Exit Wave");
-assert.equal(noTransitiveOverlapChain.selected[1].competingOptions, 3);
-
-const flightCrossesStateBoundary = buildDemandFirstSelection(
-  [
-    {
-      type: "event",
-      location: "Albany Hospitals",
-      densityScore: 20,
-      opportunityScore: 20,
-      windowStart: "2:30 PM",
-      windowEnd: "3:30 PM",
-      activeNow: true,
-      sequenceOnly: true,
-      lat: 42.6534,
-      lng: -73.7933,
-    },
-    {
-      ...timed("Earlier Local Anchor", "3:15 PM", 7, 5, 42.6534, -73.7933),
+      ...timed("Albany Med / University Heights", "3:15 PM", 7, 3),
       windowStart: "3:15 PM",
       windowEnd: "4:00 PM",
     },
+    timed("Outbound — Empire State Plaza — Train 244", "3:30 PM", 10, 4),
+  ],
+  { nowMinute: 13 * 60 }
+);
+assert.deepEqual(
+  hospitalAfterTrain.timed.map(({ item }) => item.location),
+  [
+    "Inbound — Rensselaer Train 233",
+    "Albany Med & St. Peter's Hospitals",
+    "Albany Med / University Heights",
+    "Outbound — Empire State Plaza — Train 244",
+  ]
+);
+assert.equal(hospitalAfterTrain.timed[1].conflictCount, 1);
+assert.equal(hospitalAfterTrain.timed[2].optionsInTimeWindow, 2);
+assert.equal(hospitalAfterTrain.timed[2].rankInTimeWindow, 2);
+assert.equal(hospitalAfterTrain.timed[3].rankInTimeWindow, 1);
+
+const activeThreshold = buildDemandFirstTimeline(
+  [
     {
-      type: "flight",
-      hub: "ALB",
-      leaveBy: "3:58 PM",
-      curbTime: "4:09 PM",
-      densityScore: 15,
-      opportunityScore: 11,
-      lat: 42.7483,
-      lng: -73.8017,
+      type: "ride",
+      location: "Qualifying current sequence event",
+      densityScore: 4,
+      opportunityScore: 4,
+      sequenceOnly: true,
     },
     {
-      ...timed("Peak Exit Wave", "4:00 PM", 100, 40, 42.6514, -73.7608),
-      windowStart: "4:00 PM",
-      windowEnd: "4:30 PM",
+      type: "ride",
+      location: "Below threshold",
+      densityScore: 3,
+      opportunityScore: 3,
+      sequenceOnly: true,
     },
   ],
-  { nowMinute: 15 * 60, driverCoords: { latitude: 42.6534, longitude: -73.7933 } }
+  { nowMinute: 16 * 60 }
 );
-assert.equal(flightCrossesStateBoundary.activeNow.location, "Albany Hospitals");
-assert.equal(flightCrossesStateBoundary.selected[0].item.location, "Peak Exit Wave");
-assert.equal(flightCrossesStateBoundary.selected[0].competingOptions, 3);
-assert.equal(
-  flightCrossesStateBoundary.selected[0].alternatives.some(
-    (alternative) => alternative.item.hub === "ALB"
-  ),
-  true
-);
+assert.equal(activeThreshold.current.length, 1);
+assert.equal(activeThreshold.current[0].item.location, "Qualifying current sequence event");
 
-console.log("Demand-first sequence: 31 assertions passed.");
+console.log("Demand-first timeline: 20 assertions passed.");
