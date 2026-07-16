@@ -40,6 +40,7 @@ function selectionNote(count, active = false) {
 function AlternativeRow({ alternative }) {
   const item = alternative.item;
   const time = item?.leaveBy || item?.hourBucket || "Now";
+  const timing = formatDemandFirstTiming(item);
   return (
     <div className="border-l border-neutral-700 pl-2 py-1">
       <div className="text-xs text-neutral-300">
@@ -48,6 +49,7 @@ function AlternativeRow({ alternative }) {
       <div className="text-xs text-neutral-500">
         Expected Demand {Math.round(demandValue(item))} | Opportunity Now {Math.round(opportunityValue(item))}
       </div>
+      {timing && <div className="text-xs text-yellow-300 mt-1">{timing}</div>}
       <div className="text-xs text-neutral-500">Not selected: {alternative.reason}</div>
     </div>
   );

@@ -5,6 +5,7 @@ export function isByodOutboundFlight(data) {
 
 export function formatByodFlightHeading(data) {
   const destination = data?.destination || data?.destinationIata || "Destination";
+  if (data?.isFlightWave) return `Outbound — ALB Flight Wave to ${destination}`;
   return `Outbound — ALB Flight to ${destination}`;
 }
 

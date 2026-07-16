@@ -25,6 +25,16 @@ export function formatSuggestedServiceTiming(item) {
     if (item.curbTime) parts.push(`Expected curb ${item.curbTime}`);
     return parts.join(" | ") || null;
   }
+  if (
+    /BYOD Flight/i.test(categories) &&
+    outbound &&
+    Array.isArray(item.departureTimes) &&
+    item.departureTimes.length > 1
+  ) {
+    return `Flights depart ${item.departureTimes
+      .map((flight) => `${flight.destination || flight.iata} ${flight.time}`)
+      .join("; ")}`;
+  }
   if (/BYOD Flight/i.test(categories) && outbound && item.departureTime) {
     return `Departs ${item.departureTime}`;
   }
@@ -53,8 +63,10 @@ export function getDemandFirstDeadline(item) {
     return { label: item.leaveBy, instruction: `Complete ALB drop-off by ${item.leaveBy}` };
   }
   if (/BYOD Train/i.test(categories) && outbound && item.leaveBy) {
-    const deadline = subtractMinutes(item.leaveBy, 14) || item.leaveBy;
-    return { label: deadline, instruction: `Be at Empire State Plaza by ${deadline}` };
+    return {
+      label: item.leaveBy,
+      instruction: `Be at Empire State Plaza by ${item.leaveBy}`,
+    };
   }
   if (/BYOD Train/i.test(categories) && !outbound && item.leaveBy) {
     const deadline = subtractMinutes(item.leaveBy, 14) || item.leaveBy;

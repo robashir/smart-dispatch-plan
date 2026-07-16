@@ -4,12 +4,16 @@ import {
   densityScore,
   yieldRateFor,
 } from "./app/api/dispatch/route.js";
-import { parseOutboundFlightText } from "./app/lib/byod-outbound-flight.mjs";
+import {
+  aggregateOutboundFlightEvents,
+  parseOutboundFlightText,
+} from "./app/lib/byod-outbound-flight.mjs";
 import {
   formatByodFlightDemandLabel,
   formatByodFlightHeading,
   isByodOutboundFlight,
 } from "./components/byod-flight-labels.mjs";
+import { formatDemandFirstTiming } from "./components/demand-first-timing.mjs";
 
 const cities = {
   Chicago: "ORD",
@@ -74,4 +78,50 @@ assert.equal(isByodOutboundFlight(event), true);
 assert.equal(formatByodFlightHeading(event), "Outbound — ALB Flight to Chicago");
 assert.equal(formatByodFlightDemandLabel(event), "Outbound Flight Demand");
 
-console.log("BYOD outbound flights: 17 assertions passed.");
+const grouped = aggregateOutboundFlightEvents(
+  [
+    {
+      ...event,
+      location: "ALB Flight to LaGuardia",
+      destination: "LaGuardia",
+      destinationIata: "LGA",
+      departureTime: "12:25 PM",
+      leaveBy: "10:55 AM",
+    },
+    {
+      ...event,
+      location: "ALB Flight to Atlanta",
+      destination: "Atlanta",
+      destinationIata: "ATL",
+      departureTime: "12:27 PM",
+      leaveBy: "10:57 AM",
+    },
+    {
+      ...event,
+      location: "ALB Flight to Orlando",
+      destination: "Orlando",
+      destinationIata: "MCO",
+      departureTime: "1:00 PM",
+      leaveBy: "11:30 AM",
+    },
+  ],
+  { nowMinute: 10 * 60 + 30 }
+);
+assert.equal(grouped.length, 2);
+assert.equal(grouped[0].flightCount, 2);
+assert.equal(grouped[0].volume, 2);
+assert.equal(grouped[0].demandCap, 30);
+assert.equal(grouped[0].leaveBy, "10:55 AM");
+assert.deepEqual(grouped[0].destinations, ["LaGuardia", "Atlanta"]);
+assert.equal(
+  formatByodFlightHeading(grouped[0]),
+  "Outbound — ALB Flight Wave to LaGuardia & Atlanta"
+);
+assert.equal(densityScore(grouped[0], 1, 1), 20);
+assert.equal(
+  formatDemandFirstTiming(grouped[0]),
+  "Flights depart LaGuardia 12:25 PM; Atlanta 12:27 PM | Complete ALB drop-off by 10:55 AM"
+);
+assert.equal(grouped[1].destination, "Orlando");
+
+console.log("BYOD outbound flights: 27 assertions passed.");

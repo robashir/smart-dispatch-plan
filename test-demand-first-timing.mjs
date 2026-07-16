@@ -43,7 +43,7 @@ assert.equal(
     departureTime: "11:15 AM",
     leaveBy: "10:15 AM",
   }),
-  "Train departs 11:15 AM | Be at Empire State Plaza by 10:01 AM"
+  "Train departs 11:15 AM | Be at Empire State Plaza by 10:15 AM"
 );
 
 assert.equal(
@@ -67,7 +67,20 @@ assert.deepEqual(
     categories: ["BYOD Train", "Outbound"],
     leaveBy: "3:30 PM",
   }),
-  { label: "3:16 PM", instruction: "Be at Empire State Plaza by 3:16 PM" }
+  { label: "3:30 PM", instruction: "Be at Empire State Plaza by 3:30 PM" }
+);
+
+assert.equal(
+  formatDemandFirstTiming({
+    type: "event",
+    categories: ["BYOD Flight", "Outbound"],
+    departureTimes: [
+      { destination: "LaGuardia", time: "12:25 PM" },
+      { destination: "Atlanta", time: "12:27 PM" },
+    ],
+    leaveBy: "10:55 AM",
+  }),
+  "Flights depart LaGuardia 12:25 PM; Atlanta 12:27 PM | Complete ALB drop-off by 10:55 AM"
 );
 
 assert.equal(
@@ -80,4 +93,4 @@ assert.equal(
   "Demand window 3:00 PM–4:00 PM | Be there by 3:00 PM"
 );
 
-console.log("Demand-first timing: 9 assertions passed.");
+console.log("Demand-first timing: 10 assertions passed.");

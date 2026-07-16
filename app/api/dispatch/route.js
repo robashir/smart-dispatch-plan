@@ -17,7 +17,10 @@ import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" 
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
-import { parseOutboundFlightText } from "../../lib/byod-outbound-flight.mjs";
+import {
+  aggregateOutboundFlightEvents,
+  parseOutboundFlightText,
+} from "../../lib/byod-outbound-flight.mjs";
 import {
   isUAlbanyNode,
   isUAlbanyRegularSession,
@@ -3593,10 +3596,11 @@ export async function POST(request) {
     // positioning opportunity.
     if (activePlatforms.rideshare && includeAirport) {
       const byodStartMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+      const outboundFlightEvents = [];
       for (const flight of outboundFlights) {
         const leaveBy = computeOutboundFlightLeaveBy(flight.departureTime, localStart);
         if (!leaveBy || !isTrainInWindow(leaveBy, localStart, hoursNum)) continue;
-        structuredEvents.push({
+        outboundFlightEvents.push({
           type: "event",
           location: `ALB Flight to ${flight.destination}`,
           volume: 1,
@@ -3618,6 +3622,13 @@ export async function POST(request) {
           `BYOD OUTBOUND FLIGHT PARSED: ${flight.destination} (${flight.iata}) | Departs: ${flight.departureTime} | BeAtALB: ${leaveBy}`
         );
       }
+      structuredEvents.push(
+        ...aggregateOutboundFlightEvents(outboundFlightEvents, {
+          nowMinute: byodStartMin,
+          windowMinutes: 20,
+          demandCap: 30,
+        })
+      );
     }
 
     // Sprint 53: BYOD Amtrak Pipeline. Run the regex parser over the
