@@ -466,15 +466,16 @@ const BYOD_TRAIN_YIELDS = {
   soldOut: 22,
 };
 
-function byodTrainAlbanyAlightingFactor(item) {
+export function byodTrainDirectionFactor(item) {
   const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
   const trainNumber = String(item?.trainNumber || "").trim();
-  if (!/BYOD Train/i.test(catsAll) || !/Inbound/i.test(catsAll)) return 1.0;
-  if (/^28\d/.test(trainNumber)) return 0.45;
-  return 0.8;
+  if (!/BYOD Train/i.test(catsAll)) return 1.0;
+  if (/Outbound/i.test(catsAll)) return 0.65;
+  if (/Inbound/i.test(catsAll) && /^28\d/.test(trainNumber)) return 0.75;
+  return 1.0;
 }
 
-function byodTrainYieldFor(item) {
+export function byodTrainYieldFor(item) {
   let yieldValue = BYOD_TRAIN_YIELDS.default;
   const availability = item?.availability;
   if (availability && typeof availability === "object") {
@@ -497,7 +498,7 @@ function byodTrainYieldFor(item) {
     else if (/almost full/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.almostFull;
   }
 
-  return Math.round(yieldValue * byodTrainAlbanyAlightingFactor(item));
+  return Math.round(yieldValue * byodTrainDirectionFactor(item));
 }
 
 // Sprint 70: CAPACITY_DICTIONARY + DEFAULT_CAPACITY deleted. With the
@@ -2446,6 +2447,18 @@ function computeTimeDecayMod(itemTimeLabel, currentLocalStart) {
   return 0.4;
 }
 
+export function opportunityTimeLabelFor(item) {
+  const label = item?.leaveBy || item?.hourBucket || null;
+  if (!label) return null;
+  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  const inboundTrain =
+    item?.type === "train" ||
+    (/BYOD Train/i.test(catsAll) && /Inbound/i.test(catsAll));
+  if (!inboundTrain) return label;
+  const minute = parseTimeLabel(label);
+  return Number.isFinite(minute) ? formatTimeLabel(minute - 12) : label;
+}
+
 // Sprint 70: Raw Yield Engine. Replaces the Sprint 48 percentage-of-capacity
 // formula with `volume × yield × mod`. Removes the cross-type comparability
 // bug surfaced by the Sprint 68 simulator (a one-bar Last Call at density
@@ -2544,7 +2557,7 @@ function buildItinerary(
   const expectedDemand = (it) =>
     densityScore(it, finalRideMod, finalFoodMod, currentLocalStart);
   const timeAdjustedDemand = (it) =>
-    expectedDemand(it) * computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
+    expectedDemand(it) * computeTimeDecayMod(opportunityTimeLabelFor(it), currentLocalStart);
   const opportunity = (it) =>
     Number(it?.opportunityScore) ||
     opportunityScoreFor(timeAdjustedDemand(it), driverSupplyPressureMod);
@@ -2707,7 +2720,7 @@ function buildSequenceCandidates(payload, currentLocalStart, existingItinerary =
       const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
       const expectedDemand = densityScore(it, finalRideMod, 1.0, currentLocalStart);
       const timeAdjustedDemand =
-        expectedDemand * computeTimeDecayMod(it.leaveBy || it.hourBucket, currentLocalStart);
+        expectedDemand * computeTimeDecayMod(opportunityTimeLabelFor(it), currentLocalStart);
       const opportunityScore = opportunityScoreFor(timeAdjustedDemand, driverSupplyPressureMod);
       return {
         ...it,

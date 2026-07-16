@@ -1,44 +1,10 @@
 // Sprint 96 - BYOD Amtrak fare-class yield validator.
 
-const BYOD_TRAIN_YIELDS = {
-  default: 10,
-  almostFull: 15,
-  soldOut: 22,
-};
-
-function byodTrainAlbanyAlightingFactor(item) {
-  const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
-  const trainNumber = String(item?.trainNumber || "").trim();
-  if (!/BYOD Train/i.test(catsAll) || !/Inbound/i.test(catsAll)) return 1.0;
-  if (/^28\d/.test(trainNumber)) return 0.45;
-  return 0.8;
-}
-
-function byodTrainYieldFor(item) {
-  let yieldValue = BYOD_TRAIN_YIELDS.default;
-  const availability = item?.availability;
-  if (availability && typeof availability === "object") {
-    const coach = String(availability?.coach?.status || "").toLowerCase();
-    const business = String(availability?.business?.status || "").toLowerCase();
-    const privateRooms = String(availability?.privateRooms?.status || "").toLowerCase();
-
-    if (coach === "almostfull") yieldValue = BYOD_TRAIN_YIELDS.almostFull;
-    if (coach === "soldout") yieldValue = BYOD_TRAIN_YIELDS.soldOut;
-
-    if (business === "almostfull") yieldValue += 3;
-    if (business === "soldout") yieldValue += 4;
-    if (privateRooms === "almostfull") yieldValue += 1;
-    if (privateRooms === "soldout") yieldValue += 2;
-
-    yieldValue = Math.min(yieldValue, 28);
-  } else {
-    const catsAll = Array.isArray(item?.categories) ? item.categories.join("|") : "";
-    if (/sold out/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.soldOut;
-    else if (/almost full/i.test(catsAll)) yieldValue = BYOD_TRAIN_YIELDS.almostFull;
-  }
-
-  return Math.round(yieldValue * byodTrainAlbanyAlightingFactor(item));
-}
+import {
+  byodTrainDirectionFactor,
+  byodTrainYieldFor,
+  opportunityTimeLabelFor,
+} from "./app/api/dispatch/route.js";
 
 const cases = [
   {
@@ -83,33 +49,42 @@ const cases = [
     expect: 28,
   },
   {
-    name: "Legacy sold-out status still works",
+    name: "Regular inbound sold-out train keeps the full yield",
     item: { categories: ["BYOD Train", "Inbound", "Sold Out"] },
-    expect: 18,
+    expect: 22,
   },
   {
-    name: "Empire 28x inbound through train is downweighted",
+    name: "Empire 28x inbound through train receives a moderate discount",
     item: {
       trainNumber: "281",
       categories: ["BYOD Train", "Inbound", "Sold Out"],
     },
-    expect: 10,
+    expect: 17,
   },
   {
-    name: "Albany-focused inbound Empire train keeps higher alighting factor",
+    name: "Albany-focused inbound train keeps full demand",
     item: {
       trainNumber: "237",
       categories: ["BYOD Train", "Inbound", "Sold Out"],
     },
-    expect: 18,
+    expect: 22,
   },
   {
-    name: "Outbound train ingress is not alighting-downweighted",
+    name: "Outbound train ingress receives the boarding discount",
     item: {
       trainNumber: "281",
       categories: ["BYOD Train", "Outbound", "Sold Out"],
     },
-    expect: 22,
+    expect: 14,
+  },
+  {
+    name: "Normal outbound demand ranks below normal inbound demand",
+    item: {
+      trainNumber: "237",
+      categories: ["BYOD Train", "Outbound", "On Time"],
+      availability: { coach: { status: "available" } },
+    },
+    expect: 7,
   },
 ];
 
@@ -120,6 +95,21 @@ for (const c of cases) {
   const ok = got === c.expect;
   if (!ok) allPass = false;
   console.log(`${ok ? "PASS" : "FAIL"} - ${c.name}\n  expected ${c.expect}\n  got      ${got}`);
+}
+if (byodTrainDirectionFactor({ categories: ["BYOD Train", "Inbound"], trainNumber: "237" }) !== 1) {
+  allPass = false;
+}
+if (byodTrainDirectionFactor({ categories: ["BYOD Train", "Inbound"], trainNumber: "281" }) !== 0.75) {
+  allPass = false;
+}
+if (byodTrainDirectionFactor({ categories: ["BYOD Train", "Outbound"], trainNumber: "237" }) !== 0.65) {
+  allPass = false;
+}
+if (opportunityTimeLabelFor({ categories: ["BYOD Train", "Inbound"], leaveBy: "3:45 PM" }) !== "3:33 PM") {
+  allPass = false;
+}
+if (opportunityTimeLabelFor({ categories: ["BYOD Train", "Outbound"], leaveBy: "3:30 PM" }) !== "3:30 PM") {
+  allPass = false;
 }
 console.log("\n=== " + (allPass ? "ALL SCENARIOS PASS" : "FAILURES PRESENT") + " ===");
 process.exit(allPass ? 0 : 1);
