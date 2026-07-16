@@ -89,7 +89,14 @@ function Alternatives({ alternatives = [] }) {
   );
 }
 
-function Step({ item, time, competingOptions, alternatives = [], active = false }) {
+function Step({
+  item,
+  time,
+  competingOptions,
+  alternatives = [],
+  active = false,
+  transition = null,
+}) {
   const timing = formatDemandFirstTiming(item);
   return (
     <div className="border-l-2 border-l-cyan-400 pl-3">
@@ -100,6 +107,11 @@ function Step({ item, time, competingOptions, alternatives = [], active = false 
       </div>
       {timing && (
         <div className="text-xs text-yellow-300 mt-1">{timing}</div>
+      )}
+      {transition && (
+        <div className="text-xs text-yellow-300 mt-1">
+          Work this window briefly. Leave for {transition.target} by {transition.cutoffLabel}.
+        </div>
       )}
       <div className="text-xs text-cyan-300 mt-1">
         {selectionNote(competingOptions, active)}
@@ -129,7 +141,13 @@ function FlexWindow({ data }) {
 }
 
 export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = null }) {
-  const { activeNow, activeCompetingOptions, activeAlternatives, selected } =
+  const {
+    activeNow,
+    activeCompetingOptions,
+    activeAlternatives,
+    activeTransition,
+    selected,
+  } =
     buildDemandFirstSelection(itinerary, { driverCoords });
   const flexWindows = buildDemandFirstFlexWindows({ activeNow, selected });
   const flexByIndex = new Map(flexWindows.map((window) => [window.beforeIndex, window]));
@@ -150,6 +168,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [], driverCoords = nu
             time="Now"
             competingOptions={activeCompetingOptions}
             alternatives={activeAlternatives}
+            transition={activeTransition}
             active
           />
         )}

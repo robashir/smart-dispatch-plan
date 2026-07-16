@@ -67,6 +67,70 @@ assert.equal(active.activeCompetingOptions, 2);
 assert.equal(active.activeAlternatives.length, 1);
 assert.equal(active.activeAlternatives[0].item.location, "Current Low");
 
+const interruptibleCurrentWindow = buildDemandFirstSelection(
+  [
+    {
+      type: "ride",
+      location: "Colonie Center / Wolf Road Corridor",
+      densityScore: 4,
+      opportunityScore: 4,
+      windowStart: "10:00 PM",
+      windowEnd: "10:30 PM",
+      activeNow: true,
+      sequenceOnly: true,
+      lat: 42.7151,
+      lng: -73.8136,
+    },
+    {
+      ...timed(
+        "Albany Med & St. Peter's Hospitals",
+        "10:30 PM",
+        25,
+        25,
+        42.6534,
+        -73.7933
+      ),
+      windowStart: "10:30 PM",
+      windowEnd: "11:30 PM",
+    },
+    timed("Downtown Bus Terminal", "11:03 PM", 5, 4, 42.6526, -73.7517),
+  ],
+  { nowMinute: 22 * 60 + 2 }
+);
+assert.equal(
+  interruptibleCurrentWindow.selected[0].item.location,
+  "Albany Med & St. Peter's Hospitals"
+);
+assert.equal(interruptibleCurrentWindow.activeTransition.cutoffLabel, "10:05 PM");
+assert.equal(
+  interruptibleCurrentWindow.activeTransition.target,
+  "Albany Med & St. Peter's Hospitals"
+);
+
+const genuinelyUnreachableFromCurrent = buildDemandFirstSelection(
+  [
+    {
+      type: "ride",
+      location: "Current Window",
+      densityScore: 4,
+      opportunityScore: 4,
+      windowEnd: "10:30 PM",
+      activeNow: true,
+      sequenceOnly: true,
+      lat: 42.7151,
+      lng: -73.8136,
+    },
+    timed("Unreachable Soon", "10:20 PM", 25, 25, 42.6534, -73.7933),
+    timed("Reachable Later", "10:39 PM", 5, 5, 42.6534, -73.7933),
+  ],
+  { nowMinute: 22 * 60 + 2 }
+);
+assert.equal(genuinelyUnreachableFromCurrent.selected[0].item.location, "Reachable Later");
+assert.equal(
+  genuinelyUnreachableFromCurrent.selected[0].alternatives[0].reason,
+  "Unreachable before its deadline"
+);
+
 const scheduledWindowCompetition = buildDemandFirstSelection(
   [
     {
@@ -174,4 +238,4 @@ assert.equal(
   true
 );
 
-console.log("Demand-first sequence: 26 assertions passed.");
+console.log("Demand-first sequence: 31 assertions passed.");

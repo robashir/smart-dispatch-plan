@@ -81,10 +81,25 @@ function isReachable(candidate, previous, driverCoords, safetyMinutes) {
   return availableMinutes >= requiredMinutes;
 }
 
-function activeCompletionDelta(item, nowMinute) {
-  const endMinute = parseSequenceTime(item?.windowEnd);
-  if (!Number.isFinite(endMinute)) return 0;
-  return Math.max(0, minutesUntil(endMinute, nowMinute));
+function formatSequenceMinute(value) {
+  const minute = ((Math.round(value) % 1440) + 1440) % 1440;
+  const hour24 = Math.floor(minute / 60);
+  const ampm = hour24 >= 12 ? "PM" : "AM";
+  return `${hour24 % 12 || 12}:${String(minute % 60).padStart(2, "0")} ${ampm}`;
+}
+
+function activeTransitionFor(activeNow, firstSelected, nowMinute, safetyMinutes) {
+  if (!activeNow || !firstSelected) return null;
+  const travelMinutes = estimatedDriveMinutes(activeNow, firstSelected.item);
+  const requiredMinutes = travelMinutes + safetyMinutes;
+  const cutoffDelta = firstSelected.delta - requiredMinutes;
+  if (cutoffDelta < 0) return null;
+  return {
+    target: firstSelected.item?.location || firstSelected.item?.hub || "the next demand window",
+    cutoffLabel: formatSequenceMinute(nowMinute + cutoffDelta),
+    travelMinutes,
+    safetyMinutes,
+  };
 }
 
 function alternativeReason(candidateItem, winnerItem, reachable = true) {
@@ -202,9 +217,11 @@ export function buildDemandFirstSelection(
   const groups = groupOverlappingCandidates(timed, overlapMinutes);
   const selected = [];
   const consumed = new Set();
-  let previous = activeNow
-    ? { item: activeNow, delta: activeCompletionDelta(activeNow, resolvedNow) }
-    : null;
+  // A current opportunity is interruptible. Reachability to the first timed
+  // step starts at "now" instead of assuming the driver stays until the
+  // current window ends. Later timed steps still begin after the prior
+  // selected service window.
+  let previous = activeNow ? { item: activeNow, delta: 0 } : null;
   for (const group of groups) {
     if (selected.length >= maxTimedSteps) break;
     const initialGroup = group.filter((candidate) => !consumed.has(candidate));
@@ -254,6 +271,7 @@ export function buildDemandFirstSelection(
     activeNow,
     activeCompetingOptions: activeOptions.length,
     activeAlternatives,
+    activeTransition: activeTransitionFor(activeNow, selected[0], resolvedNow, safetyMinutes),
     selected,
   };
 }
