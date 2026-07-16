@@ -252,17 +252,6 @@ const LOCAL_ANCHOR_SCHEDULES = [
       { start: 1005, end: 1050, expected: 8, label: "Evening Office Exit" },
     ],
   },
-  {
-    name: "Albany Med / University Heights",
-    lat: 42.6534,
-    lng: -73.7933,
-    days: [1, 2, 3, 4, 5],
-    windows: [
-      { start: 435, end: 480, expected: 7, label: "Campus / Clinical Arrival" },
-      { start: 915, end: 960, expected: 7, label: "Campus / Clinical Exit" },
-      { start: 1170, end: 1215, expected: 6, label: "Evening Class / Shift Exit" },
-    ],
-  },
 ];
 
 const HOSPITAL_SHIFTS = [
