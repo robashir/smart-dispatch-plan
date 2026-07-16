@@ -114,10 +114,17 @@ function itemWindowLabel(item) {
   return null;
 }
 
+function isInboundTrain(item) {
+  const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
+  if (/Outbound/i.test(cats)) return false;
+  return item?.type === "train" || /BYOD Train|Train/i.test(cats);
+}
+
 function arrivalBufferMinutes(item) {
   const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
   if (isByodOutboundFlight(item)) return 0;
   if (item?.type === "flight" || /Flight|Airport/i.test(cats)) return 20;
+  if (isInboundTrain(item)) return 12;
   if (item?.type === "train" || /BYOD Train|Train/i.test(cats)) return 14;
   if (item?.type === "event" || /Egress|Last Call|Closing Surge/i.test(cats)) return 12;
   return 10;
@@ -136,6 +143,13 @@ function beThereByText(item, nowMin) {
     if (delta <= 3) return "Leave for ALB now";
     const time = formatMinute(targetMin);
     return time ? `Leave for ALB by ${time}` : null;
+  }
+  if (isInboundTrain(item)) {
+    const time = formatMinute(targetMin - arrivalBufferMinutes(item));
+    if (!time) return null;
+    const leaveDelta = minutesUntil(parseTimeLabel(time), nowMin);
+    if (leaveDelta <= 0) return "Leave now";
+    return `Leave by ${time}`;
   }
   if (delta <= 3) return `Stay near ${itemTitle(item)} now`;
   const time = formatMinute(targetMin - arrivalBufferMinutes(item));

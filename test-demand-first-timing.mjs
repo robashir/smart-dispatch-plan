@@ -63,7 +63,17 @@ assert.equal(
 
 assert.equal(
   formatDemandFirstTiming({ type: "train", hourBucket: "12 PM" }),
-  "Be at Rensselaer by 11:46 AM"
+  "Leave by 11:48 AM"
+);
+
+assert.equal(
+  formatDemandFirstTiming({
+    type: "event",
+    categories: ["BYOD Train", "Inbound"],
+    leaveBy: "3:45 PM",
+    arrivalTime: "3:45p",
+  }),
+  "Train arrives 3:45p | Leave by 3:33 PM"
 );
 assert.equal(formatDemandFirstTiming({ type: "event", location: "Current Event" }), null);
 
@@ -108,4 +118,4 @@ assert.equal(
   "Demand window 3:00 PM–4:00 PM | Be there by 3:00 PM"
 );
 
-console.log("Demand-first timing: 11 assertions passed.");
+console.log("Demand-first timing: 12 assertions passed.");

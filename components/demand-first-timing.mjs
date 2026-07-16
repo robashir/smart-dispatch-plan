@@ -88,16 +88,16 @@ export function getDemandFirstDeadline(item) {
     };
   }
   if (/BYOD Train/i.test(categories) && !outbound && item.leaveBy) {
-    const deadline = subtractMinutes(item.leaveBy, 14) || item.leaveBy;
-    return { label: deadline, instruction: `Be at Rensselaer by ${deadline}` };
+    const deadline = subtractMinutes(item.leaveBy, 12) || item.leaveBy;
+    return { label: deadline, instruction: `Leave by ${deadline}` };
   }
   if (/BYOD Bus/i.test(categories) && item.leaveBy) {
     const deadline = subtractMinutes(item.leaveBy, 12) || item.leaveBy;
     return { label: deadline, instruction: `Be at Downtown Bus Terminal by ${deadline}` };
   }
   if (item.type === "train" && item.hourBucket) {
-    const deadline = subtractMinutes(item.hourBucket, 14) || item.hourBucket;
-    return { label: deadline, instruction: `Be at Rensselaer by ${deadline}` };
+    const deadline = subtractMinutes(item.hourBucket, 12) || item.hourBucket;
+    return { label: deadline, instruction: `Leave by ${deadline}` };
   }
   if (item.leaveBy) {
     return { label: item.leaveBy, instruction: `Be there by ${item.leaveBy}` };
