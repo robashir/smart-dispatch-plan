@@ -25,15 +25,6 @@ const LOCAL_ANCHOR_SCHEDULES = [
       { start: 1275, end: 1320, expected: 6, label: "Retail Closing Pulse" },
     ],
   },
-  {
-    name: "Downtown Albany Office Core",
-    days: [1, 2, 3, 4, 5],
-    windows: [
-      { start: 480, end: 525, expected: 6, label: "Morning Office Arrival" },
-      { start: 720, end: 765, expected: 4, label: "Lunch Office Movement" },
-      { start: 1005, end: 1050, expected: 10, label: "Evening Office Exit" },
-    ],
-  },
 ];
 
 function mk(day, hour, minute = 0) {
@@ -84,7 +75,6 @@ function yieldRateFor(item) {
 }
 
 const colonie = LOCAL_ANCHOR_SCHEDULES[1];
-const downtown = LOCAL_ANCHOR_SCHEDULES[2];
 const ualbany = LOCAL_ANCHOR_SCHEDULES[0];
 
 const cases = [
@@ -110,24 +100,6 @@ const cases = [
     name: "Hotel checkout inactive before shoulder",
     anchor: colonie,
     date: mk(8, 9, 59),
-    expect: null,
-  },
-  {
-    name: "Downtown evening office peak",
-    anchor: downtown,
-    date: mk(8, 17, 0),
-    expect: { expected: 10, label: "Evening Office Exit", phase: "Peak" },
-  },
-  {
-    name: "Downtown evening office taper",
-    anchor: downtown,
-    date: mk(8, 17, 45),
-    expect: { expected: 6, label: "Evening Office Exit", phase: "Taper" },
-  },
-  {
-    name: "Downtown weekday-only guard",
-    anchor: downtown,
-    date: mk(13, 17, 0),
     expect: null,
   },
   {

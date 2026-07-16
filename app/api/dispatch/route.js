@@ -231,27 +231,6 @@ const LOCAL_ANCHOR_SCHEDULES = [
       { start: 1275, end: 1320, expected: 6, label: "Retail Closing Pulse" },
     ],
   },
-  {
-    name: "Downtown Albany Office Core",
-    lat: 42.6506,
-    lng: -73.7529,
-    days: [1, 2, 3, 4, 5],
-    windows: [
-      { start: 480, end: 525, expected: 6, label: "Morning Office Arrival" },
-      { start: 720, end: 765, expected: 4, label: "Lunch Office Movement" },
-      { start: 1005, end: 1050, expected: 10, label: "Evening Office Exit" },
-    ],
-  },
-  {
-    name: "Corporate Woods Office Cluster",
-    lat: 42.6869,
-    lng: -73.7638,
-    days: [1, 2, 3, 4, 5],
-    windows: [
-      { start: 480, end: 525, expected: 5, label: "Morning Office Arrival" },
-      { start: 1005, end: 1050, expected: 8, label: "Evening Office Exit" },
-    ],
-  },
 ];
 
 const HOSPITAL_SHIFTS = [
