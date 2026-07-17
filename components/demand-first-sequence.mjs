@@ -29,6 +29,22 @@ export function parseSequenceTime(label) {
   return hour * 60 + minute;
 }
 
+export function groupDemandFirstTimeSlots(candidates) {
+  const groups = [];
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const previous = groups.at(-1);
+    if (previous && previous.timeLabel === candidate.timeLabel) {
+      previous.candidates.push(candidate);
+    } else {
+      groups.push({
+        timeLabel: candidate.timeLabel,
+        candidates: [candidate],
+      });
+    }
+  }
+  return groups;
+}
+
 function timeLabel(item) {
   return item?.leaveBy || item?.hourBucket || null;
 }

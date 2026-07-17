@@ -1,6 +1,7 @@
 import {
   buildDemandFirstTimeline,
   demandValue,
+  groupDemandFirstTimeSlots,
   opportunityValue,
 } from "./demand-first-sequence.mjs";
 import { formatDemandFirstByodTrainHeading } from "./byod-train-labels.mjs";
@@ -44,12 +45,11 @@ function TimelineNote({ candidate }) {
   return <>Listed chronologically; no reserve-time exclusion.</>;
 }
 
-function TimelineRow({ candidate }) {
+function TimelineOpportunity({ candidate }) {
   const item = candidate.item;
   const timing = formatDemandFirstTiming(item);
   return (
-    <div className="border-l-2 border-l-cyan-400 pl-3">
-      <div className="text-sm text-neutral-400">{candidate.timeLabel}</div>
+    <div>
       <div className="text-base font-semibold">{itemTitle(item)}</div>
       <div className="text-xs text-neutral-400 mt-1">
         Expected Demand {Math.round(demandValue(item))} | Opportunity Now {Math.round(opportunityValue(item))}
@@ -62,9 +62,35 @@ function TimelineRow({ candidate }) {
   );
 }
 
+function TimelineSlot({ group }) {
+  const stacked = group.candidates.length > 1;
+  return (
+    <div className="border-l-2 border-l-cyan-400 pl-3">
+      <div className="text-sm text-neutral-400">{group.timeLabel}</div>
+      {stacked && (
+        <div className="text-xs text-neutral-500 mt-1">
+          {group.candidates.length} same-time alternatives — choose one.
+        </div>
+      )}
+      <div className={stacked ? "flex flex-col gap-3 mt-2" : "mt-0"}>
+        {group.candidates.map((candidate, index) => (
+          <div
+            key={`${itemTitle(candidate.item)}-${candidate.minute ?? "now"}-${index}`}
+            className={stacked && index > 0 ? "border-t border-neutral-700 pt-3" : ""}
+          >
+            <TimelineOpportunity candidate={candidate} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function DemandFirstSuggestedSequence({ itinerary = [] }) {
   const { current, timed } = buildDemandFirstTimeline(itinerary);
   if (current.length === 0 && timed.length === 0) return null;
+  const currentSlots = groupDemandFirstTimeSlots(current);
+  const timedSlots = groupDemandFirstTimeSlots(timed);
 
   return (
     <section className="rounded-xl bg-neutral-900 border border-cyan-800 p-4">
@@ -75,17 +101,11 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
         All qualifying opportunities by time; higher demand ranks first when times are close.
       </div>
       <div className="flex flex-col gap-3 mt-3">
-        {current.map((candidate, index) => (
-          <TimelineRow
-            key={`${itemTitle(candidate.item)}-now-${index}`}
-            candidate={candidate}
-          />
+        {currentSlots.map((group, index) => (
+          <TimelineSlot key={`${group.timeLabel}-current-${index}`} group={group} />
         ))}
-        {timed.map((candidate, index) => (
-          <TimelineRow
-            key={`${itemTitle(candidate.item)}-${candidate.minute}-${index}`}
-            candidate={candidate}
-          />
+        {timedSlots.map((group, index) => (
+          <TimelineSlot key={`${group.timeLabel}-timed-${index}`} group={group} />
         ))}
       </div>
     </section>

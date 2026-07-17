@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { buildDemandFirstTimeline } from "./components/demand-first-sequence.mjs";
+import {
+  buildDemandFirstTimeline,
+  groupDemandFirstTimeSlots,
+} from "./components/demand-first-sequence.mjs";
 
 function timed(location, leaveBy, demand, opportunity) {
   return {
@@ -118,4 +121,16 @@ const activeThreshold = buildDemandFirstTimeline(
 assert.equal(activeThreshold.current.length, 1);
 assert.equal(activeThreshold.current[0].item.location, "Qualifying current sequence event");
 
-console.log("Demand-first timeline: 20 assertions passed.");
+const stackedLastCall = groupDemandFirstTimeSlots([
+  { timeLabel: "11:15 PM", minute: 1395, item: { location: "The City Beer Hall" } },
+  { timeLabel: "11:15 PM", minute: 1395, item: { location: "Tipsy Moose" } },
+  { timeLabel: "11:30 PM", minute: 1410, item: { location: "Next Event" } },
+]);
+assert.equal(stackedLastCall.length, 2);
+assert.deepEqual(
+  stackedLastCall[0].candidates.map(({ item }) => item.location),
+  ["The City Beer Hall", "Tipsy Moose"]
+);
+assert.equal(stackedLastCall[1].candidates.length, 1);
+
+console.log("Demand-first timeline: 23 assertions passed.");
