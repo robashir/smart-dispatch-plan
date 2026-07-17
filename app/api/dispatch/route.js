@@ -18,6 +18,11 @@ const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
 import {
+  buildByodEventOpportunities,
+  parseByodEventText,
+  ticketmasterEventKey,
+} from "../../lib/byod-events.mjs";
+import {
   aggregateOutboundFlightEvents,
   parseOutboundFlightText,
 } from "../../lib/byod-outbound-flight.mjs";
@@ -3144,6 +3149,7 @@ export async function POST(request) {
       inboundFlights: inboundFlightsRaw = "",
       outboundFlights: outboundFlightsRaw = "",
       weatherOverride: weatherOverrideRaw = "",
+      byodEvents: byodEventsRaw = "",
     } = body;
 
     // Sprint 59: client-owned persistence. eventConfig is the localStorage-
@@ -3184,7 +3190,8 @@ export async function POST(request) {
       (typeof inboundBusesRaw === "string" && inboundBusesRaw.trim()) ||
       (typeof inboundFlightsRaw === "string" && inboundFlightsRaw.trim()) ||
       (typeof outboundFlightsRaw === "string" && outboundFlightsRaw.trim()) ||
-      (typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim());
+      (typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim()) ||
+      (typeof byodEventsRaw === "string" && byodEventsRaw.trim());
     if (!requestHasByod) {
       try {
         byodSnapshot = await readByodSnapshot();
@@ -3238,6 +3245,13 @@ export async function POST(request) {
       typeof weatherOverrideRaw === "string" && weatherOverrideRaw.trim()
         ? weatherOverrideRaw
         : savedTodayRawText(byodSnapshot?.weatherConfig, todayForServerByod);
+    const byodEventText =
+      typeof byodEventsRaw === "string" && byodEventsRaw.trim()
+        ? byodEventsRaw
+        : savedTodayRawText(byodSnapshot?.byodEventConfig, todayForServerByod);
+    const byodEventSourceKeys = new Set(
+      parseByodEventText(byodEventText, todayForServerByod).map((event) => event.sourceEventKey)
+    );
 
     // Sprint 45: Mathematical ROI Filter. Driver-configurable vehicle cost
     // per mile (default 0.65 = the "Safe Sedan" baseline). Defended at the
@@ -3416,6 +3430,11 @@ export async function POST(request) {
     let structuredEvents = [];
     if (Array.isArray(events)) {
       for (const e of events) {
+        // A same-day BYOD entry is the driver's authoritative source. This
+        // suppresses the matching Ticketmaster record instead of showing the
+        // same physical event twice with different details.
+        const externalEventKey = ticketmasterEventKey(e);
+        if (externalEventKey && byodEventSourceKeys.has(externalEventKey)) continue;
         const segmentName = e?.classifications?.[0]?.segment?.name || "";
         const venueName = e?._embedded?.venues?.[0]?.name || "";
 
@@ -3453,6 +3472,9 @@ export async function POST(request) {
           structuredEvents.push({
             type: "event",
             location: venueName || "Unknown Venue",
+            eventName: e?.name || "Event",
+            eventStartTime: formatLeaveBy(startTime),
+            sourceEventKey: externalEventKey,
             volume: 1,
             egressMod: egressWindow.egressMod,
             categories: [segmentName || "Music"],
@@ -3474,6 +3496,16 @@ export async function POST(request) {
 
       }
     }
+
+    structuredEvents.push(
+      ...buildByodEventOpportunities({
+        rawText: byodEventText,
+        savedDate: todayForServerByod,
+        localStart,
+        planningEnd: eventPlanningEnd,
+        venueDictionary: VENUE_DICTIONARY,
+      })
+    );
 
     // PIPELINE PHASE 2: Inject synthetic local events strictly AFTER external API filtering.
     // Sprint 36.2: this sequencing is load-bearing — Phase 1 (above) maps Ticketmaster's

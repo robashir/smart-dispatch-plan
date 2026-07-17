@@ -32,6 +32,16 @@ function formatTimeRange(labels) {
 export function formatSuggestedServiceTiming(item) {
   if (!item || typeof item !== "object") return null;
   const categories = categoriesFor(item);
+  if (/BYOD Event/i.test(categories)) {
+    if (/Ingress/i.test(categories)) {
+      return [item.doorsTime && `Doors ${item.doorsTime}`, item.eventStartTime && `Starts ${item.eventStartTime}`]
+        .filter(Boolean)
+        .join(" | ") || null;
+    }
+    return [item.eventStartTime && `Starts ${item.eventStartTime}`, item.projectedEnd && `Projected end ${item.projectedEnd}`]
+      .filter(Boolean)
+      .join(" | ") || null;
+  }
   const outbound = /Outbound/i.test(categories);
   if (item.type === "flight" && !outbound) {
     const parts = [];
@@ -74,6 +84,7 @@ export function formatSuggestedServiceTiming(item) {
 
 export function getDemandFirstDeadline(item) {
   const categories = categoriesFor(item);
+  if (/BYOD Event/i.test(categories)) return null;
   const outbound = /Outbound/i.test(categories);
   if (item.type === "flight" && !outbound && item.leaveBy) {
     return { label: item.leaveBy, instruction: `Leave for ALB by ${item.leaveBy}` };

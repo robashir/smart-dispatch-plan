@@ -9,6 +9,7 @@ import {
   formatOutboundFlightNextWindow,
 } from "./flight-sequence-copy.mjs";
 import { formatSuggestedServiceTiming } from "./demand-first-timing.mjs";
+import { formatByodEventHeading, isByodEvent } from "./byod-event-labels.mjs";
 
 function parseTimeLabel(label) {
   if (!label || typeof label !== "string") return Infinity;
@@ -99,6 +100,7 @@ function itemTitle(item) {
   const isByodTrain = categories.some((category) =>
     /byod train/i.test(String(category))
   );
+  if (isByodEvent(item)) return formatByodEventHeading(item);
   if (isByodOutboundFlight(item)) return formatByodFlightHeading(item);
   if (isByodTrain) return formatByodTrainHeading(item);
   if (item?.type === "flight") return formatInboundFlightSequenceHeading(item);

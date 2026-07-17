@@ -7,6 +7,7 @@ import {
   formatByodFlightHeading,
   isByodOutboundFlight,
 } from "./byod-flight-labels.mjs";
+import { formatByodEventHeading, isByodEvent } from "./byod-event-labels.mjs";
 
 // Sprint 24: typed UI cards for the deterministic itinerary array.
 // Each card is a pure function component receiving { data } per PO spec.
@@ -127,10 +128,13 @@ export function EventCard({ data }) {
     data.categories.some((c) => /local anchor/i.test(String(c)));
   const isAcademic =
     Array.isArray(data.categories) && data.categories.includes("Academic Calendar");
+  const byodVenueEvent = isByodEvent(data);
   return (
     <div className={`rounded-xl bg-neutral-900 border border-neutral-700 border-l-4 border-l-purple-400 p-4`}>
       <div className="text-xs uppercase tracking-wide text-purple-400 mb-1">
-        {isByodFlight
+        {byodVenueEvent
+          ? "BYOD Event"
+          : isByodFlight
           ? "Airport Demand"
           : isLocalAnchor
             ? "Local Anchor"
@@ -139,14 +143,18 @@ export function EventCard({ data }) {
               : "Event Egress"}
       </div>
       <div className="text-2xl font-bold mb-2">
-        {isByodFlight
+        {byodVenueEvent
+          ? formatByodEventHeading(data)
+          : isByodFlight
           ? formatByodFlightHeading(data)
           : isByodTrain
             ? formatByodTrainHeading(data)
             : data.location}
       </div>
       <div className="text-lg">
-        {isByodFlight
+        {byodVenueEvent
+          ? `${data.eventCategory || "Event"} ${data.categories?.includes("Ingress") ? "Ingress" : "Egress"}`
+          : isByodFlight
           ? formatByodFlightDemandLabel(data)
           : isByodTrain
           ? formatByodTrainDemandLabel(data)
@@ -158,6 +166,15 @@ export function EventCard({ data }) {
               ? `${data.egressMod}x Demand Window`
               : `${data.egressMod}x Egress Demand`}
       </div>
+      {byodVenueEvent && data.doorsTime && (
+        <div className="text-sm text-neutral-300 mt-1">Doors: {data.doorsTime}</div>
+      )}
+      {byodVenueEvent && data.eventStartTime && (
+        <div className="text-sm text-neutral-300 mt-1">Starts: {data.eventStartTime}</div>
+      )}
+      {byodVenueEvent && data.projectedEnd && (
+        <div className="text-sm text-neutral-300 mt-1">Projected end: {data.projectedEnd}</div>
+      )}
       {/* Sprint 54: BYOD-parsed trains carry the raw "5:47p" arrivalTime
           field. Other event types (Hospital / State Commuter / Holiday /
           Crossgates) omit it, so the line is conditional. */}

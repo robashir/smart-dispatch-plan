@@ -251,6 +251,10 @@ export default function Home() {
     savedDate: null,
     rawText: "",
   });
+  const [byodEventConfig, setByodEventConfig] = useState({
+    savedDate: null,
+    rawText: "",
+  });
   const [academicSessionConfig, setAcademicSessionConfig] = useState({
     mode: "auto",
     updatedAt: null,
@@ -291,6 +295,7 @@ export default function Home() {
     setFlightConfigInbound(clean.flightConfigInbound);
     setFlightConfigOutbound(clean.flightConfigOutbound);
     setWeatherConfig(clean.weatherConfig);
+    setByodEventConfig(clean.byodEventConfig);
     setAcademicSessionConfig(clean.academicSessionConfig);
     return clean;
   }
@@ -512,6 +517,15 @@ export default function Home() {
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
       }
+      if (direction === "venueEvents") {
+        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        localStorage.setItem("byodEventConfig", JSON.stringify(payload));
+        setByodEventConfig(payload);
+        await syncByodSnapshot({ byodEventConfig: payload });
+        setTrainSaveStatus("saved");
+        setTimeout(() => setTrainSaveStatus("idle"), 2000);
+        return;
+      }
       const trains = parseAmtrakText(trainRawText, direction);
       if (trains.length === 0) {
         throw new Error("No Amtrak trains parsed from pasted text.");
@@ -569,6 +583,11 @@ export default function Home() {
           localStorage.setItem("weatherConfig", JSON.stringify(payload));
           setWeatherConfig(payload);
           await syncByodSnapshot({ weatherConfig: payload });
+        } else if (direction === "venueEvents") {
+          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          localStorage.setItem("byodEventConfig", JSON.stringify(payload));
+          setByodEventConfig(payload);
+          await syncByodSnapshot({ byodEventConfig: payload });
         } else {
           const trains = parseAmtrakText(text, direction);
           if (trains.length === 0) {
@@ -722,6 +741,12 @@ export default function Home() {
         typeof weatherConfig.rawText === "string"
           ? weatherConfig.rawText
           : "";
+      body.byodEvents =
+        byodEventConfig &&
+        byodEventConfig.savedDate === today &&
+        typeof byodEventConfig.rawText === "string"
+          ? byodEventConfig.rawText
+          : "";
 
       const res = await fetch("/api/dispatch", {
         method: "POST",
@@ -786,6 +811,12 @@ export default function Home() {
     weatherConfig?.savedDate === todayForSavedCounts &&
     typeof weatherConfig.rawText === "string" &&
     weatherConfig.rawText.trim()
+      ? "Yes"
+      : "No";
+  const savedVenueEvents =
+    byodEventConfig?.savedDate === todayForSavedCounts &&
+    typeof byodEventConfig.rawText === "string" &&
+    byodEventConfig.rawText.trim()
       ? "Yes"
       : "No";
   const byodSyncLabel =
@@ -913,6 +944,7 @@ export default function Home() {
                   { value: "flightInbound", label: "Flight Inbound" },
                   { value: "flightOutbound", label: "Flight Outbound" },
                   { value: "weather", label: "Weather Override" },
+                  { value: "venueEvents", label: "Venue Events" },
                 ].map((opt) => (
                   <label key={opt.value} className="flex items-center gap-2 text-sm">
                     <input
@@ -943,6 +975,8 @@ export default function Home() {
                 ? "Paste Bus Status"
                 : direction === "weather"
                 ? "Paste Weather Override"
+                : direction === "venueEvents"
+                ? "Paste Venue Events"
                 : direction === "outbound"
                 ? "Paste Amtrak Outbound Status"
                 : "Paste Amtrak Inbound Status"}
@@ -954,6 +988,8 @@ export default function Home() {
               placeholder={
                 direction === "weather"
                   ? "Paste hourly weather table, or type: Moderate rain for 2 hours"
+                  : direction === "venueEvents"
+                  ? "MVP Arena | Event Name | Doors 6:30 PM | Starts 8:00 PM | Music"
                   : direction === "flightOutbound"
                   ? "Chicago 10:30 AM\nAtlanta 11:24 AM\nLaGuardia 12:47 PM"
                   : "Paste Amtrak status here..."
@@ -961,6 +997,11 @@ export default function Home() {
               rows={6}
               className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-sm font-mono disabled:opacity-60"
             />
+            {direction === "venueEvents" && (
+              <div className="text-xs text-neutral-500">
+                One event per line. Doors and Ends are optional; categories: Music, Sports, Theatre, Arts, or Other.
+              </div>
+            )}
             {/* Sprint 58/59: BYOD Amtrak Persistence. Parses the textarea
                 client-side and writes { savedDate, trains } to
                 localStorage. Dispatch reads it with lazy auto-wipe. */}
@@ -987,6 +1028,8 @@ export default function Home() {
                 ? "Save Buses"
                 : direction === "weather"
                 ? "Save Weather"
+                : direction === "venueEvents"
+                ? "Save Events"
                 : "Save Trains"}
             </button>
 
@@ -995,7 +1038,7 @@ export default function Home() {
                 Sedan / SUV defaults all snap cleanly. Persisted to
                 localStorage on every change. */}
             <div className="text-xs text-neutral-500">
-              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusData} | Flight In {savedFlightData} | Flight Out {savedOutboundFlightData} | Weather {savedWeatherOverride}
+              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusData} | Flight In {savedFlightData} | Flight Out {savedOutboundFlightData} | Weather {savedWeatherOverride} | Events {savedVenueEvents}
             </div>
             <div
               className={`text-xs ${

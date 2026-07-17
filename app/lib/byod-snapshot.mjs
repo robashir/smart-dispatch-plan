@@ -7,6 +7,7 @@ export const BYOD_CONFIG_KEYS = [
   "flightConfigInbound",
   "flightConfigOutbound",
   "weatherConfig",
+  "byodEventConfig",
   "academicSessionConfig",
 ];
 

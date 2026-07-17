@@ -38,6 +38,20 @@ assert.equal(merged.busConfigInbound.rawText, "Bus board");
 assert.equal(merged.flightConfigInbound.rawText, "Flight board");
 assert.equal(merged.trainConfigOutbound.updatedAt, null);
 assert.equal(merged.academicSessionConfig.mode, "auto");
+assert.equal(merged.byodEventConfig.rawText, "");
+
+const eventMerged = mergeByodUpdates(
+  merged,
+  {
+    byodEventConfig: {
+      savedDate: "2026-07-13",
+      rawText: "MVP Arena | Event | Doors 6:30 PM | Starts 8:00 PM | Music",
+      updatedAt: newer,
+    },
+  },
+  newer
+);
+assert.match(eventMerged.byodEventConfig.rawText, /MVP Arena/);
 
 const academicOverrideMerged = mergeByodUpdates(
   merged,
@@ -128,4 +142,4 @@ const legacyCloudWins = reconcileByodSnapshots(
 );
 assert.equal(legacyCloudWins.snapshot.flightConfigInbound.rawText, "Legacy cloud");
 
-console.log("BYOD cloud sync: 16 assertions passed.");
+console.log("BYOD cloud sync: assertions passed.");

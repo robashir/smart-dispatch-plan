@@ -118,4 +118,26 @@ assert.equal(
   "Demand window 3:00 PM–4:00 PM | Be there by 3:00 PM"
 );
 
-console.log("Demand-first timing: 12 assertions passed.");
+assert.equal(
+  formatDemandFirstTiming({
+    type: "event",
+    categories: ["BYOD Event", "Ingress", "Music"],
+    doorsTime: "6:30 PM",
+    eventStartTime: "8:00 PM",
+    leaveBy: "5:45 PM",
+  }),
+  "Doors 6:30 PM | Starts 8:00 PM"
+);
+
+assert.equal(
+  formatDemandFirstTiming({
+    type: "event",
+    categories: ["BYOD Event", "Egress", "Music"],
+    eventStartTime: "8:00 PM",
+    projectedEnd: "11:00 PM",
+    leaveBy: "10:30 PM",
+  }),
+  "Starts 8:00 PM | Projected end 11:00 PM"
+);
+
+console.log("Demand-first timing: assertions passed.");

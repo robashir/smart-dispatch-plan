@@ -10,9 +10,11 @@ import {
 } from "./byod-flight-labels.mjs";
 import { formatInboundFlightSequenceHeading } from "./flight-sequence-copy.mjs";
 import { formatDemandFirstTiming } from "./demand-first-timing.mjs";
+import { formatByodEventHeading, isByodEvent } from "./byod-event-labels.mjs";
 
 function itemTitle(item) {
   const categories = Array.isArray(item?.categories) ? item.categories : [];
+  if (isByodEvent(item)) return formatByodEventHeading(item);
   if (isByodOutboundFlight(item)) return formatByodFlightHeading(item);
   if (categories.some((category) => /byod train/i.test(String(category)))) {
     return formatDemandFirstByodTrainHeading(item);
