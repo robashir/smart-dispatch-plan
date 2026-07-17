@@ -15,6 +15,7 @@ import {
   reconcileByodSnapshots,
 } from "./lib/byod-snapshot.mjs";
 import { isUAlbanyRegularSession } from "./lib/ualbany-demand.mjs";
+import { countSavedByodRecords } from "./lib/byod-counts.mjs";
 // Sprint 59: static seed for the Unified Event Database. Next.js bundles
 // the 26-entry JSON at build time so a fresh browser (no localStorage)
 // hydrates the dropdown without a network round-trip. Re-seeding requires
@@ -789,36 +790,31 @@ export default function Home() {
     trainConfigOutbound?.savedDate === todayForSavedCounts && Array.isArray(trainConfigOutbound.trains)
       ? trainConfigOutbound.trains.length
       : 0;
-  const savedBusData =
+  const savedBusCount =
     busConfigInbound?.savedDate === todayForSavedCounts &&
-    typeof busConfigInbound.rawText === "string" &&
-    busConfigInbound.rawText.trim()
-      ? "Yes"
-      : "No";
-  const savedFlightData =
+    typeof busConfigInbound.rawText === "string"
+      ? countSavedByodRecords("bus", busConfigInbound.rawText)
+      : 0;
+  const savedInboundFlightCount =
     flightConfigInbound?.savedDate === todayForSavedCounts &&
-    typeof flightConfigInbound.rawText === "string" &&
-    flightConfigInbound.rawText.trim()
-      ? "Yes"
-      : "No";
-  const savedOutboundFlightData =
+    typeof flightConfigInbound.rawText === "string"
+      ? countSavedByodRecords("flight", flightConfigInbound.rawText)
+      : 0;
+  const savedOutboundFlightCount =
     flightConfigOutbound?.savedDate === todayForSavedCounts &&
-    typeof flightConfigOutbound.rawText === "string" &&
-    flightConfigOutbound.rawText.trim()
-      ? "Yes"
-      : "No";
-  const savedWeatherOverride =
+    typeof flightConfigOutbound.rawText === "string"
+      ? countSavedByodRecords("flight", flightConfigOutbound.rawText)
+      : 0;
+  const savedWeatherCount =
     weatherConfig?.savedDate === todayForSavedCounts &&
-    typeof weatherConfig.rawText === "string" &&
-    weatherConfig.rawText.trim()
-      ? "Yes"
-      : "No";
-  const savedVenueEvents =
+    typeof weatherConfig.rawText === "string"
+      ? countSavedByodRecords("weather", weatherConfig.rawText)
+      : 0;
+  const savedVenueEventCount =
     byodEventConfig?.savedDate === todayForSavedCounts &&
-    typeof byodEventConfig.rawText === "string" &&
-    byodEventConfig.rawText.trim()
-      ? "Yes"
-      : "No";
+    typeof byodEventConfig.rawText === "string"
+      ? countSavedByodRecords("event", byodEventConfig.rawText, todayForSavedCounts)
+      : 0;
   const byodSyncLabel =
     byodSyncStatus === "synced"
       ? "Cloud synced"
@@ -1038,7 +1034,7 @@ export default function Home() {
                 Sedan / SUV defaults all snap cleanly. Persisted to
                 localStorage on every change. */}
             <div className="text-xs text-neutral-500">
-              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusData} | Flight In {savedFlightData} | Flight Out {savedOutboundFlightData} | Weather {savedWeatherOverride} | Events {savedVenueEvents}
+              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusCount} | Flight In {savedInboundFlightCount} | Flight Out {savedOutboundFlightCount} | Weather {savedWeatherCount} | Events {savedVenueEventCount}
             </div>
             <div
               className={`text-xs ${
