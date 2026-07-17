@@ -16,6 +16,7 @@ import {
 } from "./lib/byod-snapshot.mjs";
 import { isUAlbanyRegularSession } from "./lib/ualbany-demand.mjs";
 import { countSavedByodRecords } from "./lib/byod-counts.mjs";
+import { mergeByodEventText, parseByodEventText } from "./lib/byod-events.mjs";
 // Sprint 59: static seed for the Unified Event Database. Next.js bundles
 // the 26-entry JSON at build time so a fresh browser (no localStorage)
 // hydrates the dropdown without a network round-trip. Re-seeding requires
@@ -462,6 +463,20 @@ export default function Home() {
     await syncByodSnapshot({ academicSessionConfig: config });
   }
 
+  function buildMergedVenueEventPayload(text, today) {
+    if (parseByodEventText(text, today).length === 0) {
+      throw new Error("No valid venue events found in the pasted text.");
+    }
+    const existingRawText =
+      byodEventConfig?.savedDate === today && typeof byodEventConfig.rawText === "string"
+        ? byodEventConfig.rawText
+        : "";
+    return stampByodConfig({
+      savedDate: today,
+      rawText: mergeByodEventText(existingRawText, text, today),
+    });
+  }
+
   // Sprint 59: BYOD Amtrak Persistence — localStorage edition. Parses the
   // textarea client-side via parseAmtrakText, then writes the
   // { savedDate, trains } tuple to localStorage. Dispatch reads from
@@ -519,7 +534,8 @@ export default function Home() {
         return;
       }
       if (direction === "venueEvents") {
-        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        const today = todayLocalISO();
+        const payload = buildMergedVenueEventPayload(trainRawText, today);
         localStorage.setItem("byodEventConfig", JSON.stringify(payload));
         setByodEventConfig(payload);
         await syncByodSnapshot({ byodEventConfig: payload });
@@ -585,7 +601,7 @@ export default function Home() {
           setWeatherConfig(payload);
           await syncByodSnapshot({ weatherConfig: payload });
         } else if (direction === "venueEvents") {
-          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          const payload = buildMergedVenueEventPayload(text, today);
           localStorage.setItem("byodEventConfig", JSON.stringify(payload));
           setByodEventConfig(payload);
           await syncByodSnapshot({ byodEventConfig: payload });
@@ -995,7 +1011,7 @@ export default function Home() {
             />
             {direction === "venueEvents" && (
               <div className="text-xs text-neutral-500">
-                One event per line. Doors and Ends are optional; categories: Music, Sports, Theatre, Arts, or Other.
+                One event per line. New saves append to today&apos;s list; a matching venue and start time updates the existing event. Doors and Ends are optional; categories: Music, Sports, Theatre, Arts, or Other.
               </div>
             )}
             {/* Sprint 58/59: BYOD Amtrak Persistence. Parses the textarea

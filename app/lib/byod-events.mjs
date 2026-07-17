@@ -92,9 +92,21 @@ export function parseByodEventText(rawText, savedDate) {
       endMinutes,
       category,
       sourceEventKey,
+      rawLine: line,
     });
   }
   return parsed;
+}
+
+export function mergeByodEventText(existingRawText, incomingRawText, savedDate) {
+  const merged = new Map();
+  for (const event of parseByodEventText(existingRawText, savedDate)) {
+    merged.set(event.sourceEventKey, event.rawLine);
+  }
+  for (const event of parseByodEventText(incomingRawText, savedDate)) {
+    merged.set(event.sourceEventKey, event.rawLine);
+  }
+  return [...merged.values()].join("\n");
 }
 
 function resolveVenue(venueDictionary, venueName) {

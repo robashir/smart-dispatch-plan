@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildByodEventOpportunities,
+  mergeByodEventText,
   parseByodEventText,
   ticketmasterEventKey,
 } from "./app/lib/byod-events.mjs";
@@ -42,5 +43,22 @@ assert.equal(
   }),
   parsed[0].sourceEventKey
 );
+
+const mergedText = mergeByodEventText(
+  `MVP Arena | First Event | Doors 6:00 PM | Starts 7:00 PM | Music
+Palace Theatre | Second Event | Starts 8:00 PM | Theatre`,
+  `The Egg | Third Event | Starts 6:30 PM | Arts`,
+  "2026-07-16"
+);
+assert.equal(parseByodEventText(mergedText, "2026-07-16").length, 3);
+
+const updatedText = mergeByodEventText(
+  mergedText,
+  "MVP Arena | Updated First Event | Doors 6:15 PM | Starts 7:00 PM | Music",
+  "2026-07-16"
+);
+const updatedEvents = parseByodEventText(updatedText, "2026-07-16");
+assert.equal(updatedEvents.length, 3);
+assert.equal(updatedEvents.find(({ venueName }) => venueName === "MVP Arena").eventName, "Updated First Event");
 
 console.log("BYOD venue events: assertions passed.");
