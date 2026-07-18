@@ -1,7 +1,7 @@
 "use client";
 
 import "mapbox-gl/dist/mapbox-gl.css";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TopPickBanner } from "../components/TopPickBanner";
 import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
 import { PeakSurgeBanner } from "../components/PeakSurgeBanner";
@@ -262,6 +262,7 @@ export default function Home() {
     updatedAt: null,
   });
   const [byodSyncStatus, setByodSyncStatus] = useState("loading");
+  const byodSyncQueue = useRef(Promise.resolve());
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -328,19 +329,9 @@ export default function Home() {
         persistLocalByodSnapshot(snapshot);
 
         if (Object.keys(pendingUpdates).length > 0) {
-          setByodSyncStatus("syncing");
-          const syncRes = await fetch("/api/byod", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ updates: pendingUpdates }),
-          });
-          const syncData = await syncRes.json().catch(() => ({}));
-          if (!syncRes.ok) {
-            throw new Error(syncData.error || "BYOD cloud sync failed.");
-          }
+          const synced = await syncByodSnapshot(pendingUpdates);
+          if (!synced) throw new Error("BYOD cloud sync failed after retrying.");
           if (cancelled) return;
-          const synced = applyByodSnapshot(syncData.snapshot);
-          persistLocalByodSnapshot(synced);
         }
         setByodSyncStatus("synced");
       } catch (err) {
@@ -434,26 +425,56 @@ export default function Home() {
   }
 
   async function syncByodSnapshot(updates = {}) {
-    setByodSyncStatus("syncing");
-    try {
-      const res = await fetch("/api/byod", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "BYOD server sync failed.");
+    const runSync = async () => {
+      setByodSyncStatus("syncing");
+      let lastError = null;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const res = await fetch("/api/byod", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ updates }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data.error || `BYOD server sync failed (${res.status}).`);
+          }
+          const synced = applyByodSnapshot(data.snapshot);
+          persistLocalByodSnapshot(synced);
+          setByodSyncStatus("synced");
+          return true;
+        } catch (err) {
+          lastError = err;
+          if (attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, attempt * 350));
+          }
+        }
       }
-      const synced = applyByodSnapshot(data.snapshot);
-      persistLocalByodSnapshot(synced);
-      setByodSyncStatus("synced");
-      return true;
-    } catch (err) {
-      console.warn("BYOD server sync failed:", err.message);
+      console.warn("BYOD server sync failed:", lastError?.message);
       setByodSyncStatus("offline");
       return false;
+    };
+
+    const queued = byodSyncQueue.current.then(runSync, runSync);
+    byodSyncQueue.current = queued.then(() => undefined, () => undefined);
+    return queued;
+  }
+
+  async function requireByodCloudSync(updates) {
+    if (!(await syncByodSnapshot(updates))) {
+      throw new Error("Saved on this device, but cloud sync failed.");
     }
+  }
+
+  async function handleRetryByodSync() {
+    const local = readLocalByodSnapshot();
+    const updates = Object.fromEntries(
+      BYOD_CONFIG_KEYS.filter((key) => local?.[key]?.updatedAt).map((key) => [
+        key,
+        local[key],
+      ])
+    );
+    await syncByodSnapshot(updates);
   }
 
   async function handleAcademicSessionModeChange(mode) {
@@ -511,7 +532,7 @@ export default function Home() {
         const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
         localStorage.setItem("busConfigInbound", JSON.stringify(payload));
         setBusConfigInbound(payload);
-        await syncByodSnapshot({ busConfigInbound: payload });
+        await requireByodCloudSync({ busConfigInbound: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -523,7 +544,7 @@ export default function Home() {
         const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
         localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
         setFlightConfigInbound(payload);
-        await syncByodSnapshot({ flightConfigInbound: payload });
+        await requireByodCloudSync({ flightConfigInbound: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -532,7 +553,7 @@ export default function Home() {
         const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
         localStorage.setItem("flightConfigOutbound", JSON.stringify(payload));
         setFlightConfigOutbound(payload);
-        await syncByodSnapshot({ flightConfigOutbound: payload });
+        await requireByodCloudSync({ flightConfigOutbound: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -541,7 +562,7 @@ export default function Home() {
         const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
         localStorage.setItem("weatherConfig", JSON.stringify(payload));
         setWeatherConfig(payload);
-        await syncByodSnapshot({ weatherConfig: payload });
+        await requireByodCloudSync({ weatherConfig: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -555,7 +576,7 @@ export default function Home() {
         );
         localStorage.setItem("byodEventConfig", JSON.stringify(payload));
         setByodEventConfig(payload);
-        await syncByodSnapshot({ byodEventConfig: payload });
+        await requireByodCloudSync({ byodEventConfig: payload });
         setTrainSaveStatus("saved");
         setTimeout(() => setTrainSaveStatus("idle"), 2000);
         return;
@@ -569,10 +590,10 @@ export default function Home() {
       localStorage.setItem(key, JSON.stringify(payload));
       if (direction === "outbound") {
         setTrainConfigOutbound(payload);
-        await syncByodSnapshot({ trainConfigOutbound: payload });
+        await requireByodCloudSync({ trainConfigOutbound: payload });
       } else {
         setTrainConfigInbound(payload);
-        await syncByodSnapshot({ trainConfigInbound: payload });
+        await requireByodCloudSync({ trainConfigInbound: payload });
       }
       setTrainSaveStatus("saved");
       setTimeout(() => setTrainSaveStatus("idle"), 2000);
@@ -601,22 +622,22 @@ export default function Home() {
           const payload = stampByodConfig({ savedDate: today, rawText: text });
           localStorage.setItem("busConfigInbound", JSON.stringify(payload));
           setBusConfigInbound(payload);
-          await syncByodSnapshot({ busConfigInbound: payload });
+          await requireByodCloudSync({ busConfigInbound: payload });
         } else if (direction === "flightInbound") {
           const payload = stampByodConfig({ savedDate: today, rawText: text });
           localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
           setFlightConfigInbound(payload);
-          await syncByodSnapshot({ flightConfigInbound: payload });
+          await requireByodCloudSync({ flightConfigInbound: payload });
         } else if (direction === "flightOutbound") {
           const payload = stampByodConfig({ savedDate: today, rawText: text });
           localStorage.setItem("flightConfigOutbound", JSON.stringify(payload));
           setFlightConfigOutbound(payload);
-          await syncByodSnapshot({ flightConfigOutbound: payload });
+          await requireByodCloudSync({ flightConfigOutbound: payload });
         } else if (direction === "weather") {
           const payload = stampByodConfig({ savedDate: today, rawText: text });
           localStorage.setItem("weatherConfig", JSON.stringify(payload));
           setWeatherConfig(payload);
-          await syncByodSnapshot({ weatherConfig: payload });
+          await requireByodCloudSync({ weatherConfig: payload });
         } else if (direction === "venueEvents") {
           const payload = buildMergedVenueEventPayload(
             text,
@@ -625,7 +646,7 @@ export default function Home() {
           );
           localStorage.setItem("byodEventConfig", JSON.stringify(payload));
           setByodEventConfig(payload);
-          await syncByodSnapshot({ byodEventConfig: payload });
+          await requireByodCloudSync({ byodEventConfig: payload });
         } else {
           const trains = parseAmtrakText(text, direction);
           if (trains.length === 0) {
@@ -637,10 +658,10 @@ export default function Home() {
           localStorage.setItem(key, JSON.stringify(payload));
           if (direction === "outbound") {
             setTrainConfigOutbound(payload);
-            await syncByodSnapshot({ trainConfigOutbound: payload });
+            await requireByodCloudSync({ trainConfigOutbound: payload });
           } else {
             setTrainConfigInbound(payload);
-            await syncByodSnapshot({ trainConfigInbound: payload });
+            await requireByodCloudSync({ trainConfigInbound: payload });
           }
         }
       } catch (e) {
@@ -1073,7 +1094,7 @@ export default function Home() {
               {trainSaveStatus === "saved"
                 ? "Saved!"
                 : trainSaveStatus === "error"
-                ? "Save Failed"
+                ? "Cloud Sync Failed"
                 : trainSaveStatus === "saving"
                 ? "Saving..."
                 : direction === "flightInbound" || direction === "flightOutbound"
@@ -1102,6 +1123,16 @@ export default function Home() {
             >
               {byodSyncLabel}
             </div>
+            {byodSyncStatus === "offline" && (
+              <button
+                type="button"
+                onClick={handleRetryByodSync}
+                disabled={isBusy}
+                className="py-1.5 px-3 rounded-lg bg-amber-950 border border-amber-700 text-xs text-amber-200 hover:bg-amber-900 disabled:opacity-50"
+              >
+                Retry cloud sync
+              </button>
+            )}
 
             <div className="flex flex-col gap-2 mt-3">
               <label className="text-sm text-neutral-400">

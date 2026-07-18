@@ -1,31 +1,12 @@
 import { readByodSnapshot, saveByodSnapshot } from "../../lib/byod-store";
-
-function isSameOriginWrite(request) {
-  const origin = request.headers.get("origin");
-  if (!origin) return false;
-  try {
-    return new URL(origin).host === new URL(request.url).host;
-  } catch {
-    return false;
-  }
-}
-
-function isSameOriginRead(request) {
-  if (isSameOriginWrite(request)) return true;
-  const fetchSite = request.headers.get("sec-fetch-site");
-  if (fetchSite === "same-origin" || fetchSite === "same-site") return true;
-  const referer = request.headers.get("referer");
-  if (!referer) return false;
-  try {
-    return new URL(referer).host === new URL(request.url).host;
-  } catch {
-    return false;
-  }
-}
+import {
+  isTrustedByodRead,
+  isTrustedByodWrite,
+} from "../../lib/byod-request-security.mjs";
 
 export async function GET(request) {
   try {
-    if (!isSameOriginRead(request)) {
+    if (!isTrustedByodRead(request)) {
       return Response.json({ error: "Forbidden." }, { status: 403 });
     }
     const snapshot = await readByodSnapshot();
@@ -44,7 +25,7 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    if (!isSameOriginWrite(request)) {
+    if (!isTrustedByodWrite(request)) {
       return Response.json({ error: "Forbidden." }, { status: 403 });
     }
     const body = (await request.json()) || {};
