@@ -145,6 +145,12 @@ function readOpportunityScore(item) {
 
 function readLocalByodSnapshot() {
   const snapshot = {};
+  try {
+    const meta = JSON.parse(localStorage.getItem("byodSnapshotMeta") || "null");
+    if (meta?.savedAt) snapshot.savedAt = meta.savedAt;
+  } catch (err) {
+    console.warn("BYOD snapshot metadata hydrate failed:", err.message);
+  }
   for (const key of BYOD_CONFIG_KEYS) {
     try {
       const raw = localStorage.getItem(key);
@@ -164,10 +170,22 @@ function persistLocalByodSnapshot(snapshot) {
       console.warn(`${key} cache failed:`, err.message);
     }
   }
+  try {
+    localStorage.setItem(
+      "byodSnapshotMeta",
+      JSON.stringify({ savedAt: snapshot?.savedAt || null })
+    );
+  } catch (err) {
+    console.warn("BYOD snapshot metadata cache failed:", err.message);
+  }
 }
 
-function stampByodConfig(value) {
-  return { ...value, updatedAt: new Date().toISOString() };
+function stampByodConfig(value, currentConfig = null) {
+  return {
+    ...value,
+    revision: Number(currentConfig?.revision) || 0,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 export default function Home() {
@@ -262,7 +280,9 @@ export default function Home() {
     updatedAt: null,
   });
   const [byodSyncStatus, setByodSyncStatus] = useState("loading");
+  const [byodLastSyncedAt, setByodLastSyncedAt] = useState(null);
   const byodSyncQueue = useRef(Promise.resolve());
+  const byodRefreshPromise = useRef(null);
   // Sprint 57/59: Unified Event Database. eventConfig is the object
   // hydrated from localStorage (seeded from EVENT_CONFIG_SEED) — keyed
   // by event name with
@@ -304,19 +324,15 @@ export default function Home() {
     setWeatherConfig(clean.weatherConfig);
     setByodEventConfig(clean.byodEventConfig);
     setAcademicSessionConfig(clean.academicSessionConfig);
+    if (clean.savedAt) setByodLastSyncedAt(clean.savedAt);
     return clean;
   }
 
-  // Cloud-first BYOD hydration. The device cache renders immediately, then
-  // the latest Blob snapshot reconciles each category by updatedAt.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    let cancelled = false;
-    const localSnapshot = readLocalByodSnapshot();
-    applyByodSnapshot(localSnapshot);
-
-    async function hydrateFromCloud() {
+  async function refreshByodFromCloud() {
+    if (byodRefreshPromise.current) return byodRefreshPromise.current;
+    const refresh = async () => {
       try {
+        const localSnapshot = readLocalByodSnapshot();
         const res = await fetch("/api/byod", { cache: "no-store" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "BYOD cloud load failed.");
@@ -324,25 +340,44 @@ export default function Home() {
           localSnapshot,
           data.snapshot
         );
-        if (cancelled) return;
         applyByodSnapshot(snapshot);
         persistLocalByodSnapshot(snapshot);
 
         if (Object.keys(pendingUpdates).length > 0) {
           const synced = await syncByodSnapshot(pendingUpdates);
           if (!synced) throw new Error("BYOD cloud sync failed after retrying.");
-          if (cancelled) return;
         }
         setByodSyncStatus("synced");
+        return true;
       } catch (err) {
-        if (cancelled) return;
         console.warn("BYOD cloud hydration failed:", err.message);
         setByodSyncStatus("offline");
+        return false;
+      } finally {
+        byodRefreshPromise.current = null;
       }
-    }
-    hydrateFromCloud();
+    };
+    byodRefreshPromise.current = refresh();
+    return byodRefreshPromise.current;
+  }
+
+  // Render the device cache immediately, then reconcile whenever the app
+  // opens, regains focus, or remains open for another minute.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    applyByodSnapshot(readLocalByodSnapshot());
+    refreshByodFromCloud();
+    const refreshOnFocus = () => refreshByodFromCloud();
+    const refreshOnVisibility = () => {
+      if (document.visibilityState === "visible") refreshByodFromCloud();
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnVisibility);
+    const interval = window.setInterval(refreshOnFocus, 60 * 1000);
     return () => {
-      cancelled = true;
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnVisibility);
+      window.clearInterval(interval);
     };
   }, []);
 
@@ -461,24 +496,18 @@ export default function Home() {
   }
 
   async function requireByodCloudSync(updates) {
+    await refreshByodFromCloud();
     if (!(await syncByodSnapshot(updates))) {
       throw new Error("Saved on this device, but cloud sync failed.");
     }
   }
 
   async function handleRetryByodSync() {
-    const local = readLocalByodSnapshot();
-    const updates = Object.fromEntries(
-      BYOD_CONFIG_KEYS.filter((key) => local?.[key]?.updatedAt).map((key) => [
-        key,
-        local[key],
-      ])
-    );
-    await syncByodSnapshot(updates);
+    await refreshByodFromCloud();
   }
 
   async function handleAcademicSessionModeChange(mode) {
-    const config = stampByodConfig({ mode });
+    const config = stampByodConfig({ mode }, academicSessionConfig);
     setAcademicSessionConfig(config);
     try {
       localStorage.setItem("academicSessionConfig", JSON.stringify(config));
@@ -503,12 +532,15 @@ export default function Home() {
       typeof existingEventsByDate[eventDate] === "string"
         ? existingEventsByDate[eventDate]
         : "";
-    return stampByodConfig({
-      eventsByDate: {
-        ...existingEventsByDate,
-        [eventDate]: mergeByodEventText(existingRawText, text, eventDate),
+    return stampByodConfig(
+      {
+        eventsByDate: {
+          ...existingEventsByDate,
+          [eventDate]: mergeByodEventText(existingRawText, text, eventDate),
+        },
       },
-    });
+      byodEventConfig
+    );
   }
 
   // Sprint 59: BYOD Amtrak Persistence — localStorage edition. Parses the
@@ -529,7 +561,10 @@ export default function Home() {
       // (it's the sole consumer), so the client just persists the raw text
       // alongside today's date. Train states are untouched on a bus save.
       if (direction === "busInbound") {
-        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        const payload = stampByodConfig(
+          { savedDate: todayLocalISO(), rawText: trainRawText },
+          busConfigInbound
+        );
         localStorage.setItem("busConfigInbound", JSON.stringify(payload));
         setBusConfigInbound(payload);
         await requireByodCloudSync({ busConfigInbound: payload });
@@ -541,7 +576,10 @@ export default function Home() {
       // owns the regex + dictionary, so client just persists raw text.
       // Train + bus states untouched on a flight save.
       if (direction === "flightInbound") {
-        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        const payload = stampByodConfig(
+          { savedDate: todayLocalISO(), rawText: trainRawText },
+          flightConfigInbound
+        );
         localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
         setFlightConfigInbound(payload);
         await requireByodCloudSync({ flightConfigInbound: payload });
@@ -550,7 +588,10 @@ export default function Home() {
         return;
       }
       if (direction === "flightOutbound") {
-        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        const payload = stampByodConfig(
+          { savedDate: todayLocalISO(), rawText: trainRawText },
+          flightConfigOutbound
+        );
         localStorage.setItem("flightConfigOutbound", JSON.stringify(payload));
         setFlightConfigOutbound(payload);
         await requireByodCloudSync({ flightConfigOutbound: payload });
@@ -559,7 +600,10 @@ export default function Home() {
         return;
       }
       if (direction === "weather") {
-        const payload = stampByodConfig({ savedDate: todayLocalISO(), rawText: trainRawText });
+        const payload = stampByodConfig(
+          { savedDate: todayLocalISO(), rawText: trainRawText },
+          weatherConfig
+        );
         localStorage.setItem("weatherConfig", JSON.stringify(payload));
         setWeatherConfig(payload);
         await requireByodCloudSync({ weatherConfig: payload });
@@ -585,7 +629,12 @@ export default function Home() {
       if (trains.length === 0) {
         throw new Error("No Amtrak trains parsed from pasted text.");
       }
-      const payload = stampByodConfig({ savedDate: todayLocalISO(), trains });
+      const currentTrainConfig =
+        direction === "outbound" ? trainConfigOutbound : trainConfigInbound;
+      const payload = stampByodConfig(
+        { savedDate: todayLocalISO(), trains },
+        currentTrainConfig
+      );
       const key = direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
       localStorage.setItem(key, JSON.stringify(payload));
       if (direction === "outbound") {
@@ -619,22 +668,34 @@ export default function Home() {
       const today = todayLocalISO();
       try {
         if (direction === "busInbound") {
-          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          const payload = stampByodConfig(
+            { savedDate: today, rawText: text },
+            busConfigInbound
+          );
           localStorage.setItem("busConfigInbound", JSON.stringify(payload));
           setBusConfigInbound(payload);
           await requireByodCloudSync({ busConfigInbound: payload });
         } else if (direction === "flightInbound") {
-          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          const payload = stampByodConfig(
+            { savedDate: today, rawText: text },
+            flightConfigInbound
+          );
           localStorage.setItem("flightConfigInbound", JSON.stringify(payload));
           setFlightConfigInbound(payload);
           await requireByodCloudSync({ flightConfigInbound: payload });
         } else if (direction === "flightOutbound") {
-          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          const payload = stampByodConfig(
+            { savedDate: today, rawText: text },
+            flightConfigOutbound
+          );
           localStorage.setItem("flightConfigOutbound", JSON.stringify(payload));
           setFlightConfigOutbound(payload);
           await requireByodCloudSync({ flightConfigOutbound: payload });
         } else if (direction === "weather") {
-          const payload = stampByodConfig({ savedDate: today, rawText: text });
+          const payload = stampByodConfig(
+            { savedDate: today, rawText: text },
+            weatherConfig
+          );
           localStorage.setItem("weatherConfig", JSON.stringify(payload));
           setWeatherConfig(payload);
           await requireByodCloudSync({ weatherConfig: payload });
@@ -652,7 +713,12 @@ export default function Home() {
           if (trains.length === 0) {
             throw new Error("No Amtrak trains parsed from pasted text.");
           }
-          const payload = stampByodConfig({ savedDate: today, trains });
+          const currentTrainConfig =
+            direction === "outbound" ? trainConfigOutbound : trainConfigInbound;
+          const payload = stampByodConfig(
+            { savedDate: today, trains },
+            currentTrainConfig
+          );
           const key =
             direction === "outbound" ? "trainConfigOutbound" : "trainConfigInbound";
           localStorage.setItem(key, JSON.stringify(payload));
@@ -890,6 +956,14 @@ export default function Home() {
       ? "Syncing to cloud…"
       : "Loading cloud data…";
 
+  const byodLastSyncedLabel =
+    byodLastSyncedAt && Number.isFinite(Date.parse(byodLastSyncedAt))
+      ? new Date(byodLastSyncedAt).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : null;
+
   // Sprint 33 + Sprint 48: global Top Pick. Run BEFORE the tab filter so
   // the banner can name a winner in the inactive tab if it deserves the
   // crown. .flat() is a defensive no-op against any future nested-group
@@ -1121,7 +1195,9 @@ export default function Home() {
               }`}
               role="status"
             >
-              {byodSyncLabel}
+              {byodSyncStatus === "offline"
+                ? `Offline changes pending${byodLastSyncedLabel ? ` — last synced ${byodLastSyncedLabel}` : ""}`
+                : `${byodSyncLabel}${byodSyncStatus === "synced" && byodLastSyncedLabel ? ` at ${byodLastSyncedLabel}` : ""}`}
             </div>
             {byodSyncStatus === "offline" && (
               <button

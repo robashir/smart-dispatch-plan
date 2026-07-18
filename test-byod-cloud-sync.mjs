@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  mergeByodCategoryUpdate,
   mergeByodUpdates,
   normalizeByodSnapshot,
   reconcileByodSnapshots,
@@ -37,6 +38,7 @@ assert.equal(merged.trainConfigInbound.trains[0].trainNumber, "49");
 assert.equal(merged.busConfigInbound.rawText, "Bus board");
 assert.equal(merged.flightConfigInbound.rawText, "Flight board");
 assert.equal(merged.trainConfigOutbound.updatedAt, null);
+assert.equal(merged.trainConfigOutbound.revision, 0);
 assert.equal(merged.academicSessionConfig.mode, "auto");
 assert.deepEqual(merged.byodEventConfig.eventsByDate, {});
 
@@ -168,5 +170,38 @@ const legacyCloudWins = reconcileByodSnapshots(
   }
 );
 assert.equal(legacyCloudWins.snapshot.flightConfigInbound.rawText, "Legacy cloud");
+
+const serverNow = "2026-07-13T15:00:00.000Z";
+const replacedFlight = mergeByodCategoryUpdate(
+  "flightConfigInbound",
+  { savedDate: "2026-07-13", rawText: "Old board", revision: 4 },
+  { savedDate: "2026-07-13", rawText: "Fresh board", revision: 2 },
+  serverNow
+);
+assert.equal(replacedFlight.rawText, "Fresh board");
+assert.equal(replacedFlight.revision, 5);
+assert.equal(replacedFlight.updatedAt, serverNow);
+
+const currentEventText =
+  "MVP Arena | Cloud Name | Doors 6:30 PM | Starts 8:00 PM | Music";
+const staleEventMerge = mergeByodCategoryUpdate(
+  "byodEventConfig",
+  {
+    eventsByDate: { "2026-07-14": currentEventText },
+    revision: 3,
+  },
+  {
+    eventsByDate: {
+      "2026-07-14":
+        "MVP Arena | Stale Name | Doors 6:00 PM | Starts 8:00 PM | Music\nThe Egg | New Event | Starts 7:00 PM | Arts",
+    },
+    revision: 2,
+  },
+  serverNow
+);
+assert.match(staleEventMerge.eventsByDate["2026-07-14"], /Cloud Name/);
+assert.doesNotMatch(staleEventMerge.eventsByDate["2026-07-14"], /Stale Name/);
+assert.match(staleEventMerge.eventsByDate["2026-07-14"], /New Event/);
+assert.equal(staleEventMerge.revision, 4);
 
 console.log("BYOD cloud sync: assertions passed.");

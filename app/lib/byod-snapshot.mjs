@@ -1,4 +1,5 @@
 import { normalizeAcademicSessionMode } from "./ualbany-demand.mjs";
+import { mergeByodEventText } from "./byod-events.mjs";
 
 export const BYOD_CONFIG_KEYS = [
   "trainConfigInbound",
@@ -19,25 +20,32 @@ function cleanUpdatedAt(value) {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
 }
 
+function cleanRevision(value) {
+  const revision = Number(value);
+  return Number.isInteger(revision) && revision >= 0 ? revision : 0;
+}
+
 function cleanTrainConfig(value) {
   if (!value || typeof value !== "object") {
-    return { savedDate: null, trains: [], updatedAt: null };
+    return { savedDate: null, trains: [], updatedAt: null, revision: 0 };
   }
   return {
     savedDate: typeof value.savedDate === "string" ? value.savedDate : null,
     trains: Array.isArray(value.trains) ? value.trains : [],
     updatedAt: cleanUpdatedAt(value.updatedAt),
+    revision: cleanRevision(value.revision),
   };
 }
 
 function cleanRawTextConfig(value) {
   if (!value || typeof value !== "object") {
-    return { savedDate: null, rawText: "", updatedAt: null };
+    return { savedDate: null, rawText: "", updatedAt: null, revision: 0 };
   }
   return {
     savedDate: typeof value.savedDate === "string" ? value.savedDate : null,
     rawText: typeof value.rawText === "string" ? value.rawText : "",
     updatedAt: cleanUpdatedAt(value.updatedAt),
+    revision: cleanRevision(value.revision),
   };
 }
 
@@ -45,6 +53,7 @@ function cleanAcademicSessionConfig(value) {
   return {
     mode: normalizeAcademicSessionMode(value?.mode),
     updatedAt: cleanUpdatedAt(value?.updatedAt),
+    revision: cleanRevision(value?.revision),
   };
 }
 
@@ -71,6 +80,7 @@ function cleanByodEventConfig(value) {
   return {
     eventsByDate,
     updatedAt: cleanUpdatedAt(source.updatedAt),
+    revision: cleanRevision(source.revision),
   };
 }
 
@@ -79,6 +89,25 @@ export function cleanByodConfig(key, value) {
   if (key === ACADEMIC_SESSION_KEY) return cleanAcademicSessionConfig(value);
   if (key === BYOD_EVENT_KEY) return cleanByodEventConfig(value);
   return cleanRawTextConfig(value);
+}
+
+export function mergeByodCategoryUpdate(key, currentValue, incomingValue, now) {
+  const current = cleanByodConfig(key, currentValue);
+  const incoming = cleanByodConfig(key, incomingValue);
+  const revision = current.revision + 1;
+
+  if (key === BYOD_EVENT_KEY) {
+    const eventsByDate = { ...current.eventsByDate };
+    for (const [date, rawText] of Object.entries(incoming.eventsByDate || {})) {
+      eventsByDate[date] =
+        incoming.revision < current.revision
+          ? mergeByodEventText(rawText, eventsByDate[date] || "", date)
+          : mergeByodEventText(eventsByDate[date] || "", rawText, date);
+    }
+    return { eventsByDate, updatedAt: now, revision };
+  }
+
+  return { ...incoming, updatedAt: now, revision };
 }
 
 export function normalizeByodSnapshot(value = {}) {
