@@ -3113,6 +3113,13 @@ function savedTodayRawText(config, today) {
   return config?.savedDate === today && typeof config.rawText === "string" ? config.rawText : "";
 }
 
+function savedEventRawText(config, eventDate) {
+  if (typeof config?.eventsByDate?.[eventDate] === "string") {
+    return config.eventsByDate[eventDate];
+  }
+  return savedTodayRawText(config, eventDate);
+}
+
 export async function POST(request) {
   try {
     // Sprint 64: split BYOD train payload. The body now carries
@@ -3248,7 +3255,7 @@ export async function POST(request) {
     const byodEventText =
       typeof byodEventsRaw === "string" && byodEventsRaw.trim()
         ? byodEventsRaw
-        : savedTodayRawText(byodSnapshot?.byodEventConfig, todayForServerByod);
+        : savedEventRawText(byodSnapshot?.byodEventConfig, todayForServerByod);
     const byodEventSourceKeys = new Set(
       parseByodEventText(byodEventText, todayForServerByod).map((event) => event.sourceEventKey)
     );

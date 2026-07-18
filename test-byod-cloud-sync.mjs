@@ -38,7 +38,7 @@ assert.equal(merged.busConfigInbound.rawText, "Bus board");
 assert.equal(merged.flightConfigInbound.rawText, "Flight board");
 assert.equal(merged.trainConfigOutbound.updatedAt, null);
 assert.equal(merged.academicSessionConfig.mode, "auto");
-assert.equal(merged.byodEventConfig.rawText, "");
+assert.deepEqual(merged.byodEventConfig.eventsByDate, {});
 
 const eventMerged = mergeByodUpdates(
   merged,
@@ -51,7 +51,34 @@ const eventMerged = mergeByodUpdates(
   },
   newer
 );
-assert.match(eventMerged.byodEventConfig.rawText, /MVP Arena/);
+assert.match(eventMerged.byodEventConfig.eventsByDate["2026-07-13"], /MVP Arena/);
+
+const multiDateEvents = mergeByodUpdates(
+  eventMerged,
+  {
+    byodEventConfig: {
+      eventsByDate: {
+        ...eventMerged.byodEventConfig.eventsByDate,
+        "2026-07-14": "The Egg | Future Event | Starts 7:00 PM | Arts",
+      },
+      updatedAt: "2026-07-13T14:00:00.000Z",
+    },
+  },
+  "2026-07-13T14:00:00.000Z"
+);
+assert.match(multiDateEvents.byodEventConfig.eventsByDate["2026-07-13"], /MVP Arena/);
+assert.match(multiDateEvents.byodEventConfig.eventsByDate["2026-07-14"], /Future Event/);
+
+const legacyEventMigration = normalizeByodSnapshot({
+  byodEventConfig: {
+    savedDate: "2026-07-12",
+    rawText: "Palace Theatre | Legacy Event | Starts 8:00 PM | Theatre",
+  },
+});
+assert.match(
+  legacyEventMigration.byodEventConfig.eventsByDate["2026-07-12"],
+  /Legacy Event/
+);
 
 const academicOverrideMerged = mergeByodUpdates(
   merged,

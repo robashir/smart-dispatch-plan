@@ -254,9 +254,9 @@ export default function Home() {
     rawText: "",
   });
   const [byodEventConfig, setByodEventConfig] = useState({
-    savedDate: null,
-    rawText: "",
+    eventsByDate: {},
   });
+  const [byodEventDate, setByodEventDate] = useState("");
   const [academicSessionConfig, setAcademicSessionConfig] = useState({
     mode: "auto",
     updatedAt: null,
@@ -287,6 +287,10 @@ export default function Home() {
     } catch (e) {
       console.warn("dispatchViewMode hydrate failed:", e.message);
     }
+  }, []);
+
+  useEffect(() => {
+    setByodEventDate((current) => current || todayLocalISO());
   }, []);
 
   function applyByodSnapshot(snapshot) {
@@ -463,17 +467,26 @@ export default function Home() {
     await syncByodSnapshot({ academicSessionConfig: config });
   }
 
-  function buildMergedVenueEventPayload(text, today) {
-    if (parseByodEventText(text, today).length === 0) {
+  function buildMergedVenueEventPayload(text, eventDate, today) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || eventDate < today) {
+      throw new Error("Choose today or a future event date.");
+    }
+    if (parseByodEventText(text, eventDate).length === 0) {
       throw new Error("No valid venue events found in the pasted text.");
     }
+    const existingEventsByDate =
+      byodEventConfig?.eventsByDate && typeof byodEventConfig.eventsByDate === "object"
+        ? byodEventConfig.eventsByDate
+        : {};
     const existingRawText =
-      byodEventConfig?.savedDate === today && typeof byodEventConfig.rawText === "string"
-        ? byodEventConfig.rawText
+      typeof existingEventsByDate[eventDate] === "string"
+        ? existingEventsByDate[eventDate]
         : "";
     return stampByodConfig({
-      savedDate: today,
-      rawText: mergeByodEventText(existingRawText, text, today),
+      eventsByDate: {
+        ...existingEventsByDate,
+        [eventDate]: mergeByodEventText(existingRawText, text, eventDate),
+      },
     });
   }
 
@@ -535,7 +548,11 @@ export default function Home() {
       }
       if (direction === "venueEvents") {
         const today = todayLocalISO();
-        const payload = buildMergedVenueEventPayload(trainRawText, today);
+        const payload = buildMergedVenueEventPayload(
+          trainRawText,
+          byodEventDate || today,
+          today
+        );
         localStorage.setItem("byodEventConfig", JSON.stringify(payload));
         setByodEventConfig(payload);
         await syncByodSnapshot({ byodEventConfig: payload });
@@ -601,7 +618,11 @@ export default function Home() {
           setWeatherConfig(payload);
           await syncByodSnapshot({ weatherConfig: payload });
         } else if (direction === "venueEvents") {
-          const payload = buildMergedVenueEventPayload(text, today);
+          const payload = buildMergedVenueEventPayload(
+            text,
+            byodEventDate || today,
+            today
+          );
           localStorage.setItem("byodEventConfig", JSON.stringify(payload));
           setByodEventConfig(payload);
           await syncByodSnapshot({ byodEventConfig: payload });
@@ -759,10 +780,8 @@ export default function Home() {
           ? weatherConfig.rawText
           : "";
       body.byodEvents =
-        byodEventConfig &&
-        byodEventConfig.savedDate === today &&
-        typeof byodEventConfig.rawText === "string"
-          ? byodEventConfig.rawText
+        typeof byodEventConfig?.eventsByDate?.[today] === "string"
+          ? byodEventConfig.eventsByDate[today]
           : "";
 
       const res = await fetch("/api/dispatch", {
@@ -827,10 +846,20 @@ export default function Home() {
       ? countSavedByodRecords("weather", weatherConfig.rawText)
       : 0;
   const savedVenueEventCount =
-    byodEventConfig?.savedDate === todayForSavedCounts &&
-    typeof byodEventConfig.rawText === "string"
-      ? countSavedByodRecords("event", byodEventConfig.rawText, todayForSavedCounts)
+    typeof byodEventConfig?.eventsByDate?.[todayForSavedCounts] === "string"
+      ? countSavedByodRecords(
+          "event",
+          byodEventConfig.eventsByDate[todayForSavedCounts],
+          todayForSavedCounts
+        )
       : 0;
+  const savedFutureVenueEventCount = Object.entries(byodEventConfig?.eventsByDate || {})
+    .filter(([date]) => date > todayForSavedCounts)
+    .reduce(
+      (total, [date, rawText]) =>
+        total + countSavedByodRecords("event", rawText, date),
+      0
+    );
   const byodSyncLabel =
     byodSyncStatus === "synced"
       ? "Cloud synced"
@@ -993,6 +1022,19 @@ export default function Home() {
                 ? "Paste Amtrak Outbound Status"
                 : "Paste Amtrak Inbound Status"}
             </label>
+            {direction === "venueEvents" && (
+              <label className="flex flex-col gap-1 text-sm text-neutral-400">
+                Event Date
+                <input
+                  type="date"
+                  min={todayForSavedCounts}
+                  value={byodEventDate}
+                  onChange={(event) => setByodEventDate(event.target.value)}
+                  disabled={isBusy || byodSyncStatus === "loading"}
+                  className="w-full py-2 px-3 rounded-lg bg-neutral-900 border border-neutral-700 text-neutral-100 disabled:opacity-60"
+                />
+              </label>
+            )}
             <textarea
               value={trainRawText}
               onChange={(e) => setTrainRawText(e.target.value)}
@@ -1011,7 +1053,7 @@ export default function Home() {
             />
             {direction === "venueEvents" && (
               <div className="text-xs text-neutral-500">
-                One event per line. New saves append to today&apos;s list; a matching venue and start time updates the existing event. Doors and Ends are optional; categories: Music, Sports, Theatre, Arts, or Other.
+                One event per line. New saves append to the selected date; a matching venue and start time updates the existing event. Doors and Ends are optional; categories: Music, Sports, Theatre, Arts, or Other.
               </div>
             )}
             {/* Sprint 58/59: BYOD Amtrak Persistence. Parses the textarea
@@ -1050,7 +1092,7 @@ export default function Home() {
                 Sedan / SUV defaults all snap cleanly. Persisted to
                 localStorage on every change. */}
             <div className="text-xs text-neutral-500">
-              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusCount} | Flight In {savedInboundFlightCount} | Flight Out {savedOutboundFlightCount} | Weather {savedWeatherCount} | Events {savedVenueEventCount}
+              Saved today: Train In {savedInboundTrainCount} | Train Out {savedOutboundTrainCount} | Bus {savedBusCount} | Flight In {savedInboundFlightCount} | Flight Out {savedOutboundFlightCount} | Weather {savedWeatherCount} | Events Today {savedVenueEventCount} | Future Events {savedFutureVenueEventCount}
             </div>
             <div
               className={`text-xs ${

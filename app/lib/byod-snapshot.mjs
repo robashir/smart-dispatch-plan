@@ -13,6 +13,7 @@ export const BYOD_CONFIG_KEYS = [
 
 const TRAIN_CONFIG_KEYS = new Set(["trainConfigInbound", "trainConfigOutbound"]);
 const ACADEMIC_SESSION_KEY = "academicSessionConfig";
+const BYOD_EVENT_KEY = "byodEventConfig";
 
 function cleanUpdatedAt(value) {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
@@ -47,9 +48,36 @@ function cleanAcademicSessionConfig(value) {
   };
 }
 
+function cleanByodEventConfig(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const eventsByDate = {};
+  if (source.eventsByDate && typeof source.eventsByDate === "object") {
+    for (const [date, rawText] of Object.entries(source.eventsByDate)) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && typeof rawText === "string" && rawText.trim()) {
+        eventsByDate[date] = rawText;
+      }
+    }
+  }
+  // Legacy snapshots used the upload day as the event day. Preserve that
+  // data under its original date so schema migration never deletes it.
+  if (
+    /^\d{4}-\d{2}-\d{2}$/.test(String(source.savedDate || "")) &&
+    typeof source.rawText === "string" &&
+    source.rawText.trim() &&
+    !eventsByDate[source.savedDate]
+  ) {
+    eventsByDate[source.savedDate] = source.rawText;
+  }
+  return {
+    eventsByDate,
+    updatedAt: cleanUpdatedAt(source.updatedAt),
+  };
+}
+
 export function cleanByodConfig(key, value) {
   if (TRAIN_CONFIG_KEYS.has(key)) return cleanTrainConfig(value);
   if (key === ACADEMIC_SESSION_KEY) return cleanAcademicSessionConfig(value);
+  if (key === BYOD_EVENT_KEY) return cleanByodEventConfig(value);
   return cleanRawTextConfig(value);
 }
 
@@ -66,6 +94,11 @@ export function normalizeByodSnapshot(value = {}) {
 function configHasData(key, value) {
   if (!value || typeof value !== "object") return false;
   if (key === ACADEMIC_SESSION_KEY) return value.mode !== "auto";
+  if (key === BYOD_EVENT_KEY) {
+    return Object.values(value.eventsByDate || {}).some(
+      (rawText) => typeof rawText === "string" && rawText.trim().length > 0
+    );
+  }
   return TRAIN_CONFIG_KEYS.has(key)
     ? Array.isArray(value.trains) && value.trains.length > 0
     : typeof value.rawText === "string" && value.rawText.trim().length > 0;
