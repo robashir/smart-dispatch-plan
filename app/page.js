@@ -193,7 +193,7 @@ export default function Home() {
   const [itinerary, setItinerary] = useState([]);
   const [sequenceCandidates, setSequenceCandidates] = useState([]);
   const [error, setError] = useState("");
-  const [hours, setHours] = useState(4);
+  const [hours, setHours] = useState(1);
   const [platforms, setPlatforms] = useState({
     rideshare: true,
     food: true,
@@ -203,7 +203,7 @@ export default function Home() {
   // (fuel + depreciation + wear). Default 0.65 = the "Safe Sedan" baseline;
   // hydrated from localStorage so the driver only configures it once.
   const [costPerMile, setCostPerMile] = useState(0.65);
-  const [routingStrategy, setRoutingStrategy] = useState("profitability");
+  const [routingStrategy] = useState("profitability");
   const [activeTab, setActiveTab] = useState("transit");
   // Sprint 46: live weather modifiers from the backend's predictive engine.
   // null until the first dispatch; GlobalWeatherBanner returns null on null
@@ -738,18 +738,6 @@ export default function Home() {
     setDirection(newDir);
   }
 
-  // Sprint 45: persist costPerMile on every change so the driver configures
-  // it once. Mirrors handleViewModeChange — the setter + persistence stay
-  // colocated to avoid drift between state and storage.
-  function handleCostPerMileChange(value) {
-    setCostPerMile(value);
-    try {
-      localStorage.setItem("dispatchCostPerMile", String(value));
-    } catch (e) {
-      console.warn("dispatchCostPerMile persist failed:", e.message);
-    }
-  }
-
   function todayLocalISO() {
     const d = new Date();
     const y = d.getFullYear();
@@ -1210,22 +1198,6 @@ export default function Home() {
               </button>
             )}
 
-            <div className="flex flex-col gap-2 mt-3">
-              <label className="text-sm text-neutral-400">
-                Vehicle Cost Per Mile (${costPerMile.toFixed(2)})
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.05"
-                value={costPerMile}
-                onChange={(e) => handleCostPerMileChange(Number(e.target.value))}
-                disabled={isBusy}
-                className="w-full accent-yellow-400 disabled:opacity-60"
-              />
-            </div>
-
             {/* Sprint 57/59: Unified Event Database. Dropdown is populated
                 from localStorage (seeded from EVENT_CONFIG_SEED on first
                 mount). Selecting an event reveals an inline date picker
@@ -1302,22 +1274,6 @@ export default function Home() {
             </div>
           </div>
         </fieldset>
-
-        <label className="flex flex-col gap-2">
-          <span className="text-sm uppercase tracking-wide text-neutral-400">
-            Routing Strategy
-          </span>
-          <select
-            value={routingStrategy}
-            onChange={(e) => setRoutingStrategy(e.target.value)}
-            disabled={isBusy}
-            className="w-full py-3 px-4 rounded-xl bg-neutral-900 border border-neutral-700 text-lg disabled:opacity-60"
-          >
-            <option value="chronological">Chronological</option>
-            <option value="profitability">Profitability</option>
-            <option value="hybrid">Hybrid</option>
-          </select>
-        </label>
 
         <button
           onClick={handleClick}
