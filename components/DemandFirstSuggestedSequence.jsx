@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import {
   buildDemandFirstTimeline,
   demandValue,
@@ -12,6 +15,14 @@ import {
 import { formatInboundFlightSequenceHeading } from "./flight-sequence-copy.mjs";
 import { formatDemandFirstTiming } from "./demand-first-timing.mjs";
 import { formatByodEventHeading, isByodEvent } from "./byod-event-labels.mjs";
+import {
+  DEFAULT_DEMAND_FIRST_AREA_FILTERS,
+  DEMAND_FIRST_AREAS,
+  demandFirstAreaFor,
+  normalizeDemandFirstAreaFilters,
+} from "./demand-first-areas.mjs";
+
+const AREA_FILTER_STORAGE_KEY = "demandFirstAreaFilters";
 
 function itemTitle(item) {
   const categories = Array.isArray(item?.categories) ? item.categories : [];
@@ -34,7 +45,7 @@ function TimelineNote({ candidate }) {
   if (candidate.optionsInTimeWindow > 1) {
     return (
       <>
-        Ranked #{candidate.rankInTimeWindow} of {candidate.optionsInTimeWindow} nearby-time options by expected demand.
+        Ranked #{candidate.rankInTimeWindow} of {candidate.optionsInTimeWindow} citywide nearby-time options by expected demand.
         {candidate.conflictCount > 0 && " Potential timing conflict."}
       </>
     );
@@ -87,10 +98,47 @@ function TimelineSlot({ group }) {
 }
 
 export function DemandFirstSuggestedSequence({ itinerary = [] }) {
+  const [areaFilters, setAreaFilters] = useState({
+    ...DEFAULT_DEMAND_FIRST_AREA_FILTERS,
+  });
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(AREA_FILTER_STORAGE_KEY) || "null");
+      if (stored) setAreaFilters(normalizeDemandFirstAreaFilters(stored));
+    } catch (err) {
+      console.warn("Demand-first area filters hydrate failed:", err.message);
+    }
+  }, []);
+
   const { current, timed } = buildDemandFirstTimeline(itinerary);
   if (current.length === 0 && timed.length === 0) return null;
-  const currentSlots = groupDemandFirstTimeSlots(current);
-  const timedSlots = groupDemandFirstTimeSlots(timed);
+
+  function handleAreaFilterChange(key) {
+    const next = { ...areaFilters, [key]: !areaFilters[key] };
+    setAreaFilters(next);
+    try {
+      localStorage.setItem(AREA_FILTER_STORAGE_KEY, JSON.stringify(next));
+    } catch (err) {
+      console.warn("Demand-first area filters persist failed:", err.message);
+    }
+  }
+
+  const areaSections = DEMAND_FIRST_AREAS.map((area) => {
+    const areaCurrent = current.filter(
+      (candidate) => demandFirstAreaFor(candidate.item) === area.key
+    );
+    const areaTimed = timed.filter(
+      (candidate) => demandFirstAreaFor(candidate.item) === area.key
+    );
+    return {
+      ...area,
+      slots: [
+        ...groupDemandFirstTimeSlots(areaCurrent),
+        ...groupDemandFirstTimeSlots(areaTimed),
+      ],
+    };
+  }).filter((area) => areaFilters[area.key] && area.slots.length > 0);
 
   return (
     <section className="rounded-xl bg-neutral-900 border border-cyan-800 p-4">
@@ -98,15 +146,39 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
         Demand-First Timeline
       </div>
       <div className="text-xs text-neutral-500 mt-1">
-        All qualifying opportunities by time; higher demand ranks first when times are close.
+        Qualifying opportunities grouped by area and time; rankings remain citywide.
       </div>
-      <div className="flex flex-col gap-3 mt-3">
-        {currentSlots.map((group, index) => (
-          <TimelineSlot key={`${group.timeLabel}-current-${index}`} group={group} />
+      <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
+        {DEMAND_FIRST_AREAS.map((area) => (
+          <label key={area.key} className="flex items-center gap-2 text-sm text-neutral-300">
+            <input
+              type="checkbox"
+              checked={areaFilters[area.key]}
+              onChange={() => handleAreaFilterChange(area.key)}
+              className="accent-cyan-400"
+            />
+            {area.label}
+          </label>
         ))}
-        {timedSlots.map((group, index) => (
-          <TimelineSlot key={`${group.timeLabel}-timed-${index}`} group={group} />
+      </div>
+      <div className="flex flex-col gap-5 mt-4">
+        {areaSections.map((area) => (
+          <div key={area.key}>
+            <div className="text-sm uppercase tracking-wide text-neutral-300 font-semibold mb-3">
+              {area.label}
+            </div>
+            <div className="flex flex-col gap-3">
+              {area.slots.map((group, index) => (
+                <TimelineSlot key={`${area.key}-${group.timeLabel}-${index}`} group={group} />
+              ))}
+            </div>
+          </div>
         ))}
+        {areaSections.length === 0 && (
+          <div className="text-sm text-neutral-500">
+            Select an area to show its timeline opportunities.
+          </div>
+        )}
       </div>
     </section>
   );
