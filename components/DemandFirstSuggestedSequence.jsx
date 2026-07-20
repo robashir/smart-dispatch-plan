@@ -124,21 +124,19 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
     }
   }
 
-  const areaSections = DEMAND_FIRST_AREAS.map((area) => {
-    const areaCurrent = current.filter(
-      (candidate) => demandFirstAreaFor(candidate.item) === area.key
-    );
-    const areaTimed = timed.filter(
-      (candidate) => demandFirstAreaFor(candidate.item) === area.key
-    );
-    return {
-      ...area,
-      slots: [
-        ...groupDemandFirstTimeSlots(areaCurrent),
-        ...groupDemandFirstTimeSlots(areaTimed),
-      ],
-    };
-  }).filter((area) => areaFilters[area.key] && area.slots.length > 0);
+  const selectedAreas = DEMAND_FIRST_AREAS.filter((area) => areaFilters[area.key]);
+  const selectedAreaKeys = new Set(selectedAreas.map((area) => area.key));
+  const filteredCurrent = current.filter((candidate) =>
+    selectedAreaKeys.has(demandFirstAreaFor(candidate.item))
+  );
+  const filteredTimed = timed.filter((candidate) =>
+    selectedAreaKeys.has(demandFirstAreaFor(candidate.item))
+  );
+  const timelineSlots = [
+    ...groupDemandFirstTimeSlots(filteredCurrent),
+    ...groupDemandFirstTimeSlots(filteredTimed),
+  ];
+  const singleSelectedArea = selectedAreas.length === 1 ? selectedAreas[0] : null;
 
   return (
     <section className="rounded-xl bg-neutral-900 border border-cyan-800 p-4">
@@ -146,7 +144,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
         Demand-First Timeline
       </div>
       <div className="text-xs text-neutral-500 mt-1">
-        Qualifying opportunities grouped by area and time; rankings remain citywide.
+        Selected areas combined into one chronological timeline; rankings remain citywide.
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
         {DEMAND_FIRST_AREAS.map((area) => (
@@ -161,22 +159,23 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
           </label>
         ))}
       </div>
-      <div className="flex flex-col gap-5 mt-4">
-        {areaSections.map((area) => (
-          <div key={area.key}>
-            <div className="text-sm uppercase tracking-wide text-neutral-300 font-semibold mb-3">
-              {area.label}
-            </div>
-            <div className="flex flex-col gap-3">
-              {area.slots.map((group, index) => (
-                <TimelineSlot key={`${area.key}-${group.timeLabel}-${index}`} group={group} />
-              ))}
-            </div>
+      <div className="mt-4">
+        {singleSelectedArea && timelineSlots.length > 0 && (
+          <div className="text-sm uppercase tracking-wide text-neutral-300 font-semibold mb-3">
+            {singleSelectedArea.label}
           </div>
-        ))}
-        {areaSections.length === 0 && (
+        )}
+        {timelineSlots.length > 0 ? (
+          <div className="flex flex-col gap-3">
+            {timelineSlots.map((group, index) => (
+              <TimelineSlot key={`${group.timeLabel}-${index}`} group={group} />
+            ))}
+          </div>
+        ) : (
           <div className="text-sm text-neutral-500">
-            Select an area to show its timeline opportunities.
+            {selectedAreas.length === 0
+              ? "Select an area to show its timeline opportunities."
+              : "No timeline opportunities in the selected area."}
           </div>
         )}
       </div>
