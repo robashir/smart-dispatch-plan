@@ -28,7 +28,7 @@ export function demandFirstAreaFor(item) {
   // Rensselaer Station is intentionally grouped with Downtown for the
   // driver's operating view, even though it sits across the Hudson River.
   if (
-    /rensselaer|empire state plaza|mvp arena|palace theatre|the egg|empire live|downtown bus terminal|trailways|greyhound|city beer hall|mcgeary|lark street|downtown albany/.test(
+    /rensselaer|albany med\s*&\s*st\.? peter'?s hospitals|empire state plaza|mvp arena|palace theatre|the egg|empire live|downtown bus terminal|trailways|greyhound|city beer hall|mcgeary|lark street|downtown albany/.test(
       text
     )
   ) {

@@ -10,7 +10,13 @@ assert.equal(demandFirstAreaFor({ location: "Empire State Plaza & Harriman Campu
 assert.equal(demandFirstAreaFor({ location: "Crossgates Mall" }), "uptown");
 assert.equal(demandFirstAreaFor({ location: "UAlbany Uptown Campus" }), "uptown");
 assert.equal(demandFirstAreaFor({ location: "Inbound — ALB Flight Arrivals" }), "other");
-assert.equal(demandFirstAreaFor({ location: "Albany Med & St. Peter's Hospitals" }), "other");
+assert.equal(
+  demandFirstAreaFor({
+    location: "Albany Med & St. Peter's Hospitals — Shift Change",
+  }),
+  "downtown"
+);
+assert.equal(demandFirstAreaFor({ location: "An Unrelated Hospital" }), "other");
 assert.equal(demandFirstAreaFor({ location: "Unknown", lat: 42.65, lng: -73.75 }), "downtown");
 assert.equal(demandFirstAreaFor({ location: "Unknown", lat: 42.68, lng: -73.83 }), "uptown");
 assert.deepEqual(normalizeDemandFirstAreaFilters({ downtown: false }), {
@@ -19,4 +25,4 @@ assert.deepEqual(normalizeDemandFirstAreaFilters({ downtown: false }), {
   other: true,
 });
 
-console.log("Demand-first areas: 10 assertions passed.");
+console.log("Demand-first areas: 11 assertions passed.");
