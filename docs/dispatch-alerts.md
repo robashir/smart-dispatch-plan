@@ -52,6 +52,8 @@ alert fails closed rather than risking a duplicate message.
 
 When driver supply is Normal (`driverSupplyPressureMod < 1.10`), Telegram uses
 the same Downtown, Uptown, and Other Areas counts shown in the Demand-First
-Timeline. It sends one citywide summary only when the combined count is greater
-than 9. A combined count of exactly 9 does not alert. Tight and shortage-driven
-alert rules continue to use their existing opportunity logic.
+Timeline, limited to current opportunities and timed opportunities from now
+through the next 60 minutes. It sends one citywide summary only when the
+combined count is greater than 9. A combined count of exactly 9 does not alert,
+and timed opportunities 61 or more minutes away do not count. Tight and
+shortage-driven alert rules continue to use their existing opportunity logic.

@@ -87,6 +87,7 @@ const globalCache = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
 const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
+const NORMAL_SUPPLY_LOOKAHEAD_MINUTES = 60;
 
 export function dispatchAlertAuthorization(
   request,
@@ -2893,7 +2894,13 @@ export function buildTelegramAlertCandidate(payload, localStart) {
         ? localStart.getUTCHours() * 60 + localStart.getUTCMinutes()
         : undefined;
     const { current, timed } = buildDemandFirstTimeline(itinerary, { nowMinute });
-    const areaCounts = demandFirstAreaCounts([...current, ...timed]);
+    const upcomingTimed = timed.filter(
+      (candidate) =>
+        Number.isFinite(candidate?.delta) &&
+        candidate.delta >= 0 &&
+        candidate.delta <= NORMAL_SUPPLY_LOOKAHEAD_MINUTES
+    );
+    const areaCounts = demandFirstAreaCounts([...current, ...upcomingTimed]);
     const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
 
     if (areaTotal <= NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD) return null;
@@ -2905,6 +2912,7 @@ export function buildTelegramAlertCandidate(payload, localStart) {
         "Smart Dispatch Alert",
         "",
         "Citywide Demand Total",
+        `Window: Current / Next ${NORMAL_SUPPLY_LOOKAHEAD_MINUTES} Minutes`,
         `Downtown: ${areaCounts.downtown}`,
         `Uptown: ${areaCounts.uptown}`,
         `Other Areas: ${areaCounts.other}`,
@@ -2912,7 +2920,7 @@ export function buildTelegramAlertCandidate(payload, localStart) {
         "Driver Supply: Normal",
         "",
         "Action: work the area with the strongest demand count",
-        `Reason: citywide total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD}`,
+        `Reason: next-${NORMAL_SUPPLY_LOOKAHEAD_MINUTES}-minute total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD}`,
       ].join("\n"),
     };
   }
