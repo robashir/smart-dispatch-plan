@@ -62,3 +62,10 @@ export function buildCurrentWeatherDisplay(row, isManual = false) {
     source: isManual ? "manual" : "live",
   };
 }
+
+export function mergeWeatherWindows(manualRows, liveRows) {
+  if (!Array.isArray(manualRows)) return liveRows;
+  const live = Array.isArray(liveRows) ? liveRows : [];
+  const length = Math.max(manualRows.length, live.length);
+  return Array.from({ length }, (_, index) => manualRows[index] || live[index] || null);
+}

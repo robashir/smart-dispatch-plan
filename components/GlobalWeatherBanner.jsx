@@ -16,7 +16,17 @@ export function GlobalWeatherBanner({ weatherModifiers }) {
     currentTempF,
     currentConditionLabel,
     source,
+    byodForecastStartsAt,
   } = weatherModifiers;
+
+  const forecastTimeMatch = String(byodForecastStartsAt || "").match(/T(\d{2}):(\d{2})/);
+  let byodForecastLabel = "";
+  if (forecastTimeMatch) {
+    const hour24 = Number(forecastTimeMatch[1]);
+    const minute = forecastTimeMatch[2];
+    const suffix = hour24 >= 12 ? "PM" : "AM";
+    byodForecastLabel = `BYOD forecast begins at ${hour24 % 12 || 12}:${minute} ${suffix}`;
+  }
 
   const hasWeatherImpact = condition !== "clear";
   const isSnowOrIce = condition === "snow" || condition === "ice" || condition === "pre_snow" || condition === "pre_ice";
@@ -43,6 +53,7 @@ export function GlobalWeatherBanner({ weatherModifiers }) {
       <div>
         Weather now: {Number.isFinite(Number(currentTempF)) ? `${Math.round(Number(currentTempF))}°F · ` : ""}
         {currentConditionLabel || "Weather unavailable"} · {source === "manual" ? "BYOD" : "Live"}
+        {byodForecastLabel ? ` · ${byodForecastLabel}` : ""}
       </div>
       {hasWeatherImpact ? (
         <>

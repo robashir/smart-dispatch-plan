@@ -167,6 +167,22 @@ const routeUrl =
     })}`
   );
 
+  const futureOnlyTable = [
+    "Time\tConditions\tTemp\tUnused\tPrecip\tAmount",
+    "3:00 pm\tCloudy\t78 F\t-\t15%\t0 in",
+  ].join("\n");
+  const futureOnlyRows = parseManualWeatherOverrideText(
+    futureOnlyTable,
+    new Date("2026-07-21T14:15:00.000Z"),
+    1
+  );
+  const missingCurrentHourOk =
+    futureOnlyRows[0] === null && futureOnlyRows[1]?.tempF === 78;
+  if (!missingCurrentHourOk) allPass = false;
+  console.log(
+    `${missingCurrentHourOk ? "PASS" : "FAIL"} - Missing BYOD current hour remains empty for live fallback`
+  );
+
   console.log("\n=== " + (allPass ? "ALL SCENARIOS PASS" : "FAILURES PRESENT") + " ===");
   process.exit(allPass ? 0 : 1);
 })();

@@ -16,7 +16,10 @@ const ALBANY_POI_DICTIONARY = Object.freeze(ALBANY_POI_DICTIONARY_RAW);
 import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" with { type: "json" };
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
-import { buildCurrentWeatherDisplay } from "../../lib/weather-display.mjs";
+import {
+  buildCurrentWeatherDisplay,
+  mergeWeatherWindows,
+} from "../../lib/weather-display.mjs";
 import {
   buildByodEventOpportunities,
   parseByodEventText,
@@ -1007,17 +1010,7 @@ function parseManualWeatherTable(rawText, localStart, hours) {
     rowTime.setUTCHours(Math.floor(clockMinutes / 60), clockMinutes % 60, 0, 0);
     if (absoluteMinutes >= 1440) rowTime.setUTCDate(rowTime.getUTCDate() + 1);
 
-    return row
-      ? { ...row, time: rowTime.toISOString().slice(0, 16) }
-      : {
-          time: rowTime.toISOString().slice(0, 16),
-          tempF: 65,
-          precipChancePct: 0,
-          precipInches: 0,
-          snowfallInches: 0,
-          weatherCode: 0,
-          source: "manual_table_missing_hour",
-        };
+    return row ? { ...row, time: rowTime.toISOString().slice(0, 16) } : null;
   });
 }
 
@@ -3330,7 +3323,9 @@ export async function POST(request) {
     const manualWeatherWindowed = weatherOverrideText
       ? parseManualWeatherOverrideText(weatherOverrideText, localStart, hoursNum)
       : null;
-    const weatherWindowed = manualWeatherWindowed ?? apiWeatherWindowed;
+    const weatherWindowed = manualWeatherWindowed
+      ? mergeWeatherWindows(manualWeatherWindowed, apiWeatherWindowed)
+      : apiWeatherWindowed;
     const sunsetTime = weatherResult?.sunsetTime ?? null;
 
     // Sprint 18: compute temporal multipliers off the driver's wall-clock
@@ -3343,15 +3338,22 @@ export async function POST(request) {
     // No cap/floor on the combined product — chaotic events (e.g., Fri bar
     // rush + thunderstorm) must compound naturally.
     const weatherModifiersRaw = computeWeatherModifiers(weatherWindowed);
+    const currentWeatherIsManual = Boolean(manualWeatherWindowed?.[0]);
+    const byodForecastStartsAt = currentWeatherIsManual
+      ? null
+      : manualWeatherWindowed?.find((row) => row)?.time ?? null;
     const currentWeatherDisplay = buildCurrentWeatherDisplay(
       weatherWindowed?.[0],
-      Boolean(manualWeatherWindowed)
+      currentWeatherIsManual
     );
     const weatherModifiers = manualWeatherWindowed
       ? {
           ...weatherModifiersRaw,
           ...currentWeatherDisplay,
-          reason: `Manual override: ${weatherModifiersRaw.reason}`,
+          byodForecastStartsAt,
+          reason: currentWeatherIsManual
+            ? `Manual override: ${weatherModifiersRaw.reason}`
+            : `BYOD forecast: ${weatherModifiersRaw.reason}`,
         }
       : { ...weatherModifiersRaw, ...currentWeatherDisplay };
     const { weatherFoodMod, weatherRideMod } = weatherModifiers;

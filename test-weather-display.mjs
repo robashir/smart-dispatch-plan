@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   buildCurrentWeatherDisplay,
   cleanWeatherConditionLabel,
+  mergeWeatherWindows,
 } from "./app/lib/weather-display.mjs";
 
 assert.equal(cleanWeatherConditionLabel("Partly CloudyPartly Cloudy"), "Partly Cloudy");
@@ -31,4 +32,16 @@ assert.equal(
   "Heavy Rain"
 );
 
-console.log("Weather display: 6 assertions passed.");
+const liveNow = { time: "2026-07-21T14:00", tempF: 76, weatherCode: 2 };
+const manualNext = {
+  time: "2026-07-21T15:00",
+  tempF: 78,
+  weatherCode: 3,
+  source: "manual_table",
+};
+assert.deepEqual(
+  mergeWeatherWindows([null, manualNext], [liveNow, { time: "2026-07-21T15:00" }]),
+  [liveNow, manualNext]
+);
+
+console.log("Weather display: 7 assertions passed.");
