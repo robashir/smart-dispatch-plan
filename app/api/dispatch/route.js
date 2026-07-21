@@ -17,6 +17,10 @@ import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" 
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import {
+  readTelegramAlertCooldown,
+  recordTelegramAlertCooldown,
+} from "../../lib/telegram-alert-cooldown.mjs";
+import {
   buildCurrentWeatherDisplay,
   mergeWeatherWindows,
 } from "../../lib/weather-display.mjs";
@@ -78,7 +82,6 @@ try {
 // shape is { data, expiresAt }; stale entries are refetched on access.
 // Validated in isolation by test-cache.js before being ported here.
 const globalCache = new Map();
-const telegramAlertCooldowns = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 export function dispatchAlertAuthorization(
@@ -2968,7 +2971,18 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
   }
 
   const now = Date.now();
-  const lastSentAt = telegramAlertCooldowns.get(candidate.key) || 0;
+  let lastSentAt = 0;
+  try {
+    lastSentAt = await readTelegramAlertCooldown(candidate.key);
+  } catch (err) {
+    console.warn(`[Telegram Alert] cooldown read failed: ${err.message}`);
+    return {
+      configured: true,
+      sent: false,
+      reason: "cooldown_storage_error",
+      title: candidate.title,
+    };
+  }
   const msUntilReady = TELEGRAM_ALERT_COOLDOWN_MS - (now - lastSentAt);
   if (msUntilReady > 0) {
     return {
@@ -3007,8 +3021,18 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
       };
     }
 
-    telegramAlertCooldowns.set(candidate.key, now);
-    return { configured: true, sent: true, reason: "sent", title: candidate.title };
+    try {
+      await recordTelegramAlertCooldown(candidate.key, now);
+      return { configured: true, sent: true, reason: "sent", title: candidate.title };
+    } catch (err) {
+      console.warn(`[Telegram Alert] cooldown write failed after send: ${err.message}`);
+      return {
+        configured: true,
+        sent: true,
+        reason: "sent_cooldown_unrecorded",
+        title: candidate.title,
+      };
+    }
   } catch (err) {
     console.warn(`[Telegram Alert] send error: ${err.message}`);
     return {

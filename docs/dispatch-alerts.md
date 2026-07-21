@@ -39,3 +39,11 @@ Telegram secrets stay in Netlify environment variables:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+
+## Duplicate suppression
+
+Successful Telegram sends are recorded in the site-scoped Netlify Blobs store
+`smart-dispatch-alert-cooldowns`. Each alert candidate has a hashed storage key
+and is suppressed for 30 minutes, including across deploys, cold starts, and
+different serverless instances. If the cooldown store cannot be read, the
+alert fails closed rather than risking a duplicate message.
