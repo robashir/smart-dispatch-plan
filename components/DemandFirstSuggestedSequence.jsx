@@ -18,6 +18,7 @@ import { formatByodEventHeading, isByodEvent } from "./byod-event-labels.mjs";
 import {
   DEFAULT_DEMAND_FIRST_AREA_FILTERS,
   DEMAND_FIRST_AREAS,
+  demandFirstAreaCounts,
   demandFirstAreaFor,
   normalizeDemandFirstAreaFilters,
 } from "./demand-first-areas.mjs";
@@ -114,14 +115,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
   const { current, timed } = buildDemandFirstTimeline(itinerary);
   if (current.length === 0 && timed.length === 0) return null;
 
-  const areaCounts = Object.fromEntries(
-    DEMAND_FIRST_AREAS.map((area) => [
-      area.key,
-      [...current, ...timed].filter(
-        (candidate) => demandFirstAreaFor(candidate.item) === area.key
-      ).length,
-    ])
-  );
+  const areaCounts = demandFirstAreaCounts([...current, ...timed]);
 
   function handleAreaFilterChange(key) {
     const next = { ...areaFilters, [key]: !areaFilters[key] };

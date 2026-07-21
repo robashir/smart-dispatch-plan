@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  demandFirstAreaCounts,
   demandFirstAreaFor,
   normalizeDemandFirstAreaFilters,
 } from "./components/demand-first-areas.mjs";
@@ -24,5 +25,14 @@ assert.deepEqual(normalizeDemandFirstAreaFilters({ downtown: false }), {
   uptown: true,
   other: true,
 });
+assert.deepEqual(
+  demandFirstAreaCounts([
+    { item: { location: "MVP Arena" } },
+    { item: { location: "Crossgates Mall" } },
+    { item: { location: "Albany Airport" } },
+    { item: { location: "Another Airport" } },
+  ]),
+  { downtown: 1, uptown: 1, other: 2 }
+);
 
-console.log("Demand-first areas: 11 assertions passed.");
+console.log("Demand-first areas: 12 assertions passed.");

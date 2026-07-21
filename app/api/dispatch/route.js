@@ -20,6 +20,8 @@ import {
   readTelegramAlertCooldown,
   recordTelegramAlertCooldown,
 } from "../../lib/telegram-alert-cooldown.mjs";
+import { buildDemandFirstTimeline } from "../../../components/demand-first-sequence.mjs";
+import { demandFirstAreaCounts } from "../../../components/demand-first-areas.mjs";
 import {
   buildCurrentWeatherDisplay,
   mergeWeatherWindows,
@@ -83,6 +85,8 @@ try {
 // Validated in isolation by test-cache.js before being ported here.
 const globalCache = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
+const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
 
 export function dispatchAlertAuthorization(
   request,
@@ -2876,12 +2880,42 @@ function alertIsTimedTransitOrEvent(item) {
   return item?.type === "train" || item?.type === "flight" || item?.type === "event";
 }
 
-function buildTelegramAlertCandidate(payload, localStart) {
+export function buildTelegramAlertCandidate(payload, localStart) {
   const itinerary = Array.isArray(payload?.itinerary) ? payload.itinerary : [];
   const driverSupplyPressureMod =
     Number.isFinite(payload?.driverSupplyPressureMod) && payload.driverSupplyPressureMod > 0
       ? payload.driverSupplyPressureMod
       : 1.0;
+
+  if (driverSupplyPressureMod < NORMAL_DRIVER_SUPPLY_MAX) {
+    const nowMinute =
+      localStart instanceof Date && !Number.isNaN(localStart.getTime())
+        ? localStart.getUTCHours() * 60 + localStart.getUTCMinutes()
+        : undefined;
+    const { current, timed } = buildDemandFirstTimeline(itinerary, { nowMinute });
+    const areaCounts = demandFirstAreaCounts([...current, ...timed]);
+    const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
+
+    if (areaTotal <= NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD) return null;
+
+    return {
+      key: "normal-supply:citywide-area-total",
+      title: "Citywide Demand Total",
+      message: [
+        "Smart Dispatch Alert",
+        "",
+        "Citywide Demand Total",
+        `Downtown: ${areaCounts.downtown}`,
+        `Uptown: ${areaCounts.uptown}`,
+        `Other Areas: ${areaCounts.other}`,
+        `Total Opportunities: ${areaTotal}`,
+        "Driver Supply: Normal",
+        "",
+        "Action: work the area with the strongest demand count",
+        `Reason: citywide total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD}`,
+      ].join("\n"),
+    };
+  }
 
   const scored = itinerary
     .map((item) => {
