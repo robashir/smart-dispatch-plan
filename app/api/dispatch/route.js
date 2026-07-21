@@ -81,6 +81,20 @@ const globalCache = new Map();
 const telegramAlertCooldowns = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
+export function dispatchAlertAuthorization(
+  request,
+  configuredSecret = process.env.DISPATCH_ALERT_SECRET
+) {
+  const authorization = request?.headers?.get?.("authorization")?.trim() || "";
+  if (!authorization) return { requested: false, authorized: false };
+
+  const secret = typeof configuredSecret === "string" ? configuredSecret.trim() : "";
+  return {
+    requested: true,
+    authorized: Boolean(secret) && authorization === `Bearer ${secret}`,
+  };
+}
+
 async function withCache(key, ttlMinutes, fetchCallback) {
   const now = Date.now();
   const entry = globalCache.get(key);
@@ -3115,6 +3129,11 @@ function savedEventRawText(config, eventDate) {
 
 export async function POST(request) {
   try {
+    const alertAuthorization = dispatchAlertAuthorization(request);
+    if (alertAuthorization.requested && !alertAuthorization.authorized) {
+      return Response.json({ error: "Unauthorized alert request." }, { status: 401 });
+    }
+
     // Sprint 64: split BYOD train payload. The body now carries
     // `inboundTrains` + `outboundTrains` (each lazy-wiped client-side
     // against today's date) instead of the Sprint 59 `byodTrains` array +
@@ -3897,10 +3916,9 @@ export async function POST(request) {
       mergedPayload.itinerary
     );
     mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
-    mergedPayload.telegramAlert = await sendTelegramAlertIfNeeded(
-      mergedPayload,
-      localStart
-    );
+    mergedPayload.telegramAlert = alertAuthorization.authorized
+      ? await sendTelegramAlertIfNeeded(mergedPayload, localStart)
+      : { sent: false, reason: "not_requested" };
 
     // Sprint 62: Unified Situational Radar verification log. Counts how many
     // items in the final itinerary carry "Inbound" vs "Outbound" categories

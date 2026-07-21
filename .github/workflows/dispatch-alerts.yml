@@ -29,6 +29,7 @@ jobs:
       - name: Run scheduled dispatch alert check
         env:
           DISPATCH_ENDPOINT: ${{ secrets.DISPATCH_ENDPOINT }}
+          DISPATCH_ALERT_SECRET: ${{ secrets.DISPATCH_ALERT_SECRET }}
           DISPATCH_LATITUDE: ${{ secrets.DISPATCH_LATITUDE }}
           DISPATCH_LONGITUDE: ${{ secrets.DISPATCH_LONGITUDE }}
           DISPATCH_HOURS: ${{ secrets.DISPATCH_HOURS }}
