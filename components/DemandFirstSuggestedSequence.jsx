@@ -114,6 +114,15 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
   const { current, timed } = buildDemandFirstTimeline(itinerary);
   if (current.length === 0 && timed.length === 0) return null;
 
+  const areaCounts = Object.fromEntries(
+    DEMAND_FIRST_AREAS.map((area) => [
+      area.key,
+      [...current, ...timed].filter(
+        (candidate) => demandFirstAreaFor(candidate.item) === area.key
+      ).length,
+    ])
+  );
+
   function handleAreaFilterChange(key) {
     const next = { ...areaFilters, [key]: !areaFilters[key] };
     setAreaFilters(next);
@@ -155,7 +164,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
               onChange={() => handleAreaFilterChange(area.key)}
               className="accent-cyan-400"
             />
-            {area.label}
+            {area.label} ({areaCounts[area.key]})
           </label>
         ))}
       </div>
