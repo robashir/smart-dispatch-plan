@@ -14,6 +14,12 @@ the deployed dispatch API.
 ## Required GitHub Secret
 
 - `DISPATCH_ENDPOINT`: deployed endpoint, for example `https://your-site.netlify.app/api/dispatch`.
+- `DISPATCH_ALERT_SECRET`: private shared secret sent only by the GitHub scheduler.
+
+The same `DISPATCH_ALERT_SECRET` value must be configured as a Netlify
+environment variable. Requests without an `Authorization` header can still
+calculate a dispatch plan, but they cannot send Telegram messages. Requests
+that attempt to authorize with the wrong secret receive `401 Unauthorized`.
 
 ## Optional GitHub Secrets
 

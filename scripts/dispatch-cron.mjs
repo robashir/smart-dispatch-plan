@@ -88,6 +88,7 @@ function readEventConfig() {
 
 async function main() {
   const endpoint = (process.env.DISPATCH_ENDPOINT || "").trim();
+  const alertSecret = (process.env.DISPATCH_ALERT_SECRET || "").trim();
   if (!endpoint) {
     throw new Error(
       "DISPATCH_ENDPOINT GitHub Actions secret is required, for example https://genuine-spider-98efb1.netlify.app/api/dispatch"
@@ -97,6 +98,9 @@ async function main() {
     throw new Error(
       `DISPATCH_ENDPOINT must be the full https URL ending in /api/dispatch. Received: ${endpoint}`
     );
+  }
+  if (!alertSecret) {
+    throw new Error("DISPATCH_ALERT_SECRET GitHub Actions secret is required.");
   }
   const parts = nyParts();
   const decision = shouldRunDispatch(parts);
@@ -133,7 +137,10 @@ async function main() {
 
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${alertSecret}`,
+    },
     body: JSON.stringify(body),
   });
 
