@@ -4,6 +4,7 @@ export function formatDispatchAlertEligibility(evaluation) {
   }
 
   const counts = evaluation.areaCounts || {};
+  const demand = evaluation.areaExpectedDemand || {};
   const pressure = Number(evaluation.driverSupplyPressureMod);
   const pressureLabel = Number.isFinite(pressure) ? pressure.toFixed(2) : "unknown";
   const threshold = Number(evaluation.threshold);
@@ -17,6 +18,13 @@ export function formatDispatchAlertEligibility(evaluation) {
     `uptown=${Number(counts.uptown) || 0}`,
     `other=${Number(counts.other) || 0}`,
     `total=${Number(evaluation.areaTotal) || 0}`,
+    `demandDowntown=${Math.round(Number(demand.downtown) || 0)}`,
+    `demandUptown=${Math.round(Number(demand.uptown) || 0)}`,
+    `demandOther=${Math.round(Number(demand.other) || 0)}`,
+    `demandMinimum=>=${Number(evaluation.areaExpectedDemandMinimum) || 25}`,
+    `qualifyingAreas=${Array.isArray(evaluation.qualifyingDemandAreas) ? evaluation.qualifyingDemandAreas.length : 0}`,
+    `minimumQualifyingAreas=${Number(evaluation.minimumQualifyingDemandAreas) || 2}`,
+    `enoughDemandAreas=${evaluation.enoughDemandAreas === true}`,
     `threshold=>${thresholdLabel}`,
     `aboveThreshold=${evaluation.aboveThreshold === true}`,
     `eligible=${evaluation.eligible === true}`,

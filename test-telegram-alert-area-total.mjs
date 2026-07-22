@@ -35,6 +35,9 @@ assert.match(referenceAlert.message, /Other Areas: 7/);
 assert.match(referenceAlert.message, /Total Opportunities: 11/);
 assert.match(referenceAlert.message, /Window: Current \/ Next 60 Minutes/);
 assert.match(referenceAlert.message, /total is more than 9/);
+assert.match(referenceAlert.message, /Downtown Expected Demand: 100/);
+assert.match(referenceAlert.message, /Other Areas Expected Demand: 175/);
+assert.match(referenceAlert.message, /Areas Meeting Expected Demand >= 25: 2/);
 
 const referenceEvaluation = buildTelegramAlertEvaluation(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.0 },
@@ -42,6 +45,13 @@ const referenceEvaluation = buildTelegramAlertEvaluation(
 );
 assert.deepEqual(referenceEvaluation.areaCounts, { downtown: 4, uptown: 0, other: 7 });
 assert.equal(referenceEvaluation.areaTotal, 11);
+assert.deepEqual(referenceEvaluation.areaExpectedDemand, {
+  downtown: 100,
+  uptown: 0,
+  other: 175,
+});
+assert.deepEqual(referenceEvaluation.qualifyingDemandAreas, ["downtown", "other"]);
+assert.equal(referenceEvaluation.enoughDemandAreas, true);
 assert.equal(referenceEvaluation.normalSupply, true);
 assert.equal(referenceEvaluation.aboveThreshold, true);
 assert.equal(referenceEvaluation.eligible, true);
@@ -66,6 +76,17 @@ assert.deepEqual(
   "Telegram should count the same itinerary and sequence candidates shown in the UI"
 );
 assert.equal(displayedTimelineEvaluation.areaTotal, 6);
+assert.deepEqual(displayedTimelineEvaluation.areaExpectedDemand, {
+  downtown: 25,
+  uptown: 0,
+  other: 125,
+});
+assert.deepEqual(
+  displayedTimelineEvaluation.qualifyingDemandAreas,
+  ["downtown", "other"],
+  "an area with expected demand exactly 25 should qualify"
+);
+assert.equal(displayedTimelineEvaluation.enoughDemandAreas, true);
 assert.equal(displayedTimelineEvaluation.aboveThreshold, false);
 assert.equal(displayedTimelineEvaluation.eligible, false);
 
@@ -83,6 +104,25 @@ assert.equal(
   "an item present in both response lists should only be counted once"
 );
 assert.equal(duplicateCandidateEvaluation.eligible, false);
+
+const onlyOneDemandArea = buildTelegramAlertEvaluation(
+  {
+    itinerary: [
+      activeRide("Empire State Plaza"),
+      ...Array.from({ length: 9 }, () => ({
+        ...activeRide("Albany Airport"),
+        densityScore: 2,
+      })),
+    ],
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.equal(onlyOneDemandArea.areaTotal, 10);
+assert.deepEqual(onlyOneDemandArea.qualifyingDemandAreas, ["downtown"]);
+assert.equal(onlyOneDemandArea.aboveThreshold, true);
+assert.equal(onlyOneDemandArea.enoughDemandAreas, false);
+assert.equal(onlyOneDemandArea.eligible, false);
 
 const nineTotal = buildTelegramAlertCandidate(
   { itinerary: referenceItinerary.slice(0, 9), driverSupplyPressureMod: 1.0 },

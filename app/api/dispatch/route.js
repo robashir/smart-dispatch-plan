@@ -21,7 +21,10 @@ import {
   recordTelegramAlertCooldown,
 } from "../../lib/telegram-alert-cooldown.mjs";
 import { buildDemandFirstTimeline } from "../../../components/demand-first-sequence.mjs";
-import { demandFirstAreaCounts } from "../../../components/demand-first-areas.mjs";
+import {
+  demandFirstAreaCounts,
+  demandFirstAreaFor,
+} from "../../../components/demand-first-areas.mjs";
 import {
   buildCurrentWeatherDisplay,
   mergeWeatherWindows,
@@ -88,6 +91,8 @@ const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
 const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
 const NORMAL_SUPPLY_LOOKAHEAD_MINUTES = 60;
+const AREA_EXPECTED_DEMAND_MINIMUM = 25;
+const MIN_QUALIFYING_DEMAND_AREAS = 2;
 
 export function dispatchAlertAuthorization(
   request,
@@ -2861,8 +2866,25 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
       candidate.delta >= 0 &&
       candidate.delta <= NORMAL_SUPPLY_LOOKAHEAD_MINUTES
   );
-  const areaCounts = demandFirstAreaCounts([...current, ...upcomingTimed]);
+  const eligibleCandidates = [...current, ...upcomingTimed];
+  const areaCounts = demandFirstAreaCounts(eligibleCandidates);
   const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
+  const areaExpectedDemand = eligibleCandidates.reduce(
+    (totals, candidate) => {
+      const item = candidate?.item || candidate;
+      const area = demandFirstAreaFor(item);
+      const expectedDemand = Number(item?.densityScore);
+      if (Number.isFinite(expectedDemand) && expectedDemand > 0) {
+        totals[area] += expectedDemand;
+      }
+      return totals;
+    },
+    { downtown: 0, uptown: 0, other: 0 }
+  );
+  const qualifyingDemandAreas = Object.entries(areaExpectedDemand)
+    .filter(([, expectedDemand]) => expectedDemand >= AREA_EXPECTED_DEMAND_MINIMUM)
+    .map(([area]) => area);
+  const enoughDemandAreas = qualifyingDemandAreas.length >= MIN_QUALIFYING_DEMAND_AREAS;
 
   return {
     windowMinutes: NORMAL_SUPPLY_LOOKAHEAD_MINUTES,
@@ -2870,11 +2892,17 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
     normalSupply: driverSupplyPressureMod < NORMAL_DRIVER_SUPPLY_MAX,
     areaCounts,
     areaTotal,
+    areaExpectedDemand,
+    areaExpectedDemandMinimum: AREA_EXPECTED_DEMAND_MINIMUM,
+    qualifyingDemandAreas,
+    minimumQualifyingDemandAreas: MIN_QUALIFYING_DEMAND_AREAS,
+    enoughDemandAreas,
     threshold: NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
     aboveThreshold: areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
     eligible:
       driverSupplyPressureMod < NORMAL_DRIVER_SUPPLY_MAX &&
-      areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
+      areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD &&
+      enoughDemandAreas,
   };
 }
 
@@ -2885,7 +2913,7 @@ export function buildTelegramAlertCandidate(
 ) {
   if (!evaluation.eligible) return null;
 
-  const { areaCounts, areaTotal } = evaluation;
+  const { areaCounts, areaTotal, areaExpectedDemand, qualifyingDemandAreas } = evaluation;
 
   return {
     key: "normal-supply:citywide-area-total",
@@ -2896,13 +2924,17 @@ export function buildTelegramAlertCandidate(
       "Citywide Demand Total",
       `Window: Current / Next ${NORMAL_SUPPLY_LOOKAHEAD_MINUTES} Minutes`,
       `Downtown: ${areaCounts.downtown}`,
+      `Downtown Expected Demand: ${Math.round(areaExpectedDemand.downtown)}`,
       `Uptown: ${areaCounts.uptown}`,
+      `Uptown Expected Demand: ${Math.round(areaExpectedDemand.uptown)}`,
       `Other Areas: ${areaCounts.other}`,
+      `Other Areas Expected Demand: ${Math.round(areaExpectedDemand.other)}`,
       `Total Opportunities: ${areaTotal}`,
+      `Areas Meeting Expected Demand >= ${AREA_EXPECTED_DEMAND_MINIMUM}: ${qualifyingDemandAreas.length}`,
       "Driver Supply: Normal",
       "",
       "Action: work the area with the strongest demand count",
-      `Reason: next-${NORMAL_SUPPLY_LOOKAHEAD_MINUTES}-minute total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD}`,
+      `Reason: next-${NORMAL_SUPPLY_LOOKAHEAD_MINUTES}-minute total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD} and at least ${MIN_QUALIFYING_DEMAND_AREAS} areas have expected demand >= ${AREA_EXPECTED_DEMAND_MINIMUM}`,
     ].join("\n"),
   };
 }
