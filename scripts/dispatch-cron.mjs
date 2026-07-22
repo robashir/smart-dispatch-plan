@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { formatDispatchAlertEligibility } from "./dispatch-alert-log.mjs";
 
 const DEFAULT_LATITUDE = 42.686;
 const DEFAULT_LONGITUDE = -73.843;
@@ -154,6 +155,7 @@ async function main() {
   console.log(
     `[dispatch-cron] itinerary=${Array.isArray(data.itinerary) ? data.itinerary.length : 0} alert=${alert.reason || "unknown"} sent=${alert.sent === true} title=${alert.title || ""}`
   );
+  console.log(formatDispatchAlertEligibility(alert.evaluation));
 }
 
 main().catch((err) => {

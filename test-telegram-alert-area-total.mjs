@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { buildTelegramAlertCandidate } from "./app/api/dispatch/route.js";
+import {
+  buildTelegramAlertCandidate,
+  buildTelegramAlertEvaluation,
+} from "./app/api/dispatch/route.js";
 
 const localStart = new Date("2026-07-21T16:00:00.000Z");
 
@@ -32,16 +35,26 @@ assert.match(referenceAlert.message, /Other Areas: 7/);
 assert.match(referenceAlert.message, /Total Opportunities: 11/);
 assert.match(referenceAlert.message, /Window: Current \/ Next 60 Minutes/);
 
-const nineTotal = buildTelegramAlertCandidate(
-  { itinerary: referenceItinerary.slice(0, 9), driverSupplyPressureMod: 1.0 },
+const referenceEvaluation = buildTelegramAlertEvaluation(
+  { itinerary: referenceItinerary, driverSupplyPressureMod: 1.0 },
   localStart
 );
-assert.equal(nineTotal, null, "normal supply should not alert when the total is exactly 9");
+assert.deepEqual(referenceEvaluation.areaCounts, { downtown: 4, uptown: 0, other: 7 });
+assert.equal(referenceEvaluation.areaTotal, 11);
+assert.equal(referenceEvaluation.normalSupply, true);
+assert.equal(referenceEvaluation.aboveThreshold, true);
+assert.equal(referenceEvaluation.eligible, true);
 
-const nineCurrent = referenceItinerary.slice(0, 9);
+const fourTotal = buildTelegramAlertCandidate(
+  { itinerary: referenceItinerary.slice(0, 4), driverSupplyPressureMod: 1.0 },
+  localStart
+);
+assert.equal(fourTotal, null, "normal supply should not alert when the total is exactly 4");
+
+const fourCurrent = referenceItinerary.slice(0, 4);
 const exactlySixtyMinutes = buildTelegramAlertCandidate(
   {
-    itinerary: [...nineCurrent, timedRide("Crossgates Mall", "5:00 PM")],
+    itinerary: [...fourCurrent, timedRide("Crossgates Mall", "5:00 PM")],
     driverSupplyPressureMod: 1.0,
   },
   localStart
@@ -54,7 +67,7 @@ assert.equal(
 
 const sixtyOneMinutes = buildTelegramAlertCandidate(
   {
-    itinerary: [...nineCurrent, timedRide("Crossgates Mall", "5:01 PM")],
+    itinerary: [...fourCurrent, timedRide("Crossgates Mall", "5:01 PM")],
     driverSupplyPressureMod: 1.0,
   },
   localStart
@@ -70,6 +83,14 @@ const tightSupply = buildTelegramAlertCandidate(
   localStart
 );
 assert.equal(tightSupply, null, "tight-supply alerts must be disabled");
+const tightEvaluation = buildTelegramAlertEvaluation(
+  { itinerary: referenceItinerary, driverSupplyPressureMod: 1.25 },
+  localStart
+);
+assert.equal(tightEvaluation.areaTotal, 11);
+assert.equal(tightEvaluation.normalSupply, false);
+assert.equal(tightEvaluation.aboveThreshold, true);
+assert.equal(tightEvaluation.eligible, false);
 
 const shortageSupply = buildTelegramAlertCandidate(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.5 },

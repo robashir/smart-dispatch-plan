@@ -54,10 +54,16 @@ When driver supply is Normal (`driverSupplyPressureMod < 1.10`), Telegram uses
 the same Downtown, Uptown, and Other Areas counts shown in the Demand-First
 Timeline, limited to current opportunities and timed opportunities from now
 through the next 60 minutes. It sends one citywide summary only when the
-combined count is greater than 9. A combined count of exactly 9 does not alert,
+combined count is greater than 4. A combined count of exactly 4 does not alert,
 and timed opportunities 61 or more minutes away do not count.
 
 This is the only active Telegram alert rule. Individual high-opportunity,
 driver-supply pressure, timed-demand, and Golden Half-Hour alerts are disabled.
 Tight or shortage supply (`driverSupplyPressureMod >= 1.10`) does not send a
 Telegram alert.
+
+Every authorized scheduler run prints a 60-minute eligibility line with the
+driver-supply pressure, Normal-supply result, Downtown/Uptown/Other counts,
+combined total, `>4` threshold result, and final eligibility. This appears even
+when the result is `no_alert_candidate`, making production verification
+possible without sending a test message.
