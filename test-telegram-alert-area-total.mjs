@@ -45,6 +45,43 @@ assert.equal(referenceEvaluation.normalSupply, true);
 assert.equal(referenceEvaluation.aboveThreshold, true);
 assert.equal(referenceEvaluation.eligible, true);
 
+const displayedTimelineEvaluation = buildTelegramAlertEvaluation(
+  {
+    itinerary: [
+      activeRide("Empire State Plaza"),
+      ...Array.from({ length: 3 }, () => activeRide("Albany Airport")),
+    ],
+    sequenceCandidates: [
+      activeRide("Colonie Center / Wolf Road Corridor"),
+      timedRide("Colonie Center / Wolf Road Corridor", "5:00 PM"),
+    ],
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.deepEqual(
+  displayedTimelineEvaluation.areaCounts,
+  { downtown: 1, uptown: 0, other: 5 },
+  "Telegram should count the same itinerary and sequence candidates shown in the UI"
+);
+assert.equal(displayedTimelineEvaluation.areaTotal, 6);
+assert.equal(displayedTimelineEvaluation.eligible, true);
+
+const duplicateCandidateEvaluation = buildTelegramAlertEvaluation(
+  {
+    itinerary: referenceItinerary.slice(0, 4),
+    sequenceCandidates: [referenceItinerary[0]],
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.equal(
+  duplicateCandidateEvaluation.areaTotal,
+  4,
+  "an item present in both response lists should only be counted once"
+);
+assert.equal(duplicateCandidateEvaluation.eligible, false);
+
 const fourTotal = buildTelegramAlertCandidate(
   { itinerary: referenceItinerary.slice(0, 4), driverSupplyPressureMod: 1.0 },
   localStart

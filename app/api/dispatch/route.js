@@ -2837,6 +2837,14 @@ function findPeakSurgeWindow(itinerary) {
 
 export function buildTelegramAlertEvaluation(payload, localStart) {
   const itinerary = Array.isArray(payload?.itinerary) ? payload.itinerary : [];
+  const sequenceCandidates = Array.isArray(payload?.sequenceCandidates)
+    ? payload.sequenceCandidates
+    : [];
+  const itineraryKeys = new Set(itinerary.map(sequenceItemKey));
+  const timelineItems = [
+    ...itinerary,
+    ...sequenceCandidates.filter((item) => !itineraryKeys.has(sequenceItemKey(item))),
+  ];
   const driverSupplyPressureMod =
     Number.isFinite(payload?.driverSupplyPressureMod) && payload.driverSupplyPressureMod > 0
       ? payload.driverSupplyPressureMod
@@ -2846,7 +2854,7 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
     localStart instanceof Date && !Number.isNaN(localStart.getTime())
       ? localStart.getUTCHours() * 60 + localStart.getUTCMinutes()
       : undefined;
-  const { current, timed } = buildDemandFirstTimeline(itinerary, { nowMinute });
+  const { current, timed } = buildDemandFirstTimeline(timelineItems, { nowMinute });
   const upcomingTimed = timed.filter(
     (candidate) =>
       Number.isFinite(candidate?.delta) &&
