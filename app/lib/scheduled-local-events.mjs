@@ -254,6 +254,141 @@ export function closingDemandFor({ venueName, closeMinute, dayIndex }) {
   return { demandYield, demandCap: cap, trueLastCall, venueClass, normalizedClose };
 }
 
+const LAST_CALL_CLUSTER_RADIUS_MILES = 2;
+const LAST_CALL_ADDITIONAL_VENUE_WEIGHT = 0.4;
+
+function distanceMiles(a, b) {
+  const lat1 = Number(a?.lat);
+  const lng1 = Number(a?.lng);
+  const lat2 = Number(b?.lat);
+  const lng2 = Number(b?.lng);
+  if (![lat1, lng1, lat2, lng2].every(Number.isFinite)) return Infinity;
+  const toRadians = (degrees) => (degrees * Math.PI) / 180;
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const value =
+    sinLat * sinLat +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * sinLng * sinLng;
+  return 3958.8 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function joinVenueNames(names) {
+  if (names.length <= 1) return names[0] || "Nearby Venues";
+  if (names.length === 2) return `${names[0]} & ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} & ${names.at(-1)}`;
+}
+
+function venueNameFromLastCall(event) {
+  return String(event?.location || "")
+    .replace(/^Last Call Egress:\s*/i, "")
+    .trim();
+}
+
+function lastCallVenueClass(event) {
+  return Array.isArray(event?.categories) ? event.categories[2] || "late_bar" : "late_bar";
+}
+
+function isLastCallEvent(event) {
+  return Array.isArray(event?.categories) && event.categories.includes("Last Call");
+}
+
+function lastCallWindowsOverlap(a, b) {
+  return (
+    Number.isFinite(a?._scheduleStartMs) &&
+    Number.isFinite(a?._scheduleEndMs) &&
+    Number.isFinite(b?._scheduleStartMs) &&
+    Number.isFinite(b?._scheduleEndMs) &&
+    a._scheduleStartMs < b._scheduleEndMs &&
+    a._scheduleEndMs > b._scheduleStartMs
+  );
+}
+
+function overlapAdjustedValue(events, field, additionalWeight) {
+  const values = events
+    .map((event) => Number(event?.[field]) || 0)
+    .sort((a, b) => b - a);
+  return Math.round((values[0] || 0) + additionalWeight * values.slice(1).reduce((sum, value) => sum + value, 0));
+}
+
+export function aggregateLastCallVenueClusters(
+  events,
+  {
+    localStart,
+    radiusMiles = LAST_CALL_CLUSTER_RADIUS_MILES,
+    additionalVenueWeight = LAST_CALL_ADDITIONAL_VENUE_WEIGHT,
+  } = {}
+) {
+  const source = Array.isArray(events) ? events : [];
+  const remaining = source.filter(isLastCallEvent);
+  const aggregated = source.filter((event) => !isLastCallEvent(event));
+
+  while (remaining.length > 0) {
+    const seed = remaining.shift();
+    const group = [seed];
+    for (let index = remaining.length - 1; index >= 0; index -= 1) {
+      const candidate = remaining[index];
+      if (
+        lastCallVenueClass(candidate) === lastCallVenueClass(seed) &&
+        lastCallWindowsOverlap(seed, candidate) &&
+        distanceMiles(seed, candidate) <= radiusMiles
+      ) {
+        group.push(candidate);
+        remaining.splice(index, 1);
+      }
+    }
+
+    if (group.length === 1) {
+      aggregated.push(seed);
+      continue;
+    }
+
+    group.sort(
+      (a, b) =>
+        (Number(b.demandYield) || 0) - (Number(a.demandYield) || 0) ||
+        venueNameFromLastCall(a).localeCompare(venueNameFromLastCall(b))
+    );
+    const venueNames = group.map(venueNameFromLastCall);
+    const clusterStartMs = Math.max(...group.map((event) => event._scheduleStartMs));
+    const clusterEndMs = Math.min(...group.map((event) => event._scheduleEndMs));
+    const combinedYield = overlapAdjustedValue(group, "demandYield", additionalVenueWeight);
+    const combinedCap = Math.max(
+      combinedYield,
+      overlapAdjustedValue(group, "demandCap", additionalVenueWeight)
+    );
+    const centroid = {
+      lat: group.reduce((sum, event) => sum + Number(event.lat), 0) / group.length,
+      lng: group.reduce((sum, event) => sum + Number(event.lng), 0) / group.length,
+    };
+
+    aggregated.push({
+      ...group[0],
+      location: `Last Call Egress Cluster: ${joinVenueNames(venueNames)}`,
+      volume: 1,
+      demandYield: combinedYield,
+      demandCap: combinedCap,
+      categories: ["Last Call", "Nightlife Egress", lastCallVenueClass(seed), "Cluster"],
+      lat: centroid.lat,
+      lng: centroid.lng,
+      venues: venueNames,
+      venueCount: group.length,
+      isLastCallCluster: true,
+      ...timingFields(
+        new Date(clusterStartMs),
+        new Date(clusterEndMs),
+        localStart instanceof Date ? localStart : new Date(clusterStartMs - 1)
+      ),
+    });
+  }
+
+  return aggregated.sort(
+    (a, b) =>
+      (Number(a._scheduleStartMs) || 0) - (Number(b._scheduleStartMs) || 0) ||
+      (Number(b.demandYield) || 0) - (Number(a.demandYield) || 0)
+  );
+}
+
 export function buildScheduledLastCallEvents({
   localStart,
   localEnd,
@@ -295,7 +430,7 @@ export function buildScheduledLastCallEvents({
       });
     }
   }
-  return events;
+  return aggregateLastCallVenueClusters(events, { localStart });
 }
 
 export function buildScheduledConfiguredEvents({

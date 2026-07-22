@@ -66,6 +66,11 @@ function TimelineOpportunity({ candidate }) {
       <div className="text-xs text-neutral-400 mt-1">
         Expected Demand {Math.round(demandValue(item))} | Opportunity Now {Math.round(opportunityValue(item))}
       </div>
+      {item?.isLastCallCluster && Number(item?.venueCount) > 1 && (
+        <div className="text-xs text-neutral-400 mt-1">
+          {item.venueCount} nearby venues contributing to this demand window.
+        </div>
+      )}
       {timing && <div className="text-xs text-yellow-300 mt-1">{timing}</div>}
       <div className="text-xs text-cyan-300 mt-1">
         <TimelineNote candidate={candidate} />

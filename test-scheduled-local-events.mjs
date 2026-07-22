@@ -6,6 +6,7 @@ import {
   buildScheduledLastCallEvents,
   buildScheduledLocalAnchorEvents,
   buildScheduledStateWorkerEvents,
+  aggregateLastCallVenueClusters,
 } from "./app/lib/scheduled-local-events.mjs";
 
 const coords = { lat: 42.65, lng: -73.75 };
@@ -92,6 +93,75 @@ assert.equal(lastCall[0].demandYield, 4);
 assert.equal(lastCall[0].demandCap, 6);
 assert.equal(lastCall[0].location, "Last Call Egress: Night Venue");
 
+const clusteredLastCall = buildScheduledLastCallEvents({
+  localStart: new Date("2026-07-16T01:00:00Z"),
+  localEnd: new Date("2026-07-16T02:00:00Z"),
+  dictionary: [
+    {
+      name: "McGeary's",
+      closingTimes: { 3: "02:00" },
+      lat: 42.65407,
+      lng: -73.75059,
+    },
+    {
+      name: "Hill Street Cafe",
+      closingTimes: { 3: "02:00" },
+      lat: 42.646606,
+      lng: -73.758049,
+    },
+    {
+      name: "Tipsy Moose Tap & Tavern",
+      closingTimes: { 3: "02:00" },
+      lat: 42.746239,
+      lng: -73.759122,
+    },
+    {
+      name: "The Hollow Bar & Kitchen",
+      closingTimes: { 3: "02:00" },
+      lat: 42.652266,
+      lng: -73.750901,
+    },
+  ],
+});
+assert.equal(clusteredLastCall.length, 3);
+const downtownLastCallCluster = clusteredLastCall.find((event) => event.isLastCallCluster);
+assert.deepEqual(downtownLastCallCluster.venues, ["Hill Street Cafe", "McGeary's"]);
+assert.equal(downtownLastCallCluster.venueCount, 2);
+assert.equal(downtownLastCallCluster.demandYield, 7);
+assert.equal(downtownLastCallCluster.demandCap, 8);
+assert.equal(downtownLastCallCluster.windowStart, "1:15 AM");
+assert.match(downtownLastCallCluster.location, /^Last Call Egress Cluster:/);
+
+assert.equal(
+  aggregateLastCallVenueClusters([], { localStart: new Date("2026-07-16T01:00:00Z") }).length,
+  0
+);
+
+const restaurantClosings = [
+  {
+    location: "Restaurant Closing: A",
+    categories: ["Restaurant Closing", "Closing Demand", "restaurant"],
+    lat: 42.65,
+    lng: -73.75,
+    _scheduleStartMs: 1000,
+    _scheduleEndMs: 2000,
+  },
+  {
+    location: "Restaurant Closing: B",
+    categories: ["Restaurant Closing", "Closing Demand", "restaurant"],
+    lat: 42.651,
+    lng: -73.751,
+    _scheduleStartMs: 1000,
+    _scheduleEndMs: 2000,
+  },
+];
+assert.equal(
+  aggregateLastCallVenueClusters(restaurantClosings, {
+    localStart: new Date("2026-07-16T01:00:00Z"),
+  }).length,
+  2
+);
+
 const configured = buildScheduledConfiguredEvents({
   localStart,
   localEnd,
@@ -112,4 +182,4 @@ assert.deepEqual(configured.map((event) => event.categories[2]), ["Build", "Peak
 assert.deepEqual(configured.map((event) => event.demandYield), [12, 20, 12]);
 assert.equal(configured[0].location, "UAlbany Uptown Campus — Academic Dismissal");
 
-console.log("Scheduled local events: 29 assertions passed.");
+console.log("Scheduled local events: 38 assertions passed.");
