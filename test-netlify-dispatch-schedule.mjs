@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { config as scheduledFunctionConfig } from "./netlify/functions/dispatch-alert.mts";
 import {
   buildScheduledDispatchBody,
   newYorkTimezoneOffsetMinutes,
@@ -9,6 +10,7 @@ const readEnv = (name) => values.get(name);
 const summer = new Date("2026-07-22T16:00:00.000Z");
 const winter = new Date("2026-01-22T17:00:00.000Z");
 
+assert.equal(scheduledFunctionConfig.schedule, "*/5 * * * *");
 assert.equal(newYorkTimezoneOffsetMinutes(summer), 240);
 assert.equal(newYorkTimezoneOffsetMinutes(winter), 300);
 
