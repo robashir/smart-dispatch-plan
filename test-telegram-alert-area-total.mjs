@@ -34,6 +34,7 @@ assert.match(referenceAlert.message, /Uptown: 0/);
 assert.match(referenceAlert.message, /Other Areas: 7/);
 assert.match(referenceAlert.message, /Total Opportunities: 11/);
 assert.match(referenceAlert.message, /Window: Current \/ Next 60 Minutes/);
+assert.match(referenceAlert.message, /total is more than 9/);
 
 const referenceEvaluation = buildTelegramAlertEvaluation(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.0 },
@@ -65,7 +66,8 @@ assert.deepEqual(
   "Telegram should count the same itinerary and sequence candidates shown in the UI"
 );
 assert.equal(displayedTimelineEvaluation.areaTotal, 6);
-assert.equal(displayedTimelineEvaluation.eligible, true);
+assert.equal(displayedTimelineEvaluation.aboveThreshold, false);
+assert.equal(displayedTimelineEvaluation.eligible, false);
 
 const duplicateCandidateEvaluation = buildTelegramAlertEvaluation(
   {
@@ -82,16 +84,16 @@ assert.equal(
 );
 assert.equal(duplicateCandidateEvaluation.eligible, false);
 
-const fourTotal = buildTelegramAlertCandidate(
-  { itinerary: referenceItinerary.slice(0, 4), driverSupplyPressureMod: 1.0 },
+const nineTotal = buildTelegramAlertCandidate(
+  { itinerary: referenceItinerary.slice(0, 9), driverSupplyPressureMod: 1.0 },
   localStart
 );
-assert.equal(fourTotal, null, "normal supply should not alert when the total is exactly 4");
+assert.equal(nineTotal, null, "normal supply should not alert when the total is exactly 9");
 
-const fourCurrent = referenceItinerary.slice(0, 4);
+const nineCurrent = referenceItinerary.slice(0, 9);
 const exactlySixtyMinutes = buildTelegramAlertCandidate(
   {
-    itinerary: [...fourCurrent, timedRide("Crossgates Mall", "5:00 PM")],
+    itinerary: [...nineCurrent, timedRide("Crossgates Mall", "5:00 PM")],
     driverSupplyPressureMod: 1.0,
   },
   localStart
@@ -104,7 +106,7 @@ assert.equal(
 
 const sixtyOneMinutes = buildTelegramAlertCandidate(
   {
-    itinerary: [...fourCurrent, timedRide("Crossgates Mall", "5:01 PM")],
+    itinerary: [...nineCurrent, timedRide("Crossgates Mall", "5:01 PM")],
     driverSupplyPressureMod: 1.0,
   },
   localStart

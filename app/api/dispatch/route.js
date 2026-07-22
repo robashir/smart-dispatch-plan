@@ -86,7 +86,7 @@ try {
 const globalCache = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
-const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 4;
+const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
 const NORMAL_SUPPLY_LOOKAHEAD_MINUTES = 60;
 
 export function dispatchAlertAuthorization(
