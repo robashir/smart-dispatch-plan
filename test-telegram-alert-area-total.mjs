@@ -66,9 +66,38 @@ assert.equal(
 );
 
 const tightSupply = buildTelegramAlertCandidate(
-  { itinerary: [activeRide("MVP Arena")], driverSupplyPressureMod: 1.25 },
+  { itinerary: referenceItinerary, driverSupplyPressureMod: 1.25 },
   localStart
 );
-assert.equal(tightSupply?.title, "MVP Arena", "tight-supply rules should remain unchanged");
+assert.equal(tightSupply, null, "tight-supply alerts must be disabled");
+
+const shortageSupply = buildTelegramAlertCandidate(
+  { itinerary: referenceItinerary, driverSupplyPressureMod: 1.5 },
+  localStart
+);
+assert.equal(shortageSupply, null, "shortage alerts must be disabled");
+
+const individualHighOpportunity = buildTelegramAlertCandidate(
+  {
+    itinerary: [{ ...activeRide("MVP Arena"), opportunityScore: 100 }],
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.equal(
+  individualHighOpportunity,
+  null,
+  "an individual high opportunity must not bypass the citywide total"
+);
+
+const goldenHalfHour = buildTelegramAlertCandidate(
+  {
+    itinerary: [],
+    driverSupplyPressureMod: 1.0,
+    peakSurgeWindow: { totalDensity: 100, timeWindow: "4:00 PM - 4:30 PM" },
+  },
+  localStart
+);
+assert.equal(goldenHalfHour, null, "Golden Half-Hour alerts must be disabled");
 
 console.log("Telegram normal-supply 60-minute area total tests passed.");
