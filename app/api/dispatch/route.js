@@ -86,7 +86,7 @@ try {
 const globalCache = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
-const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
+const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 4;
 const NORMAL_SUPPLY_LOOKAHEAD_MINUTES = 60;
 
 export function dispatchAlertAuthorization(
@@ -2835,14 +2835,12 @@ function findPeakSurgeWindow(itinerary) {
   };
 }
 
-export function buildTelegramAlertCandidate(payload, localStart) {
+export function buildTelegramAlertEvaluation(payload, localStart) {
   const itinerary = Array.isArray(payload?.itinerary) ? payload.itinerary : [];
   const driverSupplyPressureMod =
     Number.isFinite(payload?.driverSupplyPressureMod) && payload.driverSupplyPressureMod > 0
       ? payload.driverSupplyPressureMod
       : 1.0;
-
-  if (driverSupplyPressureMod >= NORMAL_DRIVER_SUPPLY_MAX) return null;
 
   const nowMinute =
     localStart instanceof Date && !Number.isNaN(localStart.getTime())
@@ -2858,7 +2856,28 @@ export function buildTelegramAlertCandidate(payload, localStart) {
   const areaCounts = demandFirstAreaCounts([...current, ...upcomingTimed]);
   const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
 
-  if (areaTotal <= NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD) return null;
+  return {
+    windowMinutes: NORMAL_SUPPLY_LOOKAHEAD_MINUTES,
+    driverSupplyPressureMod,
+    normalSupply: driverSupplyPressureMod < NORMAL_DRIVER_SUPPLY_MAX,
+    areaCounts,
+    areaTotal,
+    threshold: NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
+    aboveThreshold: areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
+    eligible:
+      driverSupplyPressureMod < NORMAL_DRIVER_SUPPLY_MAX &&
+      areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
+  };
+}
+
+export function buildTelegramAlertCandidate(
+  payload,
+  localStart,
+  evaluation = buildTelegramAlertEvaluation(payload, localStart)
+) {
+  if (!evaluation.eligible) return null;
+
+  const { areaCounts, areaTotal } = evaluation;
 
   return {
     key: "normal-supply:citywide-area-total",
@@ -2883,13 +2902,14 @@ export function buildTelegramAlertCandidate(payload, localStart) {
 async function sendTelegramAlertIfNeeded(payload, localStart) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
+  const evaluation = buildTelegramAlertEvaluation(payload, localStart);
   if (!token || !chatId) {
-    return { configured: false, sent: false, reason: "missing_env" };
+    return { configured: false, sent: false, reason: "missing_env", evaluation };
   }
 
-  const candidate = buildTelegramAlertCandidate(payload, localStart);
+  const candidate = buildTelegramAlertCandidate(payload, localStart, evaluation);
   if (!candidate) {
-    return { configured: true, sent: false, reason: "no_alert_candidate" };
+    return { configured: true, sent: false, reason: "no_alert_candidate", evaluation };
   }
 
   const now = Date.now();
@@ -2903,6 +2923,7 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
       sent: false,
       reason: "cooldown_storage_error",
       title: candidate.title,
+      evaluation,
     };
   }
   const msUntilReady = TELEGRAM_ALERT_COOLDOWN_MS - (now - lastSentAt);
@@ -2913,6 +2934,7 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
       reason: "cooldown",
       title: candidate.title,
       cooldownMinutesRemaining: Math.ceil(msUntilReady / 60000),
+      evaluation,
     };
   }
 
@@ -2940,12 +2962,19 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
         reason: "send_failed",
         title: candidate.title,
         status: response.status,
+        evaluation,
       };
     }
 
     try {
       await recordTelegramAlertCooldown(candidate.key, now);
-      return { configured: true, sent: true, reason: "sent", title: candidate.title };
+      return {
+        configured: true,
+        sent: true,
+        reason: "sent",
+        title: candidate.title,
+        evaluation,
+      };
     } catch (err) {
       console.warn(`[Telegram Alert] cooldown write failed after send: ${err.message}`);
       return {
@@ -2953,6 +2982,7 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
         sent: true,
         reason: "sent_cooldown_unrecorded",
         title: candidate.title,
+        evaluation,
       };
     }
   } catch (err) {
@@ -2962,6 +2992,7 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
       sent: false,
       reason: "send_error",
       title: candidate.title,
+      evaluation,
     };
   }
 }
