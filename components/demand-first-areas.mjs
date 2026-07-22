@@ -68,3 +68,14 @@ export function normalizeDemandFirstAreaFilters(value) {
     ])
   );
 }
+
+export function demandFirstAreaCounts(candidates) {
+  const items = Array.isArray(candidates) ? candidates : [];
+  return Object.fromEntries(
+    DEMAND_FIRST_AREAS.map(({ key }) => [
+      key,
+      items.filter((candidate) => demandFirstAreaFor(candidate?.item || candidate) === key)
+        .length,
+    ])
+  );
+}

@@ -17,6 +17,12 @@ import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" 
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import {
+  readTelegramAlertCooldown,
+  recordTelegramAlertCooldown,
+} from "../../lib/telegram-alert-cooldown.mjs";
+import { buildDemandFirstTimeline } from "../../../components/demand-first-sequence.mjs";
+import { demandFirstAreaCounts } from "../../../components/demand-first-areas.mjs";
+import {
   buildCurrentWeatherDisplay,
   mergeWeatherWindows,
 } from "../../lib/weather-display.mjs";
@@ -78,8 +84,10 @@ try {
 // shape is { data, expiresAt }; stale entries are refetched on access.
 // Validated in isolation by test-cache.js before being ported here.
 const globalCache = new Map();
-const telegramAlertCooldowns = new Map();
 const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
+const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
+const NORMAL_SUPPLY_LOOKAHEAD_MINUTES = 60;
 
 export function dispatchAlertAuthorization(
   request,
@@ -2827,132 +2835,49 @@ function findPeakSurgeWindow(itinerary) {
   };
 }
 
-function alertItemTitle(item) {
-  return item?.location || item?.hub || item?.hourBucket || item?.type || "Dispatch Opportunity";
-}
-
-function alertItemTime(item) {
-  return item?.leaveBy || item?.hourBucket || null;
-}
-
-function alertItemAction(item) {
-  const cats = Array.isArray(item?.categories) ? item.categories.join("|") : "";
-  if (/BYOD Train/i.test(cats)) {
-    return /Outbound/i.test(cats)
-      ? "Work outbound station ingress"
-      : "Work inbound train egress";
-  }
-  if (/Hospital|Shift|Nursing|Clinic|Admin/i.test(cats)) return "Work hospital shift movement";
-  if (/Last Call|Nightlife/i.test(cats)) return "Work nightlife egress";
-  if (/Retail Egress|Closing Surge/i.test(cats)) return "Work retail closing demand";
-  if (item?.type === "flight") return "Work airport arrivals";
-  if (item?.type === "train") return "Work train arrivals";
-  if (item?.type === "food") return "Work food delivery hotspot";
-  if (item?.type === "grocery") return "Work grocery hotspot";
-  return "Work this demand window";
-}
-
-function alertDriverSupplyLabel(driverSupplyPressureMod) {
-  const pressure = Number(driverSupplyPressureMod);
-  if (!Number.isFinite(pressure) || pressure < 1.2) return "Normal";
-  if (pressure >= 1.5) return "Shortage";
-  return "Tight";
-}
-
-function alertMinutesUntil(item, localStart) {
-  const targetMin = parseTimeLabel(alertItemTime(item));
-  if (!Number.isFinite(targetMin)) return Infinity;
-  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return Infinity;
-  const nowMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
-  let delta = targetMin - nowMin;
-  if (delta < -360) delta += 1440;
-  return delta;
-}
-
-function alertIsTimedTransitOrEvent(item) {
-  return item?.type === "train" || item?.type === "flight" || item?.type === "event";
-}
-
-function buildTelegramAlertCandidate(payload, localStart) {
+export function buildTelegramAlertCandidate(payload, localStart) {
   const itinerary = Array.isArray(payload?.itinerary) ? payload.itinerary : [];
   const driverSupplyPressureMod =
     Number.isFinite(payload?.driverSupplyPressureMod) && payload.driverSupplyPressureMod > 0
       ? payload.driverSupplyPressureMod
       : 1.0;
 
-  const scored = itinerary
-    .map((item) => {
-      const expectedDemand = Math.round(Number(item?.densityScore) || 0);
-      const opportunity = Math.round(
-        Number(item?.opportunityScore) || Number(item?.densityScore) || 0
-      );
-      const minutesAway = alertMinutesUntil(item, localStart);
-      const reasons = [];
-      if (opportunity >= 25) reasons.push("high opportunity");
-      if (driverSupplyPressureMod >= 1.25 && opportunity >= 25) {
-        reasons.push("driver supply pressure");
-      }
-      if (
-        alertIsTimedTransitOrEvent(item) &&
-        minutesAway >= -5 &&
-        minutesAway <= 45 &&
-        opportunity >= 25
-      ) {
-        reasons.push("timed demand within 45 minutes");
-      }
-      return { item, expectedDemand, opportunity, minutesAway, reasons };
-    })
-    .filter((entry) => entry.reasons.length > 0)
-    .sort((a, b) => b.opportunity - a.opportunity);
+  if (driverSupplyPressureMod >= NORMAL_DRIVER_SUPPLY_MAX) return null;
 
-  if (scored.length > 0) {
-    const best = scored[0];
-    const title = alertItemTitle(best.item);
-    const time = alertItemTime(best.item);
-    const supply = alertDriverSupplyLabel(best.item?.driverSupplyPressureMod || driverSupplyPressureMod);
-    return {
-      key: `${best.item?.type || "item"}:${title}:${time || "now"}`,
-      title,
-      message: [
-        "Smart Dispatch Alert",
-        "",
-        title,
-        time ? `Time: ${time}` : null,
-        `Expected Demand: ${best.expectedDemand}`,
-        `Opportunity Now: ${best.opportunity}`,
-        `Driver Supply: ${supply}`,
-        "",
-        `Action: ${alertItemAction(best.item)}`,
-        `Reason: ${best.reasons.join(" + ")}`,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    };
-  }
+  const nowMinute =
+    localStart instanceof Date && !Number.isNaN(localStart.getTime())
+      ? localStart.getUTCHours() * 60 + localStart.getUTCMinutes()
+      : undefined;
+  const { current, timed } = buildDemandFirstTimeline(itinerary, { nowMinute });
+  const upcomingTimed = timed.filter(
+    (candidate) =>
+      Number.isFinite(candidate?.delta) &&
+      candidate.delta >= 0 &&
+      candidate.delta <= NORMAL_SUPPLY_LOOKAHEAD_MINUTES
+  );
+  const areaCounts = demandFirstAreaCounts([...current, ...upcomingTimed]);
+  const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
 
-  const peak = payload?.peakSurgeWindow;
-  const peakDemand = Math.round(Number(peak?.totalDensity) || 0);
-  if (peakDemand >= 75) {
-    const contributors = Array.isArray(peak?.topContributors)
-      ? peak.topContributors.join(", ")
-      : "multiple demand sources";
-    return {
-      key: `peak:${peak?.timeWindow || "current"}`,
-      title: "Golden Half-Hour",
-      message: [
-        "Smart Dispatch Alert",
-        "",
-        "Golden Half-Hour",
-        `Window: ${peak?.timeWindow || "Current / Ongoing"}`,
-        `Expected Demand: ${peakDemand}`,
-        `Driven by: ${contributors}`,
-        "",
-        "Action: stay near the strongest overlapping demand zone",
-      ].join("\n"),
-    };
-  }
+  if (areaTotal <= NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD) return null;
 
-  return null;
+  return {
+    key: "normal-supply:citywide-area-total",
+    title: "Citywide Demand Total",
+    message: [
+      "Smart Dispatch Alert",
+      "",
+      "Citywide Demand Total",
+      `Window: Current / Next ${NORMAL_SUPPLY_LOOKAHEAD_MINUTES} Minutes`,
+      `Downtown: ${areaCounts.downtown}`,
+      `Uptown: ${areaCounts.uptown}`,
+      `Other Areas: ${areaCounts.other}`,
+      `Total Opportunities: ${areaTotal}`,
+      "Driver Supply: Normal",
+      "",
+      "Action: work the area with the strongest demand count",
+      `Reason: next-${NORMAL_SUPPLY_LOOKAHEAD_MINUTES}-minute total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD}`,
+    ].join("\n"),
+  };
 }
 
 async function sendTelegramAlertIfNeeded(payload, localStart) {
@@ -2968,7 +2893,18 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
   }
 
   const now = Date.now();
-  const lastSentAt = telegramAlertCooldowns.get(candidate.key) || 0;
+  let lastSentAt = 0;
+  try {
+    lastSentAt = await readTelegramAlertCooldown(candidate.key);
+  } catch (err) {
+    console.warn(`[Telegram Alert] cooldown read failed: ${err.message}`);
+    return {
+      configured: true,
+      sent: false,
+      reason: "cooldown_storage_error",
+      title: candidate.title,
+    };
+  }
   const msUntilReady = TELEGRAM_ALERT_COOLDOWN_MS - (now - lastSentAt);
   if (msUntilReady > 0) {
     return {
@@ -3007,8 +2943,18 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
       };
     }
 
-    telegramAlertCooldowns.set(candidate.key, now);
-    return { configured: true, sent: true, reason: "sent", title: candidate.title };
+    try {
+      await recordTelegramAlertCooldown(candidate.key, now);
+      return { configured: true, sent: true, reason: "sent", title: candidate.title };
+    } catch (err) {
+      console.warn(`[Telegram Alert] cooldown write failed after send: ${err.message}`);
+      return {
+        configured: true,
+        sent: true,
+        reason: "sent_cooldown_unrecorded",
+        title: candidate.title,
+      };
+    }
   } catch (err) {
     console.warn(`[Telegram Alert] send error: ${err.message}`);
     return {

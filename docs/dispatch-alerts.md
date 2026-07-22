@@ -39,3 +39,25 @@ Telegram secrets stay in Netlify environment variables:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+
+## Duplicate suppression
+
+Successful Telegram sends are recorded in the site-scoped Netlify Blobs store
+`smart-dispatch-alert-cooldowns`. Each alert candidate has a hashed storage key
+and is suppressed for 30 minutes, including across deploys, cold starts, and
+different serverless instances. If the cooldown store cannot be read, the
+alert fails closed rather than risking a duplicate message.
+
+## Normal-supply threshold
+
+When driver supply is Normal (`driverSupplyPressureMod < 1.10`), Telegram uses
+the same Downtown, Uptown, and Other Areas counts shown in the Demand-First
+Timeline, limited to current opportunities and timed opportunities from now
+through the next 60 minutes. It sends one citywide summary only when the
+combined count is greater than 9. A combined count of exactly 9 does not alert,
+and timed opportunities 61 or more minutes away do not count.
+
+This is the only active Telegram alert rule. Individual high-opportunity,
+driver-supply pressure, timed-demand, and Golden Half-Hour alerts are disabled.
+Tight or shortage supply (`driverSupplyPressureMod >= 1.10`) does not send a
+Telegram alert.
