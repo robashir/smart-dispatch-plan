@@ -304,6 +304,26 @@ assert.equal(futureForecast.forecastEndTime, "11:59 PM");
 assert.equal(futureForecast.horizonMinutes, 479);
 assert.equal(futureForecast.currentEvaluation.areaTotal, 0);
 assert.equal(futureForecast.evaluation.areaTotal, 10);
+assert.equal(futureForecast.topNonQualifyingChecks.length, 3);
+assert.equal(
+  futureForecast.topNonQualifyingChecks.every(
+    (check) => check.evaluation.eligible === false
+  ),
+  true
+);
+assert.equal(
+  futureForecast.topNonQualifyingChecks.every(
+    (check, index, checks) =>
+      index === 0 ||
+      checks
+        .slice(0, index)
+        .every(
+          (earlier) =>
+            Math.abs(check.minutesUntil - earlier.minutesUntil) >= 15
+        )
+  ),
+  true
+);
 assert.deepEqual(futureForecast.evaluation.qualifyingDemandAreas, [
   "downtown",
   "other",

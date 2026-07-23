@@ -16,6 +16,31 @@ function qualifyingAreaText(evaluation) {
     .join(" · ");
 }
 
+function ProjectedChecksList({ checks }) {
+  if (!Array.isArray(checks) || checks.length === 0) return null;
+  return (
+    <div className="mt-3 border-t border-emerald-900 pt-3">
+      <div className="text-xs uppercase tracking-wide text-neutral-400 font-semibold">
+        Top other projected checks (not qualifying)
+      </div>
+      <div className="flex flex-col gap-1 mt-2">
+        {checks.slice(0, 3).map((check) => {
+          const evaluation = check?.evaluation || {};
+          const opportunities = Number(evaluation.areaTotal) || 0;
+          const qualifyingAreas = Array.isArray(evaluation.qualifyingDemandAreas)
+            ? evaluation.qualifyingDemandAreas.length
+            : 0;
+          return (
+            <div key={check.time} className="text-xs text-neutral-300">
+              {check.time}: {opportunities}/10 opportunities · {qualifyingAreas}/2 areas at Expected Demand ≥25
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function TelegramAlertForecastBanner({ forecast }) {
   if (!forecast) return null;
 
@@ -65,6 +90,7 @@ export function TelegramAlertForecastBanner({ forecast }) {
       <div className="text-xs text-neutral-400 mt-1">
         Estimated through {forecast.forecastEndTime || "11:59 PM"} from current BYOD and dispatch data. Telegram sends only when demand newly changes to qualified.
       </div>
+      <ProjectedChecksList checks={forecast.topNonQualifyingChecks} />
     </section>
   );
 }
