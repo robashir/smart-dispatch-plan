@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   buildTelegramAlertCandidate,
   buildTelegramAlertEvaluation,
+  collapseTelegramAlertDemandPhases,
 } from "./app/api/dispatch/route.js";
 
 const localStart = new Date("2026-07-21T16:00:00.000Z");
@@ -89,6 +90,80 @@ assert.deepEqual(
 assert.equal(displayedTimelineEvaluation.enoughDemandAreas, true);
 assert.equal(displayedTimelineEvaluation.aboveThreshold, false);
 assert.equal(displayedTimelineEvaluation.eligible, false);
+
+const taperedCandidates = [
+  {
+    ...timedRide("Colonie Center / Wolf Road Corridor", "4:05 PM"),
+    type: "event",
+    densityScore: 4,
+    sourceEventKey: "colonie-retail-closing-2026-07-21",
+    categories: ["Local Anchor", "Retail Closing Pulse", "Build"],
+  },
+  {
+    ...timedRide("Colonie Center / Wolf Road Corridor", "4:35 PM"),
+    type: "event",
+    densityScore: 6,
+    sourceEventKey: "colonie-retail-closing-2026-07-21",
+    categories: ["Local Anchor", "Retail Closing Pulse", "Peak"],
+  },
+  {
+    ...timedRide("Colonie Center / Wolf Road Corridor", "4:55 PM"),
+    type: "event",
+    densityScore: 4,
+    sourceEventKey: "colonie-retail-closing-2026-07-21",
+    categories: ["Local Anchor", "Retail Closing Pulse", "Taper"],
+  },
+];
+const collapsedTaperedCandidates = collapseTelegramAlertDemandPhases(
+  taperedCandidates.map((item) => ({ item }))
+);
+assert.equal(
+  collapsedTaperedCandidates.length,
+  1,
+  "Build, Peak, and Taper phases of one event should count as one opportunity"
+);
+assert.equal(
+  collapsedTaperedCandidates[0].item.densityScore,
+  6,
+  "a tapered event should contribute its highest eligible phase demand"
+);
+
+const taperedEvaluation = buildTelegramAlertEvaluation(
+  {
+    itinerary: [],
+    sequenceCandidates: taperedCandidates,
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.deepEqual(taperedEvaluation.areaCounts, { downtown: 0, uptown: 0, other: 1 });
+assert.deepEqual(taperedEvaluation.areaExpectedDemand, {
+  downtown: 0,
+  uptown: 0,
+  other: 6,
+});
+
+const ingressAndEgress = collapseTelegramAlertDemandPhases([
+  {
+    item: {
+      ...taperedCandidates[0],
+      sourceEventKey: "arena-show",
+      categories: ["BYOD Event", "Ingress", "Music", "Build"],
+    },
+  },
+  {
+    item: {
+      ...taperedCandidates[1],
+      sourceEventKey: "arena-show",
+      categories: ["BYOD Event", "Egress", "Music", "Peak"],
+    },
+  },
+]);
+assert.equal(
+  ingressAndEgress.length,
+  2,
+  "ingress and egress for the same event should remain separate opportunities"
+);
 
 const duplicateCandidateEvaluation = buildTelegramAlertEvaluation(
   {
