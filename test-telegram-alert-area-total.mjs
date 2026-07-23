@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   buildTelegramAlertCandidate,
   buildTelegramAlertEvaluation,
+  buildTelegramAlertForecast,
   collapseTelegramAlertDemandPhases,
   shouldSendTelegramDemandTransition,
 } from "./app/api/dispatch/route.js";
@@ -271,6 +272,39 @@ assert.equal(
   false,
   "non-qualifying demand should not alert"
 );
+
+const forecastAtCurrentCheck = buildTelegramAlertForecast(
+  {
+    itinerary: referenceItinerary,
+    sequenceCandidates: [],
+    hours: 1,
+    driverSupplyPressureMod: 1.5,
+  },
+  localStart
+);
+assert.equal(forecastAtCurrentCheck.status, "qualifies_now");
+assert.equal(forecastAtCurrentCheck.firstEligibleTime, "4:00 PM");
+assert.equal(forecastAtCurrentCheck.evaluation.areaTotal, 11);
+
+const futureForecast = buildTelegramAlertForecast(
+  {
+    itinerary: [
+      ...Array.from({ length: 5 }, () => timedRide("MVP Arena", "5:15 PM")),
+      ...Array.from({ length: 5 }, () => timedRide("Albany Airport", "5:15 PM")),
+    ],
+    sequenceCandidates: [],
+    hours: 2,
+    driverSupplyPressureMod: 1.5,
+  },
+  localStart
+);
+assert.equal(futureForecast.status, "expected");
+assert.equal(futureForecast.firstEligibleTime, "4:15 PM");
+assert.equal(futureForecast.evaluation.areaTotal, 10);
+assert.deepEqual(futureForecast.evaluation.qualifyingDemandAreas, [
+  "downtown",
+  "other",
+]);
 
 const individualHighOpportunity = buildTelegramAlertCandidate(
   {
