@@ -21,17 +21,21 @@ const opportunities = buildByodEventOpportunities({
   planningEnd: new Date("2026-07-17T00:00:00Z"),
   venueDictionary: { "mvp arena": { lat: 42.6483, lng: -73.7547 } },
 });
-assert.equal(opportunities.length, 2);
-const ingress = opportunities.find((item) => item.categories.includes("Ingress"));
-const egress = opportunities.find((item) => item.categories.includes("Egress"));
+assert.equal(opportunities.length, 6);
+const ingressSegments = opportunities.filter((item) => item.categories.includes("Ingress"));
+const egressSegments = opportunities.filter((item) => item.categories.includes("Egress"));
+const ingress = ingressSegments[0];
+const egress = egressSegments[0];
 assert.equal(ingress.windowStart, "5:45 PM");
-assert.equal(ingress.windowEnd, "8:15 PM");
+assert.equal(ingress.windowEnd, "6:35 PM");
 assert.equal(ingress.demandYield, 35);
 assert.equal(egress.windowStart, "10:30 PM");
-assert.equal(egress.windowEnd, "11:30 PM");
+assert.equal(egress.windowEnd, "10:50 PM");
 assert.equal(egress.projectedEnd, "11:00 PM");
 assert.equal(egress.demandYield, 80);
 assert.ok(egress.demandYield > ingress.demandYield);
+assert.deepEqual(ingressSegments.map((item) => item.volume), [0.6, 1, 0.6]);
+assert.deepEqual(egressSegments.map((item) => item.volume), [0.6, 1, 0.6]);
 
 assert.equal(parseByodEventText(`${raw}\n${raw}`, "2026-07-16").length, 1);
 assert.equal(parseByodEventText("MVP Arena | Cancelled Show | Starts 8 PM | Music", "2026-07-16").length, 0);

@@ -1,3 +1,5 @@
+import { splitDemandWindow } from "./demand-segments.mjs";
+
 const EVENT_CATEGORIES = new Map([
   ["music", "Music"],
   ["sports", "Sports"],
@@ -161,17 +163,21 @@ export function buildByodEventOpportunities({
       const ingressStart = new Date(doorsTime.getTime() - 45 * 60000);
       const ingressEnd = new Date(startTime.getTime() + 15 * 60000);
       if (overlaps(ingressStart, ingressEnd, localStart, planningEnd)) {
-        const activeNow = localStart >= ingressStart && localStart < ingressEnd;
-        opportunities.push({
-          ...shared,
-          categories: ["BYOD Event", "Ingress", event.category],
-          demandYield: megaVenue ? 35 : 15,
-          doorsTime: formatClock(doorsTime),
-          windowStart: formatClock(ingressStart),
-          windowEnd: formatClock(ingressEnd),
-          activeNow,
-          ...(activeNow ? {} : { leaveBy: formatClock(ingressStart), hourBucket: formatClock(ingressStart) }),
-        });
+        for (const phase of splitDemandWindow(ingressStart, ingressEnd)) {
+          if (!overlaps(phase.start, phase.end, localStart, planningEnd)) continue;
+          const activeNow = localStart >= phase.start && localStart < phase.end;
+          opportunities.push({
+            ...shared,
+            volume: phase.factor,
+            categories: ["BYOD Event", "Ingress", event.category, phase.label],
+            demandYield: megaVenue ? 35 : 15,
+            doorsTime: formatClock(doorsTime),
+            windowStart: formatClock(phase.start),
+            windowEnd: formatClock(phase.end),
+            activeNow,
+            ...(activeNow ? {} : { leaveBy: formatClock(phase.start), hourBucket: formatClock(phase.start) }),
+          });
+        }
       }
     }
 
@@ -179,17 +185,21 @@ export function buildByodEventOpportunities({
     const egressStart = new Date(endTime.getTime() - egressBuffer * 60000);
     const egressEnd = new Date(endTime.getTime() + egressBuffer * 60000);
     if (overlaps(egressStart, egressEnd, localStart, planningEnd)) {
-      const activeNow = localStart >= egressStart && localStart < egressEnd;
-      opportunities.push({
-        ...shared,
-        categories: ["BYOD Event", "Egress", event.category],
-        demandYield: megaVenue ? 80 : 30,
-        egressMod: megaVenue ? 2.5 : 2,
-        windowStart: formatClock(egressStart),
-        windowEnd: formatClock(egressEnd),
-        activeNow,
-        ...(activeNow ? {} : { leaveBy: formatClock(egressStart), hourBucket: formatClock(egressStart) }),
-      });
+      for (const phase of splitDemandWindow(egressStart, egressEnd)) {
+        if (!overlaps(phase.start, phase.end, localStart, planningEnd)) continue;
+        const activeNow = localStart >= phase.start && localStart < phase.end;
+        opportunities.push({
+          ...shared,
+          volume: phase.factor,
+          categories: ["BYOD Event", "Egress", event.category, phase.label],
+          demandYield: megaVenue ? 80 : 30,
+          egressMod: megaVenue ? 2.5 : 2,
+          windowStart: formatClock(phase.start),
+          windowEnd: formatClock(phase.end),
+          activeNow,
+          ...(activeNow ? {} : { leaveBy: formatClock(phase.start), hourBucket: formatClock(phase.start) }),
+        });
+      }
     }
   }
   return opportunities;

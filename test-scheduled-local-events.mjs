@@ -19,11 +19,13 @@ const hospitals = buildScheduledHospitalEvents({
   shifts: [{ start: 870, end: 930, mod: 2, label: "Afternoon Clinic Shift" }],
   coords,
 });
-assert.equal(hospitals.length, 1);
+assert.equal(hospitals.length, 3);
 assert.equal(hospitals[0].leaveBy, "2:30 PM");
 assert.equal(hospitals[0].hourBucket, "2:30 PM");
-assert.equal(hospitals[0].windowEnd, "3:30 PM");
+assert.equal(hospitals[0].windowEnd, "2:50 PM");
 assert.equal(hospitals[0].activeNow, false);
+assert.deepEqual(hospitals.map((event) => event.volume), [0.6, 1, 0.6]);
+assert.deepEqual(hospitals.map((event) => event.categories[2]), ["Build", "Peak", "Taper"]);
 
 const stateWorkers = buildScheduledStateWorkerEvents({
   localStart,
@@ -60,9 +62,11 @@ const crossgates = buildScheduledCrossgatesEvents({
   closingHours: { 3: 1200 },
   coords,
 });
-assert.equal(crossgates.length, 1);
+assert.equal(crossgates.length, 3);
 assert.equal(crossgates[0].windowStart, "7:30 PM");
-assert.equal(crossgates[0].windowEnd, "8:30 PM");
+assert.equal(crossgates[0].windowEnd, "7:50 PM");
+assert.deepEqual(crossgates.map((event) => event.volume), [0.6, 1, 0.6]);
+assert.deepEqual(crossgates.map((event) => event.categories[2]), ["Build", "Peak", "Taper"]);
 
 const anchors = buildScheduledLocalAnchorEvents({
   localStart,
@@ -182,4 +186,21 @@ assert.deepEqual(configured.map((event) => event.categories[2]), ["Build", "Peak
 assert.deepEqual(configured.map((event) => event.demandYield), [12, 20, 12]);
 assert.equal(configured[0].location, "UAlbany Uptown Campus — Academic Dismissal");
 
-console.log("Scheduled local events: 38 assertions passed.");
+const holiday = buildScheduledConfiguredEvents({
+  localStart: new Date("2026-07-15T18:00:00Z"),
+  localEnd: new Date("2026-07-15T22:00:00Z"),
+  eventConfig: {
+    "Summer Festival": {
+      date: "2026-07-15",
+      type: "holiday",
+      multiplier: 3.5,
+      activeWindows: [{ start: 18, end: 21 }],
+    },
+  },
+  coords,
+});
+assert.equal(holiday.length, 3);
+assert.deepEqual(holiday.map((event) => event.volume), [0.6, 1, 0.6]);
+assert.deepEqual(holiday.map((event) => event.categories.at(-1)), ["Build", "Peak", "Taper"]);
+
+console.log("Scheduled local events: phased demand assertions passed.");
