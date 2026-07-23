@@ -2717,7 +2717,12 @@ function sequenceItemKey(item) {
   ].join("::");
 }
 
-function buildSequenceCandidates(payload, currentLocalStart, existingItinerary = []) {
+function buildSequenceCandidates(
+  payload,
+  currentLocalStart,
+  existingItinerary = [],
+  { limit = 8 } = {}
+) {
   const flights = Array.isArray(payload?.flightsByHour) ? payload.flightsByHour : [];
   const trains = Array.isArray(payload?.trainsByHour) ? payload.trainsByHour : [];
   const events = Array.isArray(payload?.events) ? payload.events : [];
@@ -2735,7 +2740,7 @@ function buildSequenceCandidates(payload, currentLocalStart, existingItinerary =
       ? payload.driverSupplyPressureMod
       : 1.0;
 
-  return rawItems
+  const candidates = rawItems
     .map((it) => {
       const scoreable =
         it.type === "flight" ||
@@ -2760,8 +2765,9 @@ function buildSequenceCandidates(payload, currentLocalStart, existingItinerary =
     .filter(Boolean)
     .filter((it) => !existingKeys.has(sequenceItemKey(it)))
     .filter((it) => Number(it.densityScore) >= 4)
-    .sort((a, b) => (Number(b.opportunityScore) || 0) - (Number(a.opportunityScore) || 0))
-    .slice(0, 8);
+    .sort((a, b) => (Number(b.opportunityScore) || 0) - (Number(a.opportunityScore) || 0));
+
+  return Number.isFinite(limit) ? candidates.slice(0, Math.max(0, limit)) : candidates;
 }
 
 // Sprint 66: Peak Overlap Engine. Sweeps a 30-minute window in 15-minute
@@ -3020,8 +3026,18 @@ export function shouldSendTelegramDemandTransition(previousState, evaluation) {
 function relativeWallClockMinute(minute, baseMinute) {
   let delta = minute - baseMinute;
   if (delta < -720) delta += 1440;
-  if (delta > 720) delta -= 1440;
   return delta;
+}
+
+function filterTimelineItemsForSelectedHorizon(items, localStart, horizonMinutes) {
+  const baseMinute = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const timedMinute = parseTimeLabel(item?.leaveBy || item?.hourBucket);
+    if (!Number.isFinite(timedMinute)) return true;
+    let delta = timedMinute - baseMinute;
+    if (delta < -360) delta += 1440;
+    return delta >= -15 && delta <= horizonMinutes;
+  });
 }
 
 function projectTelegramTimelineItem(item, baseMinute, offsetMinutes) {
@@ -3070,12 +3086,9 @@ function projectTelegramAlertPayload(payload, localStart, offsetMinutes) {
 export function buildTelegramAlertForecast(payload, localStart) {
   if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return null;
 
-  const configuredHours = Number(payload?.hours);
-  const horizonMinutes = Math.max(
-    NORMAL_SUPPLY_LOOKAHEAD_MINUTES,
-    Math.min(Number.isFinite(configuredHours) ? configuredHours * 60 : 240, 360)
-  );
   const baseMinute = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  const endOfDayMinute = 23 * 60 + 59;
+  const horizonMinutes = Math.max(0, endOfDayMinute - baseMinute);
   const firstCheckOffset = (5 - (baseMinute % 5)) % 5;
   const checks = [];
 
@@ -3112,6 +3125,8 @@ export function buildTelegramAlertForecast(payload, localStart) {
     return {
       status: "not_expected",
       horizonMinutes,
+      forecastEndTime: formatTimeLabel(endOfDayMinute),
+      throughEndOfDay: true,
       currentEvaluation,
       bestEvaluation: bestCheck?.evaluation || currentEvaluation,
     };
@@ -3130,9 +3145,11 @@ export function buildTelegramAlertForecast(payload, localStart) {
   return {
     status: firstCheck.offsetMinutes === 0 ? "qualifies_now" : "expected",
     horizonMinutes,
+    forecastEndTime: formatTimeLabel(endOfDayMinute),
+    throughEndOfDay: true,
     firstEligibleTime: firstCheck.time,
     eligibleWindowEnd: formatTimeLabel(
-      baseMinute + finalCheck.offsetMinutes + 5
+      Math.min(endOfDayMinute, baseMinute + finalCheck.offsetMinutes + 5)
     ),
     minutesUntilEligible: firstCheck.offsetMinutes,
     evaluation: firstCheck.evaluation,
@@ -3427,9 +3444,16 @@ export async function POST(request) {
     const now = new Date();
     const localStart = new Date(now.getTime() - offsetMin * 60 * 1000);
     const localEnd = new Date(localStart.getTime() + hoursNum * 60 * 60 * 1000);
-    // Event windows just beyond the requested horizon can require positioning
-    // before it ends (for example, a 4:00 PM dismissal at 11:41 AM).
-    const eventPlanningEnd = new Date(localEnd.getTime() + 30 * 60 * 1000);
+    // The visible plan stays inside the requested 1-4 hour horizon, while the
+    // alert forecast needs every available opportunity through today at 11:59 PM.
+    const forecastEnd = new Date(localStart);
+    forecastEnd.setUTCHours(23, 59, 59, 999);
+    const forecastHorizonMinutes = Math.max(
+      0,
+      Math.floor((forecastEnd.getTime() - localStart.getTime()) / 60000)
+    );
+    const forecastHoursNum = forecastHorizonMinutes / 60;
+    const eventPlanningEnd = forecastEnd;
 
     // Shift "now" by the client's offset so the ISO Z-string visually matches
     // the user's local wall-clock time (e.g., 4:19 PM EDT → "...T16:19:00Z").
@@ -3666,7 +3690,7 @@ export async function POST(request) {
     let flightsByHour = aggregateArrivalsByHour({
       flights: mergedRawFlights,
       localStart,
-      localEnd,
+      localEnd: forecastEnd,
       offsetMin,
       minutesToAirport,
     });
@@ -3679,7 +3703,7 @@ export async function POST(request) {
     let trainsByHour = aggregateTrainArrivalsByHour({
       trains: rawTrains,
       localStart,
-      localEnd,
+      localEnd: forecastEnd,
       offsetMin,
     });
 
@@ -3884,7 +3908,7 @@ export async function POST(request) {
       const outboundFlightEvents = [];
       for (const flight of outboundFlights) {
         const leaveBy = computeOutboundFlightLeaveBy(flight.departureTime, localStart);
-        if (!leaveBy || !isTrainInWindow(leaveBy, localStart, hoursNum)) continue;
+        if (!leaveBy || !isTrainInWindow(leaveBy, localStart, forecastHoursNum)) continue;
         outboundFlightEvents.push({
           type: "event",
           location: `ALB Flight to ${flight.destination}`,
@@ -3961,7 +3985,7 @@ export async function POST(request) {
           // suppressed.
           const leaveBy = computeOutboundLeaveBy(train.time, localStart);
           if (!leaveBy) continue;
-          if (!isTrainInWindow(leaveBy, localStart, hoursNum)) continue;
+          if (!isTrainInWindow(leaveBy, localStart, forecastHoursNum)) continue;
           structuredEvents.push({
             type: "event",
             location: `Empire State Plaza — Outbound Train ${train.trainNumber}`,
@@ -3987,7 +4011,7 @@ export async function POST(request) {
             `BYOD OUTBOUND TRAIN PARSED: ${train.trainNumber} | Status: ${train.status} | Departs: ${train.time} | LeaveBy: ${leaveBy}`
           );
         } else {
-          if (!isTrainInWindow(train.time, localStart, hoursNum)) continue;
+          if (!isTrainInWindow(train.time, localStart, forecastHoursNum)) continue;
           structuredEvents.push({
             type: "event",
             location: `Rensselaer Train ${train.trainNumber}`,
@@ -4025,7 +4049,7 @@ export async function POST(request) {
       // they inherit the scoreable branch, ROI filter, and the existing
       // emerald "Inbound" pin in DispatchMap (Sprint 62).
       for (const bus of inboundBuses) {
-        if (!isTrainInWindow(bus.arrivalTime, localStart, hoursNum)) continue;
+        if (!isTrainInWindow(bus.arrivalTime, localStart, forecastHoursNum)) continue;
         structuredEvents.push({
           type: "event",
           location: `Downtown Bus Terminal — ${bus.operator} Arrival`,
@@ -4136,7 +4160,7 @@ export async function POST(request) {
     // finalFoodMod — it computes the hidden surgeScore for sorting and the
     // strict <1.0 filter, so the volumes in flightsByHour / trainsByHour /
     // gigDemand stay raw and physical for the frontend.
-    mergedPayload.itinerary = buildItinerary(
+    const forecastItinerary = buildItinerary(
       mergedPayload,
       routingStrategy,
       localStart,
@@ -4148,16 +4172,31 @@ export async function POST(request) {
     // Sprint 66: Peak Overlap Engine — pure observer over the already-scored
     // itinerary. The frontend gates rendering on totalDensity > 50, so the
     // helper is free to return low-total results without polluting the UI.
-    mergedPayload.sequenceCandidates = buildSequenceCandidates(
+    const forecastSequenceCandidates = buildSequenceCandidates(
       mergedPayload,
       localStart,
-      mergedPayload.itinerary
+      forecastItinerary,
+      { limit: null }
     );
-    mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
     mergedPayload.telegramAlertForecast = buildTelegramAlertForecast(
-      mergedPayload,
+      {
+        ...mergedPayload,
+        itinerary: forecastItinerary,
+        sequenceCandidates: forecastSequenceCandidates,
+      },
       localStart
     );
+    mergedPayload.itinerary = filterTimelineItemsForSelectedHorizon(
+      forecastItinerary,
+      localStart,
+      hoursNum * 60
+    );
+    mergedPayload.sequenceCandidates = filterTimelineItemsForSelectedHorizon(
+      forecastSequenceCandidates,
+      localStart,
+      hoursNum * 60
+    ).slice(0, 8);
+    mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
     mergedPayload.telegramAlert = alertAuthorization.authorized
       ? await sendTelegramAlertIfNeeded(mergedPayload, localStart)
       : { sent: false, reason: "not_requested" };

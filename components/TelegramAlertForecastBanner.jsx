@@ -6,11 +6,6 @@ const AREA_LABELS = {
   other: "Other Areas",
 };
 
-function hoursLabel(minutes) {
-  const hours = Math.round(Number(minutes) / 60);
-  return `${hours} hour${hours === 1 ? "" : "s"}`;
-}
-
 function qualifyingAreaText(evaluation) {
   const demand = evaluation?.areaExpectedDemand || {};
   const areas = Array.isArray(evaluation?.qualifyingDemandAreas)
@@ -36,7 +31,7 @@ export function TelegramAlertForecastBanner({ forecast }) {
           Telegram Alert Forecast
         </div>
         <div className="text-base font-semibold mt-1">
-          No qualifying alert slot found in the next {hoursLabel(forecast.horizonMinutes)}
+          No qualifying alert slot found through {forecast.forecastEndTime || "11:59 PM"} today
         </div>
         <div className="text-xs text-neutral-400 mt-2">
           Strongest projected check: {opportunities}/10 opportunities · {qualifyingAreas}/2 areas at Expected Demand ≥25
@@ -68,7 +63,7 @@ export function TelegramAlertForecastBanner({ forecast }) {
         {areaText ? ` · ${areaText}` : ""}
       </div>
       <div className="text-xs text-neutral-400 mt-1">
-        Estimated from current BYOD and dispatch data. Telegram sends only when demand newly changes to qualified.
+        Estimated through {forecast.forecastEndTime || "11:59 PM"} from current BYOD and dispatch data. Telegram sends only when demand newly changes to qualified.
       </div>
     </section>
   );

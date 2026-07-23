@@ -300,11 +300,30 @@ const futureForecast = buildTelegramAlertForecast(
 );
 assert.equal(futureForecast.status, "expected");
 assert.equal(futureForecast.firstEligibleTime, "4:15 PM");
+assert.equal(futureForecast.forecastEndTime, "11:59 PM");
+assert.equal(futureForecast.horizonMinutes, 479);
 assert.equal(futureForecast.evaluation.areaTotal, 10);
 assert.deepEqual(futureForecast.evaluation.qualifyingDemandAreas, [
   "downtown",
   "other",
 ]);
+
+const lateDayForecast = buildTelegramAlertForecast(
+  {
+    itinerary: [
+      ...Array.from({ length: 5 }, () => timedRide("MVP Arena", "11:30 PM")),
+      ...Array.from({ length: 5 }, () => timedRide("Albany Airport", "11:30 PM")),
+    ],
+    sequenceCandidates: [],
+    hours: 1,
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.equal(lateDayForecast.status, "expected");
+assert.equal(lateDayForecast.firstEligibleTime, "10:30 PM");
+assert.equal(lateDayForecast.forecastEndTime, "11:59 PM");
+assert.equal(lateDayForecast.evaluation.areaTotal, 10);
 
 const individualHighOpportunity = buildTelegramAlertCandidate(
   {
