@@ -3017,6 +3017,128 @@ export function shouldSendTelegramDemandTransition(previousState, evaluation) {
   return previousState?.eligible !== true && evaluation?.eligible === true;
 }
 
+function relativeWallClockMinute(minute, baseMinute) {
+  let delta = minute - baseMinute;
+  if (delta < -720) delta += 1440;
+  if (delta > 720) delta -= 1440;
+  return delta;
+}
+
+function projectTelegramTimelineItem(item, baseMinute, offsetMinutes) {
+  const projected = { ...item };
+  const windowStartMinute = parseTimeLabel(item?.windowStart);
+  const windowEndMinute = parseTimeLabel(item?.windowEnd || item?.curbTime);
+  const hasWindow =
+    Number.isFinite(windowStartMinute) && Number.isFinite(windowEndMinute);
+
+  if (hasWindow) {
+    const startOffset = relativeWallClockMinute(windowStartMinute, baseMinute);
+    let endOffset = relativeWallClockMinute(windowEndMinute, baseMinute);
+    if (endOffset <= startOffset) endOffset += 1440;
+
+    if (offsetMinutes >= endOffset) return null;
+    if (offsetMinutes >= startOffset) {
+      delete projected.leaveBy;
+      delete projected.hourBucket;
+      projected.activeNow = true;
+      return projected;
+    }
+  }
+
+  const timedMinute = parseTimeLabel(item?.leaveBy || item?.hourBucket);
+  if (Number.isFinite(timedMinute)) return projected;
+
+  // An ongoing item without a known end can be evaluated now, but carrying it
+  // through the whole forecast would invent demand that the BYOD data does not
+  // actually schedule.
+  return offsetMinutes === 0 ? projected : null;
+}
+
+function projectTelegramAlertPayload(payload, localStart, offsetMinutes) {
+  const baseMinute = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  const projectList = (items) =>
+    (Array.isArray(items) ? items : [])
+      .map((item) => projectTelegramTimelineItem(item, baseMinute, offsetMinutes))
+      .filter(Boolean);
+  return {
+    ...payload,
+    itinerary: projectList(payload?.itinerary),
+    sequenceCandidates: projectList(payload?.sequenceCandidates),
+  };
+}
+
+export function buildTelegramAlertForecast(payload, localStart) {
+  if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return null;
+
+  const configuredHours = Number(payload?.hours);
+  const horizonMinutes = Math.max(
+    NORMAL_SUPPLY_LOOKAHEAD_MINUTES,
+    Math.min(Number.isFinite(configuredHours) ? configuredHours * 60 : 240, 360)
+  );
+  const baseMinute = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
+  const firstCheckOffset = (5 - (baseMinute % 5)) % 5;
+  const checks = [];
+
+  for (
+    let offsetMinutes = firstCheckOffset;
+    offsetMinutes <= horizonMinutes;
+    offsetMinutes += 5
+  ) {
+    const projectedStart = new Date(localStart.getTime() + offsetMinutes * 60000);
+    const projectedPayload = projectTelegramAlertPayload(
+      payload,
+      localStart,
+      offsetMinutes
+    );
+    checks.push({
+      offsetMinutes,
+      time: formatTimeLabel(baseMinute + offsetMinutes),
+      evaluation: buildTelegramAlertEvaluation(projectedPayload, projectedStart),
+    });
+  }
+
+  const firstEligibleIndex = checks.findIndex((check) => check.evaluation.eligible);
+  const currentEvaluation = buildTelegramAlertEvaluation(payload, localStart);
+  if (firstEligibleIndex < 0) {
+    const bestCheck = checks.reduce(
+      (best, check) => {
+        const score =
+          check.evaluation.qualifyingDemandAreas.length * 1000 +
+          check.evaluation.areaTotal;
+        return !best || score > best.score ? { ...check, score } : best;
+      },
+      null
+    );
+    return {
+      status: "not_expected",
+      horizonMinutes,
+      currentEvaluation,
+      bestEvaluation: bestCheck?.evaluation || currentEvaluation,
+    };
+  }
+
+  const firstCheck = checks[firstEligibleIndex];
+  let finalEligibleIndex = firstEligibleIndex;
+  while (
+    finalEligibleIndex + 1 < checks.length &&
+    checks[finalEligibleIndex + 1].evaluation.eligible
+  ) {
+    finalEligibleIndex += 1;
+  }
+  const finalCheck = checks[finalEligibleIndex];
+
+  return {
+    status: firstCheck.offsetMinutes === 0 ? "qualifies_now" : "expected",
+    horizonMinutes,
+    firstEligibleTime: firstCheck.time,
+    eligibleWindowEnd: formatTimeLabel(
+      baseMinute + finalCheck.offsetMinutes + 5
+    ),
+    minutesUntilEligible: firstCheck.offsetMinutes,
+    evaluation: firstCheck.evaluation,
+  };
+}
+
 async function sendTelegramAlertIfNeeded(payload, localStart) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -4032,6 +4154,10 @@ export async function POST(request) {
       mergedPayload.itinerary
     );
     mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
+    mergedPayload.telegramAlertForecast = buildTelegramAlertForecast(
+      mergedPayload,
+      localStart
+    );
     mergedPayload.telegramAlert = alertAuthorization.authorized
       ? await sendTelegramAlertIfNeeded(mergedPayload, localStart)
       : { sent: false, reason: "not_requested" };

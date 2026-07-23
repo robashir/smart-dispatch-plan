@@ -7,6 +7,7 @@ import { GlobalWeatherBanner } from "../components/GlobalWeatherBanner";
 import { PeakSurgeBanner } from "../components/PeakSurgeBanner";
 import { SuggestedSequence } from "../components/SuggestedSequence";
 import { DemandFirstSuggestedSequence } from "../components/DemandFirstSuggestedSequence";
+import { TelegramAlertForecastBanner } from "../components/TelegramAlertForecastBanner";
 import DispatchMap from "../components/DispatchMap";
 import { FlightCard, TrainCard, HotspotCard, EventCard } from "../components/DispatchCards";
 import {
@@ -212,6 +213,7 @@ export default function Home() {
   // Sprint 66: Peak Overlap Engine payload. Stateless banner renders this
   // object verbatim (or hides when totalDensity <= 50). Null until first dispatch.
   const [peakSurgeWindow, setPeakSurgeWindow] = useState(null);
+  const [telegramAlertForecast, setTelegramAlertForecast] = useState(null);
   // Sprint 37: live driver coords for the pulsing blue dot on the radar.
   // Reset on each dispatch so a stale fix never floats over the new plan.
   // Sprint 37.2: renamed coords → driverCoords for an unambiguous prop chain
@@ -761,6 +763,7 @@ export default function Home() {
     setError("");
     setItinerary([]);
     setPeakSurgeWindow(null);
+    setTelegramAlertForecast(null);
     setDriverCoords(null);
     setStatus("locating");
 
@@ -875,6 +878,7 @@ export default function Home() {
       setSequenceCandidates(data.sequenceCandidates || []);
       setWeatherModifiers(data.weatherModifiers || null);
       setPeakSurgeWindow(data.peakSurgeWindow || null);
+      setTelegramAlertForecast(data.telegramAlertForecast || null);
       setStatus("done");
     } catch (err) {
       console.error(err);
@@ -1292,6 +1296,10 @@ export default function Home() {
         {status === "done" && <PeakSurgeBanner data={peakSurgeWindow} />}
 
         {status === "done" && topPick && <TopPickBanner data={topPick} />}
+
+        {status === "done" && (
+          <TelegramAlertForecastBanner forecast={telegramAlertForecast} />
+        )}
 
         {status === "done" && (
           <SuggestedSequence itinerary={[...itinerary, ...sequenceCandidates]} />
