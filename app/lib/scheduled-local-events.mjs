@@ -2,6 +2,7 @@ import {
   academicEventPolicy,
   isUAlbanyRegularSession,
 } from "./ualbany-demand.mjs";
+import { splitDemandWindow } from "./demand-segments.mjs";
 
 const MINUTE_MS = 60 * 1000;
 
@@ -56,16 +57,19 @@ export function buildScheduledHospitalEvents({
       const start = atMinute(day, shift.start);
       const end = atMinute(day, shift.end);
       if (!intersects(start, end, localStart, localEnd)) continue;
-      events.push({
-        type: "event",
-        location: "Albany Med & St. Peter's Hospitals",
-        volume: 1,
-        egressMod: shift.mod,
-        categories: [shift.label, "Hospital Shift", "High Demand"],
-        lat: coords.lat,
-        lng: coords.lng,
-        ...timingFields(start, end, localStart),
-      });
+      for (const phase of splitDemandWindow(start, end)) {
+        if (!intersects(phase.start, phase.end, localStart, localEnd)) continue;
+        events.push({
+          type: "event",
+          location: "Albany Med & St. Peter's Hospitals",
+          volume: phase.factor,
+          egressMod: shift.mod,
+          categories: [shift.label, "Hospital Shift", phase.label, "High Demand"],
+          lat: coords.lat,
+          lng: coords.lng,
+          ...timingFields(phase.start, phase.end, localStart),
+        });
+      }
     }
   }
   return events;
@@ -114,17 +118,20 @@ export function buildScheduledCrossgatesEvents({
     const start = new Date(close.getTime() - 30 * MINUTE_MS);
     const end = new Date(close.getTime() + 30 * MINUTE_MS);
     if (!intersects(start, end, localStart, localEnd)) continue;
-    events.push({
-      type: "event",
-      location: "Crossgates Mall",
-      volume: 1,
-      egressMod: 3.0,
-      categories: ["Retail Egress", "Closing Surge"],
-      closeTime: formatTime(close),
-      lat: coords.lat,
-      lng: coords.lng,
-      ...timingFields(start, end, localStart),
-    });
+    for (const phase of splitDemandWindow(start, end)) {
+      if (!intersects(phase.start, phase.end, localStart, localEnd)) continue;
+      events.push({
+        type: "event",
+        location: "Crossgates Mall",
+        volume: phase.factor,
+        egressMod: 3.0,
+        categories: ["Retail Egress", "Closing Surge", phase.label],
+        closeTime: formatTime(close),
+        lat: coords.lat,
+        lng: coords.lng,
+        ...timingFields(phase.start, phase.end, localStart),
+      });
+    }
   }
   return events;
 }
@@ -457,7 +464,14 @@ export function buildScheduledConfiguredEvents({
             { start: windowStart + (windowEnd - windowStart) / 3, end: windowStart + ((windowEnd - windowStart) * 2) / 3, factor: 1, label: "Peak" },
             { start: windowStart + ((windowEnd - windowStart) * 2) / 3, end: windowEnd, factor: 0.6, label: "Taper" },
           ]
-        : [{ start: windowStart, end: windowEnd, factor: 1, label: "Peak" }];
+        : splitDemandWindow(atMinute(day, windowStart), atMinute(day, windowEnd)).map(
+            (phase) => ({
+              start: (phase.start.getTime() - day.getTime()) / MINUTE_MS,
+              end: (phase.end.getTime() - day.getTime()) / MINUTE_MS,
+              factor: phase.factor,
+              label: phase.label,
+            })
+          );
       for (const phase of phases) {
         const start = atMinute(day, phase.start);
         const end = atMinute(day, phase.end);
@@ -469,7 +483,7 @@ export function buildScheduledConfiguredEvents({
         events.push({
           type: "event",
           location: policy?.location || `${name} Surge`,
-          volume: 1,
+          volume: policy ? 1 : phase.factor,
           egressMod: policy ? 1 : mod,
           ...(policy
             ? {
@@ -480,7 +494,7 @@ export function buildScheduledConfiguredEvents({
             : {}),
           categories: policy
             ? ["Academic Calendar", name, phase.label]
-            : ["Holiday Surge", "High Demand"],
+            : ["Holiday Surge", "High Demand", phase.label],
           lat: policy?.lat ?? coords.lat,
           lng: policy?.lng ?? coords.lng,
           ...timingFields(start, end, localStart),

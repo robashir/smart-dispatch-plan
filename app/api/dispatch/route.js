@@ -39,6 +39,7 @@ import {
   parseOutboundFlightText,
 } from "../../lib/byod-outbound-flight.mjs";
 import { aggregateInboundFlightEvents } from "../../lib/inbound-flight-wave.mjs";
+import { splitDemandWindow } from "../../lib/demand-segments.mjs";
 import {
   isUAlbanyNode,
   isUAlbanyRegularSession,
@@ -3509,34 +3510,37 @@ export async function POST(request) {
           egressWindow.end > localStart
         ) {
           const projectedEnd = formatLeaveBy(egressWindow.projectedEnd);
-          const activeNow = localStart >= egressWindow.start && localStart < egressWindow.end;
           console.log(
             `EVENT EGRESS SCHEDULED: ${venueName || "Unknown Venue"} | Mod: ${egressWindow.egressMod}x | Projected End: ${projectedEnd}`
           );
 
-          structuredEvents.push({
-            type: "event",
-            location: venueName || "Unknown Venue",
-            eventName: e?.name || "Event",
-            eventStartTime: formatLeaveBy(startTime),
-            sourceEventKey: externalEventKey,
-            volume: 1,
-            egressMod: egressWindow.egressMod,
-            categories: [segmentName || "Music"],
-            lat: venueCoords.lat,
-            lng: venueCoords.lng,
-            ...(activeNow
-              ? {}
-              : {
-                  leaveBy: formatLeaveBy(egressWindow.start),
-                  hourBucket: formatLeaveBy(egressWindow.start),
-                }),
-            windowStart: formatLeaveBy(egressWindow.start),
-            windowEnd: formatLeaveBy(egressWindow.end),
-            projectedEnd,
-            activeNow,
-            sequenceOnly: true,
-          });
+          for (const phase of splitDemandWindow(egressWindow.start, egressWindow.end)) {
+            if (phase.start >= eventPlanningEnd || phase.end <= localStart) continue;
+            const activeNow = localStart >= phase.start && localStart < phase.end;
+            structuredEvents.push({
+              type: "event",
+              location: venueName || "Unknown Venue",
+              eventName: e?.name || "Event",
+              eventStartTime: formatLeaveBy(startTime),
+              sourceEventKey: externalEventKey,
+              volume: phase.factor,
+              egressMod: egressWindow.egressMod,
+              categories: [segmentName || "Music", phase.label],
+              lat: venueCoords.lat,
+              lng: venueCoords.lng,
+              ...(activeNow
+                ? {}
+                : {
+                    leaveBy: formatLeaveBy(phase.start),
+                    hourBucket: formatLeaveBy(phase.start),
+                  }),
+              windowStart: formatLeaveBy(phase.start),
+              windowEnd: formatLeaveBy(phase.end),
+              projectedEnd,
+              activeNow,
+              sequenceOnly: true,
+            });
+          }
         }
 
       }
