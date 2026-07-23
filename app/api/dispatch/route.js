@@ -2867,7 +2867,10 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
       candidate.delta >= 0 &&
       candidate.delta <= NORMAL_SUPPLY_LOOKAHEAD_MINUTES
   );
-  const eligibleCandidates = [...current, ...upcomingTimed];
+  const eligibleCandidates = collapseTelegramAlertDemandPhases([
+    ...current,
+    ...upcomingTimed,
+  ]);
   const areaCounts = demandFirstAreaCounts(eligibleCandidates);
   const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
   const areaExpectedDemand = eligibleCandidates.reduce(
@@ -2905,6 +2908,63 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
       areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD &&
       enoughDemandAreas,
   };
+}
+
+const DEMAND_PHASE_LABELS = new Set(["build", "peak", "taper"]);
+
+function telegramAlertDemandPhaseGroupKey(candidate) {
+  const item = candidate?.item || candidate;
+  const categories = Array.isArray(item?.categories) ? item.categories : [];
+  const hasDemandPhase = categories.some((category) =>
+    DEMAND_PHASE_LABELS.has(String(category).trim().toLowerCase())
+  );
+  if (!hasDemandPhase) return null;
+
+  const eventIdentity =
+    item?.demandGroupKey ||
+    item?.sourceEventKey ||
+    item?.eventName ||
+    item?.location ||
+    item?.hub ||
+    "event";
+  const nonPhaseCategories = categories.filter(
+    (category) => !DEMAND_PHASE_LABELS.has(String(category).trim().toLowerCase())
+  );
+  return [
+    item?.type || "",
+    item?.location || item?.hub || "",
+    eventIdentity,
+    nonPhaseCategories.join("|"),
+  ].join("::");
+}
+
+export function collapseTelegramAlertDemandPhases(candidates) {
+  const collapsed = [];
+  const groupedIndexes = new Map();
+
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const groupKey = telegramAlertDemandPhaseGroupKey(candidate);
+    if (!groupKey) {
+      collapsed.push(candidate);
+      continue;
+    }
+
+    const existingIndex = groupedIndexes.get(groupKey);
+    if (existingIndex === undefined) {
+      groupedIndexes.set(groupKey, collapsed.length);
+      collapsed.push(candidate);
+      continue;
+    }
+
+    const existing = collapsed[existingIndex];
+    const existingItem = existing?.item || existing;
+    const candidateItem = candidate?.item || candidate;
+    if (Number(candidateItem?.densityScore) > Number(existingItem?.densityScore)) {
+      collapsed[existingIndex] = candidate;
+    }
+  }
+
+  return collapsed;
 }
 
 export function buildTelegramAlertCandidate(
