@@ -1308,6 +1308,7 @@ export default function Home() {
         {status === "done" && (
           <DemandFirstSuggestedSequence
             itinerary={[...itinerary, ...sequenceCandidates]}
+            alertAreaCounts={telegramAlertForecast?.currentEvaluation?.areaCounts}
             driverCoords={driverCoords}
           />
         )}

@@ -302,6 +302,7 @@ assert.equal(futureForecast.status, "expected");
 assert.equal(futureForecast.firstEligibleTime, "4:15 PM");
 assert.equal(futureForecast.forecastEndTime, "11:59 PM");
 assert.equal(futureForecast.horizonMinutes, 479);
+assert.equal(futureForecast.currentEvaluation.areaTotal, 0);
 assert.equal(futureForecast.evaluation.areaTotal, 10);
 assert.deepEqual(futureForecast.evaluation.qualifyingDemandAreas, [
   "downtown",

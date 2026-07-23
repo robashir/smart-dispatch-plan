@@ -103,7 +103,7 @@ function TimelineSlot({ group }) {
   );
 }
 
-export function DemandFirstSuggestedSequence({ itinerary = [] }) {
+export function DemandFirstSuggestedSequence({ itinerary = [], alertAreaCounts = null }) {
   const [areaFilters, setAreaFilters] = useState({
     ...DEFAULT_DEMAND_FIRST_AREA_FILTERS,
   });
@@ -120,7 +120,18 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
   const { current, timed } = buildDemandFirstTimeline(itinerary);
   if (current.length === 0 && timed.length === 0) return null;
 
-  const areaCounts = demandFirstAreaCounts([...current, ...timed]);
+  const timelineAreaCounts = demandFirstAreaCounts([...current, ...timed]);
+  const hasAlertAreaCounts = DEMAND_FIRST_AREAS.every((area) =>
+    Number.isFinite(Number(alertAreaCounts?.[area.key]))
+  );
+  const areaCounts = hasAlertAreaCounts
+    ? Object.fromEntries(
+        DEMAND_FIRST_AREAS.map((area) => [
+          area.key,
+          Math.max(0, Number(alertAreaCounts[area.key])),
+        ])
+      )
+    : timelineAreaCounts;
 
   function handleAreaFilterChange(key) {
     const next = { ...areaFilters, [key]: !areaFilters[key] };
@@ -152,7 +163,7 @@ export function DemandFirstSuggestedSequence({ itinerary = [] }) {
         Demand-First Timeline
       </div>
       <div className="text-xs text-neutral-500 mt-1">
-        Selected areas combined into one chronological timeline; rankings remain citywide.
+        Area totals use the Telegram alert window (current + next 60 minutes); the timeline remains chronological.
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
         {DEMAND_FIRST_AREAS.map((area) => (
