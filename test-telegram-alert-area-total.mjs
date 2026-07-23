@@ -325,6 +325,22 @@ assert.equal(lateDayForecast.firstEligibleTime, "10:30 PM");
 assert.equal(lateDayForecast.forecastEndTime, "11:59 PM");
 assert.equal(lateDayForecast.evaluation.areaTotal, 10);
 
+const noQualifyingForecast = buildTelegramAlertForecast(
+  {
+    itinerary: [
+      ...Array.from({ length: 4 }, () => timedRide("MVP Arena", "8:00 PM")),
+      ...Array.from({ length: 5 }, () => timedRide("Albany Airport", "8:00 PM")),
+    ],
+    sequenceCandidates: [],
+    hours: 1,
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.equal(noQualifyingForecast.status, "not_expected");
+assert.equal(noQualifyingForecast.strongestProjectedTime, "7:00 PM");
+assert.equal(noQualifyingForecast.bestEvaluation.areaTotal, 9);
+
 const individualHighOpportunity = buildTelegramAlertCandidate(
   {
     itinerary: [{ ...activeRide("MVP Arena"), opportunityScore: 100 }],

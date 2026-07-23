@@ -3128,6 +3128,7 @@ export function buildTelegramAlertForecast(payload, localStart) {
       forecastEndTime: formatTimeLabel(endOfDayMinute),
       throughEndOfDay: true,
       currentEvaluation,
+      strongestProjectedTime: bestCheck?.time || formatTimeLabel(baseMinute),
       bestEvaluation: bestCheck?.evaluation || currentEvaluation,
     };
   }

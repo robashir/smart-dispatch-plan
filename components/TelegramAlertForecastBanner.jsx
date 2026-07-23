@@ -34,7 +34,7 @@ export function TelegramAlertForecastBanner({ forecast }) {
           No qualifying alert slot found through {forecast.forecastEndTime || "11:59 PM"} today
         </div>
         <div className="text-xs text-neutral-400 mt-2">
-          Strongest projected check: {opportunities}/10 opportunities · {qualifyingAreas}/2 areas at Expected Demand ≥25
+          Strongest projected check at {forecast.strongestProjectedTime || "the current time"}: {opportunities}/10 opportunities · {qualifyingAreas}/2 areas at Expected Demand ≥25
         </div>
         <div className="text-xs text-neutral-500 mt-1">
           Based on the current BYOD and dispatch data; live updates can change this forecast.
