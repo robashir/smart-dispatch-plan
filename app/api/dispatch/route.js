@@ -3148,6 +3148,7 @@ export function buildTelegramAlertForecast(payload, localStart) {
     horizonMinutes,
     forecastEndTime: formatTimeLabel(endOfDayMinute),
     throughEndOfDay: true,
+    currentEvaluation,
     firstEligibleTime: firstCheck.time,
     eligibleWindowEnd: formatTimeLabel(
       Math.min(endOfDayMinute, baseMinute + finalCheck.offsetMinutes + 5)
@@ -4179,12 +4180,16 @@ export async function POST(request) {
       forecastItinerary,
       { limit: null }
     );
+    // Telegram calculations use the complete candidate pool. The visible
+    // timeline may still cap secondary suggestions at eight, but that UI cap
+    // must not reduce the alert totals.
+    const telegramCalculationPayload = {
+      ...mergedPayload,
+      itinerary: forecastItinerary,
+      sequenceCandidates: forecastSequenceCandidates,
+    };
     mergedPayload.telegramAlertForecast = buildTelegramAlertForecast(
-      {
-        ...mergedPayload,
-        itinerary: forecastItinerary,
-        sequenceCandidates: forecastSequenceCandidates,
-      },
+      telegramCalculationPayload,
       localStart
     );
     mergedPayload.itinerary = filterTimelineItemsForSelectedHorizon(
@@ -4199,7 +4204,7 @@ export async function POST(request) {
     ).slice(0, 8);
     mergedPayload.peakSurgeWindow = findPeakSurgeWindow(mergedPayload.itinerary);
     mergedPayload.telegramAlert = alertAuthorization.authorized
-      ? await sendTelegramAlertIfNeeded(mergedPayload, localStart)
+      ? await sendTelegramAlertIfNeeded(telegramCalculationPayload, localStart)
       : { sent: false, reason: "not_requested" };
 
     // Sprint 62: Unified Situational Radar verification log. Counts how many
