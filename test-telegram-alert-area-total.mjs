@@ -3,6 +3,7 @@ import {
   buildTelegramAlertCandidate,
   buildTelegramAlertEvaluation,
   collapseTelegramAlertDemandPhases,
+  shouldSendTelegramDemandTransition,
 } from "./app/api/dispatch/route.js";
 
 const localStart = new Date("2026-07-21T16:00:00.000Z");
@@ -39,6 +40,7 @@ assert.match(referenceAlert.message, /total is more than 9/);
 assert.match(referenceAlert.message, /Downtown Expected Demand: 100/);
 assert.match(referenceAlert.message, /Other Areas Expected Demand: 175/);
 assert.match(referenceAlert.message, /Areas Meeting Expected Demand >= 25: 2/);
+assert.match(referenceAlert.message, /Driver Supply: Normal \(1\.00\)/);
 
 const referenceEvaluation = buildTelegramAlertEvaluation(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.0 },
@@ -236,7 +238,8 @@ const tightSupply = buildTelegramAlertCandidate(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.25 },
   localStart
 );
-assert.equal(tightSupply, null, "tight-supply alerts must be disabled");
+assert.equal(tightSupply?.title, "Citywide Demand Total");
+assert.match(tightSupply.message, /Driver Supply: Tight \(1\.25\)/);
 const tightEvaluation = buildTelegramAlertEvaluation(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.25 },
   localStart
@@ -244,13 +247,30 @@ const tightEvaluation = buildTelegramAlertEvaluation(
 assert.equal(tightEvaluation.areaTotal, 11);
 assert.equal(tightEvaluation.normalSupply, false);
 assert.equal(tightEvaluation.aboveThreshold, true);
-assert.equal(tightEvaluation.eligible, false);
+assert.equal(tightEvaluation.eligible, true);
 
 const shortageSupply = buildTelegramAlertCandidate(
   { itinerary: referenceItinerary, driverSupplyPressureMod: 1.5 },
   localStart
 );
-assert.equal(shortageSupply, null, "shortage alerts must be disabled");
+assert.equal(shortageSupply?.title, "Citywide Demand Total");
+assert.match(shortageSupply.message, /Driver Supply: Very Tight \(1\.50\)/);
+
+assert.equal(
+  shouldSendTelegramDemandTransition({ eligible: false }, referenceEvaluation),
+  true,
+  "demand should alert when it changes from not qualified to qualified"
+);
+assert.equal(
+  shouldSendTelegramDemandTransition({ eligible: true }, referenceEvaluation),
+  false,
+  "continuously qualified demand should not repeat an alert"
+);
+assert.equal(
+  shouldSendTelegramDemandTransition({ eligible: false }, displayedTimelineEvaluation),
+  false,
+  "non-qualifying demand should not alert"
+);
 
 const individualHighOpportunity = buildTelegramAlertCandidate(
   {
