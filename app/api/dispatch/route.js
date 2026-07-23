@@ -3083,6 +3083,46 @@ function projectTelegramAlertPayload(payload, localStart, offsetMinutes) {
   };
 }
 
+function telegramForecastCheckStrength(check) {
+  const evaluation = check?.evaluation || {};
+  const qualifyingAreas = Array.isArray(evaluation.qualifyingDemandAreas)
+    ? evaluation.qualifyingDemandAreas.length
+    : 0;
+  const areaTotal = Number(evaluation.areaTotal) || 0;
+  const totalExpectedDemand = Object.values(evaluation.areaExpectedDemand || {}).reduce(
+    (sum, value) => sum + (Number(value) || 0),
+    0
+  );
+  return qualifyingAreas * 1000000 + areaTotal * 1000 + totalExpectedDemand;
+}
+
+function topNonQualifyingTelegramChecks(checks, limit = 3) {
+  const ranked = (Array.isArray(checks) ? checks : [])
+    .filter((check) => check?.evaluation?.eligible !== true)
+    .sort(
+      (a, b) =>
+        telegramForecastCheckStrength(b) - telegramForecastCheckStrength(a) ||
+        a.offsetMinutes - b.offsetMinutes
+    );
+  const selected = [];
+  for (const check of ranked) {
+    if (
+      selected.some(
+        (existing) => Math.abs(existing.offsetMinutes - check.offsetMinutes) < 15
+      )
+    ) {
+      continue;
+    }
+    selected.push(check);
+    if (selected.length >= limit) break;
+  }
+  return selected.map((check) => ({
+    time: check.time,
+    minutesUntil: check.offsetMinutes,
+    evaluation: check.evaluation,
+  }));
+}
+
 export function buildTelegramAlertForecast(payload, localStart) {
   if (!(localStart instanceof Date) || Number.isNaN(localStart.getTime())) return null;
 
@@ -3112,6 +3152,7 @@ export function buildTelegramAlertForecast(payload, localStart) {
 
   const firstEligibleIndex = checks.findIndex((check) => check.evaluation.eligible);
   const currentEvaluation = buildTelegramAlertEvaluation(payload, localStart);
+  const topNonQualifyingChecks = topNonQualifyingTelegramChecks(checks);
   if (firstEligibleIndex < 0) {
     const bestCheck = checks.reduce(
       (best, check) => {
@@ -3130,6 +3171,7 @@ export function buildTelegramAlertForecast(payload, localStart) {
       currentEvaluation,
       strongestProjectedTime: bestCheck?.time || formatTimeLabel(baseMinute),
       bestEvaluation: bestCheck?.evaluation || currentEvaluation,
+      topNonQualifyingChecks,
     };
   }
 
@@ -3149,6 +3191,7 @@ export function buildTelegramAlertForecast(payload, localStart) {
     forecastEndTime: formatTimeLabel(endOfDayMinute),
     throughEndOfDay: true,
     currentEvaluation,
+    topNonQualifyingChecks,
     firstEligibleTime: firstCheck.time,
     eligibleWindowEnd: formatTimeLabel(
       Math.min(endOfDayMinute, baseMinute + finalCheck.offsetMinutes + 5)
