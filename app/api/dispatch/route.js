@@ -17,8 +17,8 @@ import DOORDASH_POI_ENRICHMENT_RAW from "../../../doordash_poi_enrichment.json" 
 const DOORDASH_POI_ENRICHMENT = Object.freeze(DOORDASH_POI_ENRICHMENT_RAW);
 import { readByodSnapshot } from "../../lib/byod-store.js";
 import {
-  readTelegramAlertCooldown,
-  recordTelegramAlertCooldown,
+  readTelegramAlertState,
+  recordTelegramAlertState,
 } from "../../lib/telegram-alert-cooldown.mjs";
 import { buildDemandFirstTimeline } from "../../../components/demand-first-sequence.mjs";
 import {
@@ -88,12 +88,12 @@ try {
 // shape is { data, expiresAt }; stale entries are refetched on access.
 // Validated in isolation by test-cache.js before being ported here.
 const globalCache = new Map();
-const TELEGRAM_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const NORMAL_DRIVER_SUPPLY_MAX = 1.1;
 const NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD = 9;
 const NORMAL_SUPPLY_LOOKAHEAD_MINUTES = 60;
 const AREA_EXPECTED_DEMAND_MINIMUM = 25;
 const MIN_QUALIFYING_DEMAND_AREAS = 2;
+const TELEGRAM_DEMAND_ALERT_KEY = "demand:citywide-area-total";
 
 export function dispatchAlertAuthorization(
   request,
@@ -2904,7 +2904,6 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
     threshold: NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
     aboveThreshold: areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD,
     eligible:
-      driverSupplyPressureMod < NORMAL_DRIVER_SUPPLY_MAX &&
       areaTotal > NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD &&
       enoughDemandAreas,
   };
@@ -2975,9 +2974,14 @@ export function buildTelegramAlertCandidate(
   if (!evaluation.eligible) return null;
 
   const { areaCounts, areaTotal, areaExpectedDemand, qualifyingDemandAreas } = evaluation;
+  const supplyLabel = driverSupplyLabel(evaluation.driverSupplyPressureMod);
+  const supplyPressure = Number(evaluation.driverSupplyPressureMod);
+  const supplyDisplay = Number.isFinite(supplyPressure)
+    ? `${supplyLabel} (${supplyPressure.toFixed(2)})`
+    : supplyLabel;
 
   return {
-    key: "normal-supply:citywide-area-total",
+    key: TELEGRAM_DEMAND_ALERT_KEY,
     title: "Citywide Demand Total",
     message: [
       "Smart Dispatch Alert",
@@ -2992,12 +2996,25 @@ export function buildTelegramAlertCandidate(
       `Other Areas Expected Demand: ${Math.round(areaExpectedDemand.other)}`,
       `Total Opportunities: ${areaTotal}`,
       `Areas Meeting Expected Demand >= ${AREA_EXPECTED_DEMAND_MINIMUM}: ${qualifyingDemandAreas.length}`,
-      "Driver Supply: Normal",
+      `Driver Supply: ${supplyDisplay}`,
       "",
       "Action: work the area with the strongest demand count",
       `Reason: next-${NORMAL_SUPPLY_LOOKAHEAD_MINUTES}-minute total is more than ${NORMAL_SUPPLY_AREA_TOTAL_THRESHOLD} and at least ${MIN_QUALIFYING_DEMAND_AREAS} areas have expected demand >= ${AREA_EXPECTED_DEMAND_MINIMUM}`,
     ].join("\n"),
   };
+}
+
+export function driverSupplyLabel(pressureValue) {
+  const pressure = Number(pressureValue);
+  if (!Number.isFinite(pressure)) return "Unknown";
+  if (pressure >= 1.5) return "Very Tight";
+  if (pressure >= 1.2) return "Tight";
+  if (pressure >= NORMAL_DRIVER_SUPPLY_MAX) return "Slightly Tight";
+  return "Normal";
+}
+
+export function shouldSendTelegramDemandTransition(previousState, evaluation) {
+  return previousState?.eligible !== true && evaluation?.eligible === true;
 }
 
 async function sendTelegramAlertIfNeeded(payload, localStart) {
@@ -3009,36 +3026,51 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
   }
 
   const candidate = buildTelegramAlertCandidate(payload, localStart, evaluation);
+  let previousState;
+  try {
+    previousState = await readTelegramAlertState(TELEGRAM_DEMAND_ALERT_KEY);
+  } catch (err) {
+    console.warn(`[Telegram Alert] state read failed: ${err.message}`);
+    return {
+      configured: true,
+      sent: false,
+      reason: "state_storage_error",
+      title: candidate?.title,
+      evaluation,
+    };
+  }
+
   if (!candidate) {
+    if (previousState.eligible) {
+      try {
+        await recordTelegramAlertState(TELEGRAM_DEMAND_ALERT_KEY, {
+          eligible: false,
+          sentAt: previousState.sentAt,
+        });
+      } catch (err) {
+        console.warn(`[Telegram Alert] state reset failed: ${err.message}`);
+        return {
+          configured: true,
+          sent: false,
+          reason: "state_storage_error",
+          evaluation,
+        };
+      }
+    }
     return { configured: true, sent: false, reason: "no_alert_candidate", evaluation };
   }
 
-  const now = Date.now();
-  let lastSentAt = 0;
-  try {
-    lastSentAt = await readTelegramAlertCooldown(candidate.key);
-  } catch (err) {
-    console.warn(`[Telegram Alert] cooldown read failed: ${err.message}`);
+  if (!shouldSendTelegramDemandTransition(previousState, evaluation)) {
     return {
       configured: true,
       sent: false,
-      reason: "cooldown_storage_error",
+      reason: "demand_already_qualified",
       title: candidate.title,
-      evaluation,
-    };
-  }
-  const msUntilReady = TELEGRAM_ALERT_COOLDOWN_MS - (now - lastSentAt);
-  if (msUntilReady > 0) {
-    return {
-      configured: true,
-      sent: false,
-      reason: "cooldown",
-      title: candidate.title,
-      cooldownMinutesRemaining: Math.ceil(msUntilReady / 60000),
       evaluation,
     };
   }
 
+  const now = Date.now();
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
@@ -3068,7 +3100,10 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
     }
 
     try {
-      await recordTelegramAlertCooldown(candidate.key, now);
+      await recordTelegramAlertState(candidate.key, {
+        eligible: true,
+        sentAt: now,
+      });
       return {
         configured: true,
         sent: true,
@@ -3077,11 +3112,11 @@ async function sendTelegramAlertIfNeeded(payload, localStart) {
         evaluation,
       };
     } catch (err) {
-      console.warn(`[Telegram Alert] cooldown write failed after send: ${err.message}`);
+      console.warn(`[Telegram Alert] state write failed after send: ${err.message}`);
       return {
         configured: true,
         sent: true,
-        reason: "sent_cooldown_unrecorded",
+        reason: "sent_state_unrecorded",
         title: candidate.title,
         evaluation,
       };
