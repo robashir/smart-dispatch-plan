@@ -52,6 +52,7 @@ import {
   buildScheduledLastCallEvents,
   buildScheduledLocalAnchorEvents,
   buildScheduledStateWorkerEvents,
+  aggregateRestaurantClosingAreaTimeClusters,
   suppressOverlappingUAlbanyRoutineEvents,
 } from "../../lib/scheduled-local-events.mjs";
 
@@ -3902,6 +3903,10 @@ export async function POST(request) {
         suppressUAlbanyResidentialHub = true;
       }
       scheduledLocalEvents = suppressOverlappingUAlbanyRoutineEvents(scheduledLocalEvents);
+      scheduledLocalEvents = aggregateRestaurantClosingAreaTimeClusters(
+        scheduledLocalEvents,
+        { areaFor: demandFirstAreaFor }
+      );
       for (const event of scheduledLocalEvents) {
         const { _scheduleStartMs, _scheduleEndMs, ...publicEvent } = event;
         structuredEvents.push(publicEvent);

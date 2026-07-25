@@ -10,6 +10,13 @@ assert.equal(demandFirstAreaFor({ location: "MVP Arena" }), "downtown");
 assert.equal(demandFirstAreaFor({ location: "Empire State Plaza & Harriman Campus" }), "downtown");
 assert.equal(demandFirstAreaFor({ location: "Crossgates Mall" }), "uptown");
 assert.equal(demandFirstAreaFor({ location: "UAlbany Uptown Campus" }), "uptown");
+assert.equal(
+  demandFirstAreaFor({
+    location: "Restaurant Closings — Downtown",
+    demandFirstArea: "downtown",
+  }),
+  "downtown"
+);
 assert.equal(demandFirstAreaFor({ location: "Inbound — ALB Flight Arrivals" }), "other");
 assert.equal(
   demandFirstAreaFor({

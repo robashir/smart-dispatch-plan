@@ -396,6 +396,78 @@ export function aggregateLastCallVenueClusters(
   );
 }
 
+function venueNameFromRestaurantClosing(event) {
+  return String(event?.location || "")
+    .replace(/^Restaurant Closing:\s*/i, "")
+    .trim();
+}
+
+function isRestaurantClosingEvent(event) {
+  return Array.isArray(event?.categories) && event.categories.includes("Restaurant Closing");
+}
+
+export function aggregateRestaurantClosingAreaTimeClusters(
+  events,
+  {
+    areaFor,
+    additionalVenueWeight = LAST_CALL_ADDITIONAL_VENUE_WEIGHT,
+  } = {}
+) {
+  const source = Array.isArray(events) ? events : [];
+  const resolveArea = typeof areaFor === "function" ? areaFor : () => "other";
+  const groups = new Map();
+
+  for (const event of source) {
+    if (!isRestaurantClosingEvent(event)) continue;
+    const area = resolveArea(event);
+    const closingKey = event.closeTime || `${event.windowStart || ""}|${event.windowEnd || ""}`;
+    const key = `${area}|${closingKey}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(event);
+  }
+
+  const emitted = new Set();
+  return source.flatMap((event) => {
+    if (!isRestaurantClosingEvent(event)) return [event];
+    const area = resolveArea(event);
+    const closingKey = event.closeTime || `${event.windowStart || ""}|${event.windowEnd || ""}`;
+    const key = `${area}|${closingKey}`;
+    if (emitted.has(key)) return [];
+    emitted.add(key);
+    const group = groups.get(key) || [event];
+    if (group.length === 1) return group;
+
+    const ranked = [...group].sort(
+      (a, b) =>
+        (Number(b.demandYield) || 0) - (Number(a.demandYield) || 0) ||
+        venueNameFromRestaurantClosing(a).localeCompare(venueNameFromRestaurantClosing(b))
+    );
+    const anchor = ranked[0];
+    const venues = ranked.map(venueNameFromRestaurantClosing);
+    const combinedYield = overlapAdjustedValue(group, "demandYield", additionalVenueWeight);
+    const combinedCap = Math.max(
+      combinedYield,
+      overlapAdjustedValue(group, "demandCap", additionalVenueWeight)
+    );
+    const areaLabel =
+      area === "downtown" ? "Downtown" : area === "uptown" ? "Uptown" : "Other Areas";
+
+    return [{
+      ...anchor,
+      location: `Restaurant Closings — ${areaLabel}`,
+      volume: 1,
+      demandYield: combinedYield,
+      demandCap: combinedCap,
+      categories: ["Restaurant Closing", "Closing Demand", "restaurant", "Area Cluster"],
+      demandFirstArea: area,
+      venues,
+      venueCount: group.length,
+      anchorVenue: venueNameFromRestaurantClosing(anchor),
+      isRestaurantClosingCluster: true,
+    }];
+  });
+}
+
 export function buildScheduledLastCallEvents({
   localStart,
   localEnd,
