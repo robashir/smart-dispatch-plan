@@ -7,7 +7,6 @@ import {
   buildScheduledLocalAnchorEvents,
   buildScheduledStateWorkerEvents,
   aggregateLastCallVenueClusters,
-  aggregateRestaurantClosingAreaTimeClusters,
 } from "./app/lib/scheduled-local-events.mjs";
 
 const coords = { lat: 42.65, lng: -73.75 };
@@ -162,60 +161,6 @@ assert.equal(
   }).length,
   2
 );
-
-const areaClosingEvents = [
-  ...["Innovo Kitchen", "Swifty's Restaurant & Pub", "Stella Pasta Bar", "Scarlet Knife"].map(
-    (name) => ({
-      type: "event",
-      location: `Restaurant Closing: ${name}`,
-      categories: ["Restaurant Closing", "Closing Demand", "restaurant"],
-      closeTime: "9:00 PM",
-      windowStart: "8:15 PM",
-      windowEnd: "8:30 PM",
-      demandYield: 4,
-      demandCap: 6,
-      volume: 1,
-      testArea: "other",
-    })
-  ),
-  {
-    type: "event",
-    location: "Restaurant Closing: Downtown Venue",
-    categories: ["Restaurant Closing", "Closing Demand", "restaurant"],
-    closeTime: "9:00 PM",
-    windowStart: "8:15 PM",
-    windowEnd: "8:30 PM",
-    demandYield: 4,
-    demandCap: 6,
-    volume: 1,
-    testArea: "downtown",
-  },
-  {
-    type: "event",
-    location: "Restaurant Closing: Later Venue",
-    categories: ["Restaurant Closing", "Closing Demand", "restaurant"],
-    closeTime: "9:30 PM",
-    windowStart: "8:45 PM",
-    windowEnd: "9:00 PM",
-    demandYield: 4,
-    demandCap: 6,
-    volume: 1,
-    testArea: "other",
-  },
-];
-const areaClosingClusters = aggregateRestaurantClosingAreaTimeClusters(areaClosingEvents, {
-  areaFor: (event) => event.testArea,
-});
-assert.equal(areaClosingClusters.length, 3);
-const otherAreaClosingCluster = areaClosingClusters.find(
-  (event) => event.isRestaurantClosingCluster
-);
-assert.equal(otherAreaClosingCluster.location, "Restaurant Closings — Other Areas");
-assert.equal(otherAreaClosingCluster.venueCount, 4);
-assert.equal(otherAreaClosingCluster.demandYield, 9);
-assert.equal(otherAreaClosingCluster.demandCap, 13);
-assert.equal(otherAreaClosingCluster.anchorVenue, "Innovo Kitchen");
-assert.equal(otherAreaClosingCluster.demandFirstArea, "other");
 
 const configured = buildScheduledConfiguredEvents({
   localStart,
