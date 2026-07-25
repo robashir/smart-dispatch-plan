@@ -23,6 +23,9 @@ function itemSearchText(item) {
 }
 
 export function demandFirstAreaFor(item) {
+  if (["downtown", "uptown", "other"].includes(item?.demandFirstArea)) {
+    return item.demandFirstArea;
+  }
   const text = itemSearchText(item);
 
   // Rensselaer Station is intentionally grouped with Downtown for the

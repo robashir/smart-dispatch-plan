@@ -71,6 +71,12 @@ function TimelineOpportunity({ candidate }) {
           {item.venueCount} nearby venues contributing to this demand window.
         </div>
       )}
+      {item?.isRestaurantClosingCluster && Number(item?.venueCount) > 1 && (
+        <div className="text-xs text-neutral-400 mt-1">
+          {item.venueCount} restaurants closing at the same time
+          {item.anchorVenue ? ` · Anchor: ${item.anchorVenue}` : ""}.
+        </div>
+      )}
       {timing && <div className="text-xs text-yellow-300 mt-1">{timing}</div>}
       <div className="text-xs text-cyan-300 mt-1">
         <TimelineNote candidate={candidate} />
