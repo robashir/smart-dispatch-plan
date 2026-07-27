@@ -97,6 +97,21 @@ assert.equal(lastCall[0].demandYield, 4);
 assert.equal(lastCall[0].demandCap, 6);
 assert.equal(lastCall[0].location, "Last Call Egress: Night Venue");
 
+const ignoredRestaurantClosing = buildScheduledLastCallEvents({
+  localStart: new Date("2026-07-15T20:00:00Z"),
+  localEnd: new Date("2026-07-15T22:00:00Z"),
+  dictionary: [{
+    name: "Innovo Kitchen",
+    closingTimes: { 3: "21:00" },
+    ...coords,
+  }],
+});
+assert.equal(
+  ignoredRestaurantClosing.length,
+  0,
+  "restaurant closings must not enter dispatch or Telegram calculations"
+);
+
 const clusteredLastCall = buildScheduledLastCallEvents({
   localStart: new Date("2026-07-16T01:00:00Z"),
   localEnd: new Date("2026-07-16T02:00:00Z"),
@@ -127,7 +142,12 @@ const clusteredLastCall = buildScheduledLastCallEvents({
     },
   ],
 });
-assert.equal(clusteredLastCall.length, 3);
+assert.equal(clusteredLastCall.length, 2);
+assert.equal(
+  clusteredLastCall.some((event) => /The Hollow Bar & Kitchen/i.test(event.location)),
+  false,
+  "restaurants must remain excluded even when they share a late closing time"
+);
 const downtownLastCallCluster = clusteredLastCall.find((event) => event.isLastCallCluster);
 assert.deepEqual(downtownLastCallCluster.venues, ["Hill Street Cafe", "McGeary's"]);
 assert.equal(downtownLastCallCluster.venueCount, 2);

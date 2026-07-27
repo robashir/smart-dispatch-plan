@@ -414,22 +414,23 @@ export function buildScheduledLastCallEvents({
         closeMinute,
         dayIndex,
       });
+      // Restaurant closing times are repetitive, low-confidence signals and
+      // often represent mutually exclusive choices. Exclude them at the
+      // source so they cannot affect the timeline, forecasts, or Telegram
+      // alert totals. Genuine late-night Last Call venues remain eligible.
+      if (!closingDemand.trueLastCall) continue;
       const close = atMinute(operationalDay, adjustedCloseMinute);
       const start = new Date(close.getTime() - 45 * MINUTE_MS);
       const end = new Date(close.getTime() - 30 * MINUTE_MS);
       if (!intersects(start, end, localStart, localEnd)) continue;
       events.push({
         type: "event",
-        location: closingDemand.trueLastCall
-          ? `Last Call Egress: ${venue.name}`
-          : `Restaurant Closing: ${venue.name}`,
+        location: `Last Call Egress: ${venue.name}`,
         volume: 1,
         demandYield: closingDemand.demandYield,
         demandCap: closingDemand.demandCap,
-        egressMod: closingDemand.trueLastCall ? 1.5 : 1.0,
-        categories: closingDemand.trueLastCall
-          ? ["Last Call", "Nightlife Egress", closingDemand.venueClass]
-          : ["Restaurant Closing", "Closing Demand", closingDemand.venueClass],
+        egressMod: 1.5,
+        categories: ["Last Call", "Nightlife Egress", closingDemand.venueClass],
         closeTime: formatTime(close),
         lat: venue.lat,
         lng: venue.lng,

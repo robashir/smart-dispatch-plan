@@ -3931,10 +3931,10 @@ export async function POST(request) {
     // in isolation by test-academic-surge.js (23 assertions PASS).
     // Configured holiday and academic windows are emitted above for the horizon.
 
-    // Closing-demand events use each venue's type, day, and closing hour.
-    // Early restaurant closings stay low; true late bars receive Last Call
-    // treatment with weekday/weekend scaling and conservative caps.
-    // Last-call windows are emitted above for the horizon.
+    // Restaurant-closing signals are excluded because they are repetitive,
+    // low-confidence, and frequently mutually exclusive. Genuine late-night
+    // Last Call windows still use weekday/weekend scaling and conservative
+    // caps and are emitted above for the horizon.
 
     // Sprint 52: Crossgates Retail Egress Engine. Synthetic event when the
     // driver's wall-clock falls inside the ±30 minute window centered on
