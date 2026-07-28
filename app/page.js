@@ -160,6 +160,38 @@ function readLocalByodSnapshot() {
       console.warn(`${key} hydrate failed:`, err.message);
     }
   }
+  if (!snapshot.holidayAcademicCalendarConfig) {
+    try {
+      const legacy = JSON.parse(localStorage.getItem("eventConfig") || "null");
+      const events =
+        legacy && typeof legacy === "object" && !Array.isArray(legacy)
+          ? legacy
+          : EVENT_CONFIG_SEED;
+      const migrationTime = new Date().toISOString();
+      const entryUpdatedAt = Object.fromEntries(
+        Object.entries(events)
+          .filter(
+            ([name, entry]) =>
+              JSON.stringify(entry) !== JSON.stringify(EVENT_CONFIG_SEED[name])
+          )
+          .map(([name]) => [name, migrationTime])
+      );
+      snapshot.holidayAcademicCalendarConfig = {
+        events,
+        entryUpdatedAt,
+        updatedAt: Object.keys(entryUpdatedAt).length > 0 ? migrationTime : null,
+        revision: 0,
+      };
+    } catch (err) {
+      console.warn("Holiday calendar migration failed:", err.message);
+      snapshot.holidayAcademicCalendarConfig = {
+        events: EVENT_CONFIG_SEED,
+        entryUpdatedAt: {},
+        updatedAt: null,
+        revision: 0,
+      };
+    }
+  }
   return normalizeByodSnapshot(snapshot);
 }
 
@@ -178,6 +210,14 @@ function persistLocalByodSnapshot(snapshot) {
     );
   } catch (err) {
     console.warn("BYOD snapshot metadata cache failed:", err.message);
+  }
+  try {
+    localStorage.setItem(
+      "eventConfig",
+      JSON.stringify(snapshot?.holidayAcademicCalendarConfig?.events || {})
+    );
+  } catch (err) {
+    console.warn("Holiday calendar compatibility cache failed:", err.message);
   }
 }
 
@@ -293,6 +333,12 @@ export default function Home() {
   // (initialized from the selected event's persisted date on each change).
   // saveStatus toggles the button label briefly to "Saved!" on success.
   const [eventConfig, setEventConfig] = useState({});
+  const [holidayAcademicCalendarConfig, setHolidayAcademicCalendarConfig] = useState({
+    events: {},
+    entryUpdatedAt: {},
+    updatedAt: null,
+    revision: 0,
+  });
   const [selectedEventName, setSelectedEventName] = useState("");
   const [dateInput, setDateInput] = useState("");
   const [saveStatus, setSaveStatus] = useState("idle");
@@ -326,6 +372,17 @@ export default function Home() {
     setWeatherConfig(clean.weatherConfig);
     setByodEventConfig(clean.byodEventConfig);
     setAcademicSessionConfig(clean.academicSessionConfig);
+    setHolidayAcademicCalendarConfig(clean.holidayAcademicCalendarConfig);
+    const calendarEvents = clean.holidayAcademicCalendarConfig.events;
+    setEventConfig(calendarEvents);
+    setSelectedEventName((current) => {
+      const next =
+        current && calendarEvents[current]
+          ? current
+          : pickNextUpcomingEventName(calendarEvents);
+      setDateInput(next ? calendarEvents[next]?.date || "" : "");
+      return next;
+    });
     if (clean.savedAt) setByodLastSyncedAt(clean.savedAt);
     return clean;
   }
@@ -407,43 +464,15 @@ export default function Home() {
     }
   }, []);
 
-  // Sprint 59: Unified Event Database — localStorage hydration.
-  // Mount-time priority: localStorage["eventConfig"] (driver's saved
-  // overrides) → bundled EVENT_CONFIG_SEED. On first visit the SEED is
-  // persisted so subsequent reloads use the same object identity.
-  // No network round-trip; Netlify-safe.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    let config = null;
-    try {
-      const raw = localStorage.getItem("eventConfig");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") config = parsed;
-      }
-    } catch (e) {
-      console.warn("eventConfig hydrate failed:", e.message);
-    }
-    if (!config) {
-      config = EVENT_CONFIG_SEED;
-      try { localStorage.setItem("eventConfig", JSON.stringify(config)); } catch (e) {
-        console.warn("eventConfig seed persist failed:", e.message);
-      }
-    }
-    setEventConfig(config);
-    const defaultName = pickNextUpcomingEventName(config);
-    setSelectedEventName(defaultName);
-    setDateInput(defaultName ? config[defaultName]?.date || "" : "");
-  }, []);
-
-  // Sprint 59: Save the selected event's new date to localStorage only.
-  // The dispatch route receives the whole eventConfig object in the POST
-  // body on the next click, so there's no server round-trip on Save.
-  function handleSaveEvent() {
+  // Unified Event Database cloud persistence.
+  // Calendar data is cached locally and merged into the shared BYOD cloud
+  // snapshot one entry at a time so concurrent device edits are preserved.
+  async function handleSaveEvent() {
     if (!selectedEventName) return;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return;
     setSaveStatus("saving");
     try {
+      const now = new Date().toISOString();
       const updated = {
         ...eventConfig,
         [selectedEventName]: {
@@ -451,13 +480,36 @@ export default function Home() {
           date: dateInput,
         },
       };
+      const localCalendarConfig = {
+        ...holidayAcademicCalendarConfig,
+        events: updated,
+        entryUpdatedAt: {
+          ...holidayAcademicCalendarConfig.entryUpdatedAt,
+          [selectedEventName]: now,
+        },
+        updatedAt: now,
+      };
       localStorage.setItem("eventConfig", JSON.stringify(updated));
+      localStorage.setItem(
+        "holidayAcademicCalendarConfig",
+        JSON.stringify(localCalendarConfig)
+      );
       setEventConfig(updated);
+      setHolidayAcademicCalendarConfig(localCalendarConfig);
+      const synced = await syncByodSnapshot({
+        holidayAcademicCalendarConfig: {
+          events: { [selectedEventName]: updated[selectedEventName] },
+          entryUpdatedAt: { [selectedEventName]: now },
+          updatedAt: now,
+          revision: holidayAcademicCalendarConfig.revision,
+        },
+      });
+      if (!synced) throw new Error("Calendar cloud sync failed.");
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (err) {
       console.warn("eventConfig save failed:", err.message);
-      setSaveStatus("idle");
+      setSaveStatus("error");
     }
   }
 
@@ -1268,9 +1320,11 @@ export default function Home() {
                     className="self-start py-2 px-4 rounded-lg bg-neutral-800 border border-neutral-700 text-sm font-semibold disabled:opacity-60"
                   >
                     {saveStatus === "saved"
-                      ? "Saved!"
+                      ? "Cloud Saved!"
                       : saveStatus === "saving"
                       ? "Saving…"
+                      : saveStatus === "error"
+                      ? "Retry Save"
                       : "Save Date"}
                   </button>
                 </>

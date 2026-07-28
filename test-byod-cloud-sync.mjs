@@ -41,6 +41,7 @@ assert.equal(merged.trainConfigOutbound.updatedAt, null);
 assert.equal(merged.trainConfigOutbound.revision, 0);
 assert.equal(merged.academicSessionConfig.mode, "auto");
 assert.deepEqual(merged.byodEventConfig.eventsByDate, {});
+assert.deepEqual(merged.holidayAcademicCalendarConfig.events, {});
 
 const eventMerged = mergeByodUpdates(
   merged,
@@ -203,5 +204,85 @@ assert.match(staleEventMerge.eventsByDate["2026-07-14"], /Cloud Name/);
 assert.doesNotMatch(staleEventMerge.eventsByDate["2026-07-14"], /Stale Name/);
 assert.match(staleEventMerge.eventsByDate["2026-07-14"], /New Event/);
 assert.equal(staleEventMerge.revision, 4);
+
+const calendarMerge = mergeByodCategoryUpdate(
+  "holidayAcademicCalendarConfig",
+  {
+    events: {
+      Thanksgiving: { date: "2026-11-26", type: "holiday" },
+      "Fall Move-In": { date: "2026-08-20", type: "academic" },
+    },
+    entryUpdatedAt: {
+      Thanksgiving: older,
+      "Fall Move-In": newer,
+    },
+    revision: 4,
+  },
+  {
+    events: {
+      Thanksgiving: { date: "2027-11-25", type: "holiday" },
+      "Fall Move-In": { date: "2027-08-19", type: "academic" },
+      Christmas: { date: "2027-12-25", type: "holiday" },
+    },
+    entryUpdatedAt: {
+      Thanksgiving: newer,
+      "Fall Move-In": older,
+      Christmas: newer,
+    },
+    revision: 2,
+  },
+  serverNow
+);
+assert.equal(calendarMerge.events.Thanksgiving.date, "2027-11-25");
+assert.equal(calendarMerge.events["Fall Move-In"].date, "2026-08-20");
+assert.equal(calendarMerge.events.Christmas.date, "2027-12-25");
+assert.equal(calendarMerge.revision, 5);
+
+const calendarReconcile = reconcileByodSnapshots(
+  {
+    holidayAcademicCalendarConfig: {
+      events: {
+        Thanksgiving: { date: "2027-11-25" },
+        "Fall Move-In": { date: "2026-08-20" },
+      },
+      entryUpdatedAt: {
+        Thanksgiving: newer,
+        "Fall Move-In": older,
+      },
+      updatedAt: newer,
+    },
+  },
+  {
+    holidayAcademicCalendarConfig: {
+      events: {
+        Thanksgiving: { date: "2026-11-26" },
+        "Fall Move-In": { date: "2027-08-19" },
+        Christmas: { date: "2027-12-25" },
+      },
+      entryUpdatedAt: {
+        Thanksgiving: older,
+        "Fall Move-In": newer,
+        Christmas: newer,
+      },
+      updatedAt: newer,
+    },
+  }
+);
+assert.equal(
+  calendarReconcile.snapshot.holidayAcademicCalendarConfig.events.Thanksgiving.date,
+  "2027-11-25"
+);
+assert.equal(
+  calendarReconcile.snapshot.holidayAcademicCalendarConfig.events["Fall Move-In"].date,
+  "2027-08-19"
+);
+assert.equal(
+  calendarReconcile.snapshot.holidayAcademicCalendarConfig.events.Christmas.date,
+  "2027-12-25"
+);
+assert.deepEqual(
+  Object.keys(calendarReconcile.pendingUpdates.holidayAcademicCalendarConfig.events),
+  ["Thanksgiving"]
+);
 
 console.log("BYOD cloud sync: assertions passed.");

@@ -10,11 +10,13 @@ export const BYOD_CONFIG_KEYS = [
   "weatherConfig",
   "byodEventConfig",
   "academicSessionConfig",
+  "holidayAcademicCalendarConfig",
 ];
 
 const TRAIN_CONFIG_KEYS = new Set(["trainConfigInbound", "trainConfigOutbound"]);
 const ACADEMIC_SESSION_KEY = "academicSessionConfig";
 const BYOD_EVENT_KEY = "byodEventConfig";
+const HOLIDAY_ACADEMIC_CALENDAR_KEY = "holidayAcademicCalendarConfig";
 
 function cleanUpdatedAt(value) {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
@@ -84,10 +86,40 @@ function cleanByodEventConfig(value) {
   };
 }
 
+function cleanHolidayAcademicCalendarConfig(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const events = {};
+  const entryUpdatedAt = {};
+  if (source.events && typeof source.events === "object") {
+    for (const [name, entry] of Object.entries(source.events)) {
+      if (name.trim() && entry && typeof entry === "object" && !Array.isArray(entry)) {
+        events[name] = { ...entry };
+      }
+    }
+  }
+  if (source.entryUpdatedAt && typeof source.entryUpdatedAt === "object") {
+    for (const [name, value] of Object.entries(source.entryUpdatedAt)) {
+      const timestamp = cleanUpdatedAt(value);
+      if (timestamp && Object.prototype.hasOwnProperty.call(events, name)) {
+        entryUpdatedAt[name] = timestamp;
+      }
+    }
+  }
+  return {
+    events,
+    entryUpdatedAt,
+    updatedAt: cleanUpdatedAt(source.updatedAt),
+    revision: cleanRevision(source.revision),
+  };
+}
+
 export function cleanByodConfig(key, value) {
   if (TRAIN_CONFIG_KEYS.has(key)) return cleanTrainConfig(value);
   if (key === ACADEMIC_SESSION_KEY) return cleanAcademicSessionConfig(value);
   if (key === BYOD_EVENT_KEY) return cleanByodEventConfig(value);
+  if (key === HOLIDAY_ACADEMIC_CALENDAR_KEY) {
+    return cleanHolidayAcademicCalendarConfig(value);
+  }
   return cleanRawTextConfig(value);
 }
 
@@ -105,6 +137,23 @@ export function mergeByodCategoryUpdate(key, currentValue, incomingValue, now) {
           : mergeByodEventText(eventsByDate[date] || "", rawText, date);
     }
     return { eventsByDate, updatedAt: now, revision };
+  }
+
+  if (key === HOLIDAY_ACADEMIC_CALENDAR_KEY) {
+    const events = { ...current.events };
+    const entryUpdatedAt = { ...current.entryUpdatedAt };
+    for (const [name, entry] of Object.entries(incoming.events || {})) {
+      const currentTime = cleanUpdatedAt(current.entryUpdatedAt?.[name]);
+      const incomingTime = cleanUpdatedAt(incoming.entryUpdatedAt?.[name]);
+      const shouldApply =
+        !Object.prototype.hasOwnProperty.call(events, name) ||
+        (incomingTime &&
+          (!currentTime || Date.parse(incomingTime) >= Date.parse(currentTime)));
+      if (!shouldApply) continue;
+      events[name] = entry;
+      if (incomingTime) entryUpdatedAt[name] = incomingTime;
+    }
+    return { events, entryUpdatedAt, updatedAt: now, revision };
   }
 
   return { ...incoming, updatedAt: now, revision };
@@ -127,6 +176,9 @@ function configHasData(key, value) {
     return Object.values(value.eventsByDate || {}).some(
       (rawText) => typeof rawText === "string" && rawText.trim().length > 0
     );
+  }
+  if (key === HOLIDAY_ACADEMIC_CALENDAR_KEY) {
+    return Object.keys(value.events || {}).length > 0;
   }
   return TRAIN_CONFIG_KEYS.has(key)
     ? Array.isArray(value.trains) && value.trains.length > 0
@@ -166,6 +218,56 @@ export function reconcileByodSnapshots(localValue, cloudValue) {
   const pendingUpdates = {};
 
   for (const key of BYOD_CONFIG_KEYS) {
+    if (key === HOLIDAY_ACADEMIC_CALENDAR_KEY) {
+      const localCalendar = local[key];
+      const cloudCalendar = cloud[key];
+      const events = { ...cloudCalendar.events };
+      const entryUpdatedAt = { ...cloudCalendar.entryUpdatedAt };
+      const pendingEvents = {};
+      const pendingEntryUpdatedAt = {};
+
+      for (const [name, entry] of Object.entries(localCalendar.events || {})) {
+        const localTime = cleanUpdatedAt(localCalendar.entryUpdatedAt?.[name]);
+        const cloudTime = cleanUpdatedAt(cloudCalendar.entryUpdatedAt?.[name]);
+        const localWins =
+          !Object.prototype.hasOwnProperty.call(cloudCalendar.events, name) ||
+          (localTime &&
+            (!cloudTime || Date.parse(localTime) > Date.parse(cloudTime)));
+        if (!localWins) continue;
+        events[name] = entry;
+        pendingEvents[name] = entry;
+        if (localTime) {
+          entryUpdatedAt[name] = localTime;
+          pendingEntryUpdatedAt[name] = localTime;
+        }
+      }
+
+      const localCategoryTime = categoryTimestamp(local, key);
+      const cloudCategoryTime = categoryTimestamp(cloud, key);
+      const latestCategoryTime = Math.max(
+        localCategoryTime || 0,
+        cloudCategoryTime || 0
+      );
+      snapshot[key] = {
+        events,
+        entryUpdatedAt,
+        updatedAt:
+          latestCategoryTime > 0
+            ? new Date(latestCategoryTime).toISOString()
+            : null,
+        revision: Math.max(localCalendar.revision, cloudCalendar.revision),
+      };
+      if (Object.keys(pendingEvents).length > 0) {
+        pendingUpdates[key] = {
+          events: pendingEvents,
+          entryUpdatedAt: pendingEntryUpdatedAt,
+          updatedAt: localCalendar.updatedAt,
+          revision: localCalendar.revision,
+        };
+      }
+      continue;
+    }
+
     const localTime = categoryTimestamp(local, key);
     const cloudTime = categoryTimestamp(cloud, key);
     const localHasData = configHasData(key, local[key]);
