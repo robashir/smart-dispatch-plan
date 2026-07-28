@@ -139,6 +139,11 @@ export function TopPickBanner({ data }) {
       {densityLine && (
         <div className="text-sm font-bold mt-2 !text-black">{densityLine}</div>
       )}
+      {data.calendarTransitReason && (
+        <div className="text-sm font-semibold mt-1 !text-black">
+          Calendar boost {Number(data.calendarTransitMultiplier).toFixed(2)}× — {data.calendarTransitReason}
+        </div>
+      )}
       {supplyLine && (
         <div className="text-sm font-semibold mt-1 !text-black">{supplyLine}</div>
       )}

@@ -39,6 +39,11 @@ import {
   parseOutboundFlightText,
 } from "../../lib/byod-outbound-flight.mjs";
 import { aggregateInboundFlightEvents } from "../../lib/inbound-flight-wave.mjs";
+import {
+  applyCalendarTransitBoost,
+  targetCalendarDate,
+  transitIdentityFor,
+} from "../../lib/calendar-transit-boost.mjs";
 import { splitDemandWindow } from "../../lib/demand-segments.mjs";
 import {
   isUAlbanyNode,
@@ -2507,7 +2512,16 @@ export function densityScore(item, finalRideMod, finalFoodMod, localStart = null
     item.type === "food" || item.type === "grocery" ? finalFoodMod : finalRideMod;
   const score = (Number(item.volume) || 0) * yieldRate * mod;
   const demandCap = Number(item.demandCap);
-  return Number.isFinite(demandCap) && demandCap > 0 ? Math.min(score, demandCap) : score;
+  const cappedScore =
+    Number.isFinite(demandCap) && demandCap > 0 ? Math.min(score, demandCap) : score;
+  const calendarTransitMultiplier = transitIdentityFor(item)
+    ? Number(item.calendarTransitMultiplier)
+    : 1;
+  return cappedScore * (
+    Number.isFinite(calendarTransitMultiplier) && calendarTransitMultiplier > 1
+      ? calendarTransitMultiplier
+      : 1
+  );
 }
 
 function opportunityScoreFor(demandScore, driverSupplyPressureMod = 1.0) {
@@ -2616,7 +2630,12 @@ function buildItinerary(
       // Sprint 70: estimatedCapacity + Sprint 62.3 capacity clamp removed.
       // expectedYield stays — same value as `volume × yieldRate`, useful
       // for UI display alongside the headline densityScore.
-      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
+      const expectedYield =
+        (Number(it.volume) || 0) *
+        yieldRateFor(it, currentLocalStart) *
+        (Number(it.calendarTransitMultiplier) > 1
+          ? Number(it.calendarTransitMultiplier)
+          : 1);
       const score = expectedDemand(it);
       const opportunityScore = opportunityScoreFor(
         timeAdjustedDemand(it),
@@ -2748,7 +2767,12 @@ function buildSequenceCandidates(
         it.type === "event" ||
         it.type === "ride";
       if (!scoreable) return null;
-      const expectedYield = (Number(it.volume) || 0) * yieldRateFor(it, currentLocalStart);
+      const expectedYield =
+        (Number(it.volume) || 0) *
+        yieldRateFor(it, currentLocalStart) *
+        (Number(it.calendarTransitMultiplier) > 1
+          ? Number(it.calendarTransitMultiplier)
+          : 1);
       const expectedDemand = densityScore(it, finalRideMod, 1.0, currentLocalStart);
       const timeAdjustedDemand =
         expectedDemand * computeTimeDecayMod(opportunityTimeLabelFor(it), currentLocalStart);
@@ -4156,6 +4180,22 @@ export async function POST(request) {
         message:
           "Secondary Ripple Demand: High business-traveler volume detected (NYP/BOS). Route driver to downtown state offices and high-end hotels. DO NOT mention Rensselaer.",
       }));
+    }
+
+    // Calendar travel demand is intentionally transit-only. Holiday and
+    // academic dates can raise inbound/outbound flight and train scores,
+    // while buses, food, hospitals, malls, and local events remain unchanged.
+    const transitCalendarDate = targetCalendarDate(localStart);
+    if (transitCalendarDate) {
+      flightsByHour = flightsByHour.map((item) =>
+        applyCalendarTransitBoost(item, eventConfig, transitCalendarDate)
+      );
+      trainsByHour = trainsByHour.map((item) =>
+        applyCalendarTransitBoost(item, eventConfig, transitCalendarDate)
+      );
+      structuredEvents = structuredEvents.map((item) =>
+        applyCalendarTransitBoost(item, eventConfig, transitCalendarDate)
+      );
     }
 
     // Sprint 63: Synthetic residential ride hubs — emits the [Ride Boost]

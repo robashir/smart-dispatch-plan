@@ -81,6 +81,11 @@ export function FlightCard({ data }) {
         </>
       )}
       {density && <div className="text-sm font-semibold text-blue-300 mt-2">{density}</div>}
+      {data.calendarTransitReason && (
+        <div className="text-sm text-emerald-300 mt-1">
+          Calendar boost {Number(data.calendarTransitMultiplier).toFixed(2)}× — {data.calendarTransitReason}
+        </div>
+      )}
       {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-blue-200 mt-1">{opportunity}</div>}
     </div>
@@ -103,6 +108,11 @@ export function TrainCard({ data }) {
         <div className="text-sm text-neutral-400 mt-1">{data.relativeTime}</div>
       )}
       {density && <div className="text-sm font-semibold text-emerald-300 mt-2">{density}</div>}
+      {data.calendarTransitReason && (
+        <div className="text-sm text-emerald-300 mt-1">
+          Calendar boost {Number(data.calendarTransitMultiplier).toFixed(2)}× — {data.calendarTransitReason}
+        </div>
+      )}
       {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-emerald-200 mt-1">{opportunity}</div>}
     </div>
@@ -201,6 +211,11 @@ export function EventCard({ data }) {
         ))}
       </div>
       {density && <div className="text-sm font-semibold text-purple-300 mt-2">{density}</div>}
+      {data.calendarTransitReason && (
+        <div className="text-sm text-emerald-300 mt-1">
+          Calendar boost {Number(data.calendarTransitMultiplier).toFixed(2)}× — {data.calendarTransitReason}
+        </div>
+      )}
       {driverSupply && <div className="text-sm text-neutral-400 mt-1">{driverSupply}</div>}
       {opportunity && <div className="text-sm font-semibold text-purple-200 mt-1">{opportunity}</div>}
     </div>

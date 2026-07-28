@@ -72,6 +72,11 @@ function TimelineOpportunity({ candidate }) {
         </div>
       )}
       {timing && <div className="text-xs text-yellow-300 mt-1">{timing}</div>}
+      {item?.calendarTransitReason && (
+        <div className="text-xs text-emerald-300 mt-1">
+          Calendar boost {Number(item.calendarTransitMultiplier).toFixed(2)}× — {item.calendarTransitReason}
+        </div>
+      )}
       <div className="text-xs text-cyan-300 mt-1">
         <TimelineNote candidate={candidate} />
       </div>
