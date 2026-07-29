@@ -1501,56 +1501,6 @@ function aggregateArrivalsByHour({ flights, localStart, localEnd, offsetMin, rid
   return rows.sort((a, b) => parseTimeLabel(a.leaveBy) - parseTimeLabel(b.leaveBy));
 }
 
-// Sprint 4.5 + Hotfix: live Amtrak arrivals for Albany-Rensselaer (station code ALB).
-// Amtraker v3 has shipped multiple response shapes:
-//   - top-level array of trains
-//   - { ALB: [...trains] }
-//   - { ALB: { trainId: {...}, ... } }   <-- this shape caused "trains is not iterable"
-// Inspector log + ironclad fallback guarantee this function ALWAYS returns an array.
-async function fetchAlbTrainArrivals() {
-  // Sprint 26: 15-min TTL cache per PO spec. Rensselaer is the hub label
-  // (Amtrak station is colloquially "Rensselaer/ALB"); key matches the
-  // PO example "trains_Rensselaer".
-  return withCache("trains_Rensselaer", 15, async () => {
-    const url = "https://api-v3.amtraker.com/v3/stations/ALB";
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        console.warn(`Amtraker API ${res.status}`);
-        return [];
-      }
-      const data = await res.json();
-
-      console.log("RAW AMTRAK DATA:", data);
-
-      try {
-        let extracted;
-        if (Array.isArray(data)) {
-          extracted = data;
-        } else if (Array.isArray(data?.ALB)) {
-          extracted = data.ALB;
-        } else if (data?.ALB && typeof data.ALB === "object") {
-          extracted = Object.values(data.ALB);
-        } else if (data && typeof data === "object") {
-          extracted = Object.values(data).flat();
-        }
-
-        if (!Array.isArray(extracted)) {
-          console.warn("Amtrak Parse Failed, falling back to empty array");
-          return [];
-        }
-        return extracted;
-      } catch (parseErr) {
-        console.warn("Amtrak Parse Failed, falling back to empty array");
-        return [];
-      }
-    } catch (err) {
-      console.warn("Train fetch failed:", err.message);
-      return [];
-    }
-  });
-}
-
 // Sprint 53 parseAmtrakText now lives client-side in app/page.js
 // (Sprint 59 — localStorage migration). The parsed trains array travels
 // in the dispatch body as `byodTrains`, already lazy-wiped against
@@ -3648,7 +3598,8 @@ export async function POST(request) {
       console.warn("FLIGHT_API_KEY not set — skipping AviationStack fetch");
     }
 
-    const [events, weatherResult, rawFlights, rawTrains, gigDemand] = await Promise.all([
+    console.log("LIVE AMTRAK API DISABLED: using BYOD train data only");
+    const [events, weatherResult, rawFlights, gigDemand] = await Promise.all([
       fetchTicketmasterEvents({
         latitude,
         longitude,
@@ -3658,7 +3609,6 @@ export async function POST(request) {
       }),
       fetchWeatherWindowed({ latitude, longitude, hours: hoursNum }),
       flightApiKey ? fetchAlbArrivals({ apiKey: flightApiKey }) : Promise.resolve([]),
-      fetchAlbTrainArrivals(),
       getLocalDensityData(latitude, longitude, localStart),
     ]);
 
@@ -3769,12 +3719,9 @@ export async function POST(request) {
       demandCap: 45,
     });
 
-    let trainsByHour = aggregateTrainArrivalsByHour({
-      trains: rawTrains,
-      localStart,
-      localEnd: forecastEnd,
-      offsetMin,
-    });
+    // Live Amtraker data is intentionally disabled. BYOD inbound/outbound
+    // trains are injected below as structured events and remain fully active.
+    let trainsByHour = [];
 
     // Sprint 32: Event Egress Engine. Walk the raw TM array, derive each
     // event's segment/venue/startTime, compute egressMod against localStart
@@ -4024,15 +3971,9 @@ export async function POST(request) {
     // today's local date BEFORE shipping, so byodTrains is already
     // either today's saved trains or [].
     //
-    // Sprint 62.1: Tear down the XOR gate. The Live Amtraker feed (called
-    // in the Promise.all above + aggregated into `trainsByHour`) runs
-    // UNCONDITIONALLY on every dispatch — it never reads `direction` and
-    // its inbound hour-buckets always land in `mergedPayload.trainsByHour`
-    // (gated only by the global rideshare + includeAmtrak flags via the
-    // Sprint 11 / 17 sanitization below). This BYOD loop runs the same
-    // way: `direction` ONLY selects per-train leaveBy math + Mapbox coords
-    // (ESP for outbound, AMTRAK for inbound). The two feeds are fully
-    // independent and flow into the merged payload simultaneously.
+    // Live Amtraker data is disabled. This BYOD loop is the sole train-data
+    // source: `direction` selects per-train leaveBy math + Mapbox coords
+    // (ESP for outbound, AMTRAK for inbound), and both directions can coexist.
     //
     // Sprint 64: Dual-Direction. The single loop now iterates the pre-
     // merged `allByod` array (each entry stamped with its own `direction`
@@ -4295,10 +4236,8 @@ export async function POST(request) {
     // so the Test-Driven Scaffolding rule (confirm both directions co-exist
     // BEFORE touching the map) holds at runtime.
     //
-    // Sprint 62.1: Surface each feed's pre-itinerary count too so XOR can
-    // be ruled out without reading the full merged payload. `liveInbound`
-    // is the live-Amtraker bucket count and `byod` is the BYOD-event count
-    // pushed in Phase 2 — both numbers persist regardless of `direction`.
+    // Surface BYOD pre-itinerary counts. The live-Amtraker bucket count is
+    // intentionally always zero because train data is BYOD-only.
     const liveInboundCount = Array.isArray(mergedPayload.trainsByHour)
       ? mergedPayload.trainsByHour.length
       : 0;
