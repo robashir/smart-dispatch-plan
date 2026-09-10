@@ -94,6 +94,54 @@ assert.equal(displayedTimelineEvaluation.enoughDemandAreas, true);
 assert.equal(displayedTimelineEvaluation.aboveThreshold, false);
 assert.equal(displayedTimelineEvaluation.eligible, false);
 
+const lastCallExcludedEvaluation = buildTelegramAlertEvaluation(
+  {
+    itinerary: [
+      ...Array.from({ length: 4 }, () => activeRide("MVP Arena")),
+      ...Array.from({ length: 5 }, () => activeRide("Albany Airport")),
+      {
+        ...activeRide("Last Call Egress: Downtown Pub"),
+        categories: ["Last Call", "Nightlife Egress", "late_bar"],
+      },
+      {
+        ...activeRide("Last Call Egress: Airport Pub"),
+        categories: ["Nightlife Egress", "late_bar"],
+      },
+    ],
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.deepEqual(
+  lastCallExcludedEvaluation.areaCounts,
+  { downtown: 4, uptown: 0, other: 5 },
+  "Last Call opportunities should not count toward Telegram eligibility"
+);
+assert.equal(lastCallExcludedEvaluation.areaTotal, 9);
+assert.equal(lastCallExcludedEvaluation.eligible, false);
+
+const lastCallExcludedForecast = buildTelegramAlertForecast(
+  {
+    itinerary: [
+      ...Array.from({ length: 4 }, () => timedRide("MVP Arena", "5:15 PM")),
+      ...Array.from({ length: 5 }, () => timedRide("Albany Airport", "5:15 PM")),
+      {
+        ...timedRide("Last Call Egress: Downtown Pub", "5:15 PM"),
+        categories: ["Last Call", "Nightlife Egress", "late_bar"],
+      },
+    ],
+    sequenceCandidates: [],
+    driverSupplyPressureMod: 1.0,
+  },
+  localStart
+);
+assert.equal(
+  lastCallExcludedForecast.status,
+  "not_expected",
+  "Last Call opportunities should not create a qualifying Telegram forecast"
+);
+assert.equal(lastCallExcludedForecast.bestEvaluation.areaTotal, 9);
+
 const taperedCandidates = [
   {
     ...timedRide("Colonie Center / Wolf Road Corridor", "4:05 PM"),

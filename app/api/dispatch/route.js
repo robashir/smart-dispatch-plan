@@ -2850,7 +2850,7 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
   const eligibleCandidates = collapseTelegramAlertDemandPhases([
     ...current,
     ...upcomingTimed,
-  ]);
+  ]).filter((candidate) => !isLastCallTelegramAlertCandidate(candidate));
   const areaCounts = demandFirstAreaCounts(eligibleCandidates);
   const areaTotal = areaCounts.downtown + areaCounts.uptown + areaCounts.other;
   const areaExpectedDemand = eligibleCandidates.reduce(
@@ -2890,6 +2890,21 @@ export function buildTelegramAlertEvaluation(payload, localStart) {
 }
 
 const DEMAND_PHASE_LABELS = new Set(["build", "peak", "taper"]);
+
+function isLastCallTelegramAlertCandidate(candidate) {
+  const item = candidate?.item || candidate;
+  const categories = Array.isArray(item?.categories) ? item.categories : [];
+  const normalizedCategories = categories.map((category) =>
+    String(category).trim().toLowerCase()
+  );
+  const location = String(item?.location || "").trim().toLowerCase();
+
+  return (
+    normalizedCategories.includes("last call") ||
+    normalizedCategories.includes("nightlife egress") ||
+    location.startsWith("last call egress:")
+  );
+}
 
 function telegramAlertDemandPhaseGroupKey(candidate) {
   const item = candidate?.item || candidate;
